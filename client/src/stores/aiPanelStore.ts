@@ -5,6 +5,8 @@ import { create } from "zustand";
 export type ControlChartType = 'bar' | 'line' | 'area' | 'scatter' | 'pie';
 export type PaletteName = 'finbox' | 'viridis' | 'pastel' | 'highContrast' | 'publication';
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
+export type ErrorBarType = 'std' | 'se' | 'ci95';
+export type TrendlineType = 'none' | 'linear' | 'polynomial' | 'exponential';
 
 export interface TableSortConfig {
   column: 'metric' | 'value';
@@ -24,6 +26,29 @@ export interface TabCustomizations {
   tableSort: TableSortConfig | null;
   tableFilter: string;
   zebraStriping: boolean;
+  // Y-axis bounds & scale
+  yAxisMin: number | null;
+  yAxisMax: number | null;
+  yAxisLog: boolean;
+  yAxisReverse: boolean;
+  // X-axis bounds (numeric / scatter)
+  xAxisMin: number | null;
+  xAxisMax: number | null;
+  // Series styling
+  strokeWidth: number;
+  fillOpacity: number;
+  markerSize: number;
+  barGap: number;
+  barBorderRadius: number;
+  // Chart elements
+  showErrorBars: boolean;
+  errorBarType: ErrorBarType;
+  trendlineType: TrendlineType;
+  showTrendlineEquation: boolean;
+  showTrendlineR2: boolean;
+  showDropLines: boolean;
+  // Accessibility
+  altText: string;
 }
 
 export const DEFAULT_CUSTOMIZATIONS: TabCustomizations = {
@@ -38,6 +63,24 @@ export const DEFAULT_CUSTOMIZATIONS: TabCustomizations = {
   tableSort: null,
   tableFilter: '',
   zebraStriping: false,
+  yAxisMin: null,
+  yAxisMax: null,
+  yAxisLog: false,
+  yAxisReverse: false,
+  xAxisMin: null,
+  xAxisMax: null,
+  strokeWidth: 2,
+  fillOpacity: 0.3,
+  markerSize: 4,
+  barGap: 4,
+  barBorderRadius: 3,
+  showErrorBars: false,
+  errorBarType: 'std',
+  trendlineType: 'none',
+  showTrendlineEquation: false,
+  showTrendlineR2: false,
+  showDropLines: false,
+  altText: '',
 };
 
 export interface PanelResult {

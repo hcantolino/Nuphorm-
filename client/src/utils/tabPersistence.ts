@@ -5,12 +5,94 @@
 
 import { useTabStore, Tab } from '@/stores/tabStore';
 import { useTabContentStore, TabContentState } from '@/stores/tabContentStore';
+// NEW: persist AI panel results (charts, tables, interpretations) across project switches + reloads
+import {
+  useAIPanelStore,
+  PanelResult,
+  TabCustomizations,
+} from '@/stores/aiPanelStore';
 
 const STORAGE_KEY = 'nuphorm-tabs-state';
 const STORAGE_VERSION = '1.0';
 
 // Per-project tab snapshots: nuphorm-proj-tabs-{projectId}
 const PROJECT_TABS_KEY_PREFIX = 'nuphorm-proj-tabs-';
+
+// ── AI panel data snapshot type ───────────────────────────────────────────────
+
+/**
+ * NEW: Serializable slice of useAIPanelStore — the three records that hold all
+ * per-tab analysis results and visual customizations.
+ */
+export interface AIPanelData {
+  resultsByTab: Record<string, PanelResult[]>;
+  activeResultIdByTab: Record<string, string | null>;
+  customizationsByTab: Record<string, TabCustomizations>;
+}
+
+// ── Size guard ────────────────────────────────────────────────────────────────
+
+/**
+ * NEW: Trim large arrays inside panel results so a snapshot never blows past
+ * localStorage's ~5 MB per-origin limit.
+ *
+ * Rules:
+ *  • tableData rows → capped at 100 rows (the raw dataset table)
+ *  • chart labels / dataset points → capped at 500 entries
+ *  • Everything else (analysis text, stats table, edits) → kept in full
+ */
+function sanitizeAIPanelData(data: AIPanelData): AIPanelData {
+  const sanitizeResult = (r: PanelResult): PanelResult => ({
+    ...r,
+    tableData: r.tableData
+      ? {
+          headers: r.tableData.headers,
+          rows: Array.isArray(r.tableData.rows)
+            ? r.tableData.rows.slice(0, 100)
+            : r.tableData.rows,
+        }
+      : undefined,
+    analysisResults: r.analysisResults
+      ? {
+          ...r.analysisResults,
+          chart_data: r.analysisResults.chart_data
+            ? {
+                ...r.analysisResults.chart_data,
+                labels: Array.isArray(r.analysisResults.chart_data.labels)
+                  ? r.analysisResults.chart_data.labels.slice(0, 500)
+                  : r.analysisResults.chart_data.labels,
+                datasets: Array.isArray(r.analysisResults.chart_data.datasets)
+                  ? r.analysisResults.chart_data.datasets.map((ds: any) => ({
+                      ...ds,
+                      data: Array.isArray(ds.data) ? ds.data.slice(0, 500) : ds.data,
+                    }))
+                  : r.analysisResults.chart_data.datasets,
+              }
+            : r.analysisResults.chart_data,
+        }
+      : r.analysisResults,
+  });
+
+  return {
+    resultsByTab: Object.fromEntries(
+      Object.entries(data.resultsByTab).map(([tabId, results]) => [
+        tabId,
+        results.map(sanitizeResult),
+      ])
+    ),
+    activeResultIdByTab: data.activeResultIdByTab,
+    customizationsByTab: data.customizationsByTab,
+  };
+}
+
+/**
+ * NEW: Read the current aiPanelStore state into a serializable snapshot.
+ */
+function readAIPanelData(): AIPanelData {
+  const { resultsByTab, activeResultIdByTab, customizationsByTab } =
+    useAIPanelStore.getState();
+  return sanitizeAIPanelData({ resultsByTab, activeResultIdByTab, customizationsByTab });
+}
 
 // ── Per-project tab snapshot types ───────────────────────────────────────────
 
@@ -19,13 +101,19 @@ interface ProjectTabSnapshot {
   tabs: Tab[];
   activeTabId: string | null;
   tabContent: Record<string, TabContentState>;
+  // NEW: AI-generated results, active result pointers, and chart customizations
+  aiPanelData?: AIPanelData;
 }
 
 // ── Per-project snapshot helpers ─────────────────────────────────────────────
 
 /**
- * Save the current project's tab + content state to localStorage.
+ * Save the current project's full tab state to localStorage.
  * Call this before switching away from a project.
+ *
+ * NEW: now also captures aiPanelStore (results, customizations, active result)
+ *      so switching back to a project restores all previously-generated outputs.
+ * UNCHANGED: same call signature — callers do not need to change.
  */
 export const saveProjectTabSnapshot = (
   projectId: string,
@@ -35,16 +123,52 @@ export const saveProjectTabSnapshot = (
 ): void => {
   try {
     if (!projectId) return;
-    const snapshot: ProjectTabSnapshot = { version: STORAGE_VERSION, tabs, activeTabId, tabContent };
+    // NEW: include AI panel results in the snapshot
+    const aiPanelData = readAIPanelData();
+    const snapshot: ProjectTabSnapshot = {
+      version: STORAGE_VERSION,
+      tabs,
+      activeTabId,
+      tabContent,
+      aiPanelData,                    // NEW
+    };
     localStorage.setItem(`${PROJECT_TABS_KEY_PREFIX}${projectId}`, JSON.stringify(snapshot));
   } catch (error) {
-    console.error('[TabPersistence] Failed to save project tab snapshot:', error);
+    // QuotaExceededError: retry without tableData rows
+    if (
+      error instanceof DOMException &&
+      (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+    ) {
+      console.warn('[TabPersistence] Storage quota exceeded — retrying without tableData rows');
+      try {
+        if (!projectId) return;
+        const aiPanelData = readAIPanelData();
+        // Strip tableData rows to free space
+        const stripped: AIPanelData = {
+          ...aiPanelData,
+          resultsByTab: Object.fromEntries(
+            Object.entries(aiPanelData.resultsByTab).map(([tabId, results]) => [
+              tabId,
+              results.map((r) => ({ ...r, tableData: undefined })),
+            ])
+          ),
+        };
+        const snapshot: ProjectTabSnapshot = {
+          version: STORAGE_VERSION, tabs, activeTabId, tabContent, aiPanelData: stripped,
+        };
+        localStorage.setItem(`${PROJECT_TABS_KEY_PREFIX}${projectId}`, JSON.stringify(snapshot));
+      } catch (_) { /* give up gracefully */ }
+    } else {
+      console.error('[TabPersistence] Failed to save project tab snapshot:', error);
+    }
   }
 };
 
 /**
  * Load the tab snapshot for a specific project.
  * Returns null if the project has no saved tabs or data is invalid.
+ *
+ * NEW: snapshot now includes aiPanelData when available.
  */
 export const loadProjectTabSnapshot = (projectId: string): ProjectTabSnapshot | null => {
   try {
@@ -73,6 +197,7 @@ export const deleteProjectTabSnapshot = (projectId: string): void => {
 
 /**
  * Serializable tab state for storage
+ * NEW: includes aiPanelData for full cross-session persistence.
  */
 interface StoredTabState {
   version: string;
@@ -80,6 +205,8 @@ interface StoredTabState {
   tabs: Tab[];
   activeTabId: string | null;
   tabContent: Record<string, TabContentState>;
+  // NEW: AI panel results persisted for page-reload recovery
+  aiPanelData?: AIPanelData;
 }
 
 /**
@@ -101,13 +228,17 @@ function debounce<T extends (...args: any[]) => any>(
 }
 
 /**
- * Save tab state to localStorage
- * Debounced to avoid excessive writes
+ * Save tab state to localStorage (debounced, 1 s).
+ *
+ * NEW: also saves aiPanelStore so AI-generated results survive a page reload.
+ * REMOVED: was only saving tabStore + tabContentStore — panel results were lost on reload.
  */
 export const saveTabState = debounce(() => {
   try {
     const { tabs, activeTabId } = useTabStore.getState();
     const { tabContent } = useTabContentStore.getState();
+    // NEW: capture AI panel results
+    const aiPanelData = readAIPanelData();
 
     const state: StoredTabState = {
       version: STORAGE_VERSION,
@@ -115,12 +246,39 @@ export const saveTabState = debounce(() => {
       tabs,
       activeTabId,
       tabContent,
+      aiPanelData,                    // NEW
     };
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    console.log('[TabPersistence] State saved to localStorage');
   } catch (error) {
-    console.error('[TabPersistence] Failed to save state:', error);
+    if (
+      error instanceof DOMException &&
+      (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+    ) {
+      // Retry without tableData if over quota
+      console.warn('[TabPersistence] Quota exceeded on global save — retrying without tableData rows');
+      try {
+        const { tabs, activeTabId } = useTabStore.getState();
+        const { tabContent } = useTabContentStore.getState();
+        const aiPanelData = readAIPanelData();
+        const stripped: AIPanelData = {
+          ...aiPanelData,
+          resultsByTab: Object.fromEntries(
+            Object.entries(aiPanelData.resultsByTab).map(([tabId, results]) => [
+              tabId,
+              results.map((r) => ({ ...r, tableData: undefined })),
+            ])
+          ),
+        };
+        const state: StoredTabState = {
+          version: STORAGE_VERSION, timestamp: Date.now(),
+          tabs, activeTabId, tabContent, aiPanelData: stripped,
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (_) { /* give up gracefully */ }
+    } else {
+      console.error('[TabPersistence] Failed to save state:', error);
+    }
   }
 }, 1000);
 
@@ -131,7 +289,6 @@ export const loadTabState = (): StoredTabState | null => {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) {
-      console.log('[TabPersistence] No saved state found');
       return null;
     }
 
@@ -152,7 +309,6 @@ export const loadTabState = (): StoredTabState | null => {
       return null;
     }
 
-    console.log('[TabPersistence] State loaded from localStorage');
     return state;
   } catch (error) {
     console.error('[TabPersistence] Failed to load state:', error);
@@ -161,8 +317,11 @@ export const loadTabState = (): StoredTabState | null => {
 };
 
 /**
- * Restore tab state from localStorage
- * Call this on app mount
+ * Restore tab state from localStorage.
+ * Call this on app mount.
+ *
+ * NEW: also restores aiPanelStore so AI-generated results survive a page reload.
+ * REMOVED: was only restoring tabStore + tabContentStore — panel results were lost.
  */
 export const restoreTabState = () => {
   const saved = loadTabState();
@@ -180,7 +339,15 @@ export const restoreTabState = () => {
       tabContent: saved.tabContent,
     });
 
-    console.log('[TabPersistence] State restored successfully');
+    // NEW: restore AI panel results, active pointers, and customizations
+    if (saved.aiPanelData) {
+      useAIPanelStore.setState({
+        resultsByTab:        saved.aiPanelData.resultsByTab,
+        activeResultIdByTab: saved.aiPanelData.activeResultIdByTab,
+        customizationsByTab: saved.aiPanelData.customizationsByTab,
+      });
+    }
+
     return true;
   } catch (error) {
     console.error('[TabPersistence] Failed to restore state:', error);
@@ -194,7 +361,6 @@ export const restoreTabState = () => {
 export const clearTabState = () => {
   try {
     localStorage.removeItem(STORAGE_KEY);
-    console.log('[TabPersistence] Saved state cleared');
   } catch (error) {
     console.error('[TabPersistence] Failed to clear state:', error);
   }
@@ -230,19 +396,12 @@ export const getLastSaveTime = (): Date | null => {
 };
 
 /**
- * Hook to set up auto-save on store changes
- * Call this in your component's useEffect
+ * Hook to set up auto-save on store changes.
+ * Call this in your component's useEffect.
  */
 export const useAutoSaveTabState = () => {
-  // Subscribe to tab store changes
-  useTabStore.subscribe(() => {
-    saveTabState();
-  });
-
-  // Subscribe to tab content store changes
-  useTabContentStore.subscribe(() => {
-    saveTabState();
-  });
+  useTabStore.subscribe(() => { saveTabState(); });
+  useTabContentStore.subscribe(() => { saveTabState(); });
 };
 
 /**
@@ -263,7 +422,6 @@ export const importTabState = (json: string): boolean => {
   try {
     const state = JSON.parse(json) as StoredTabState;
 
-    // Validate
     if (state.version !== STORAGE_VERSION) {
       throw new Error(
         `Version mismatch: expected ${STORAGE_VERSION}, got ${state.version}`
@@ -274,10 +432,7 @@ export const importTabState = (json: string): boolean => {
       throw new Error('Invalid tabs data');
     }
 
-    // Save to localStorage
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-
-    // Restore
     return restoreTabState();
   } catch (error) {
     console.error('[TabPersistence] Failed to import state:', error);
@@ -302,12 +457,7 @@ export const getStorageStats = (): StorageStats => {
   try {
     const saved = loadTabState();
     if (!saved) {
-      return {
-        savedStateSize: 0,
-        lastSaveTime: null,
-        tabCount: 0,
-        contentSize: 0,
-      };
+      return { savedStateSize: 0, lastSaveTime: null, tabCount: 0, contentSize: 0 };
     }
 
     const contentSize = JSON.stringify(saved.tabContent).length;
@@ -320,11 +470,6 @@ export const getStorageStats = (): StorageStats => {
     };
   } catch (error) {
     console.error('[TabPersistence] Failed to get storage stats:', error);
-    return {
-      savedStateSize: 0,
-      lastSaveTime: null,
-      tabCount: 0,
-      contentSize: 0,
-    };
+    return { savedStateSize: 0, lastSaveTime: null, tabCount: 0, contentSize: 0 };
   }
 };

@@ -4,6 +4,15 @@ import { useState } from 'react';
 import { ChevronRight, Plus, Trash2 } from 'lucide-react';
 import { useBiostatisticsStore } from '@/stores/biostatisticsStore';
 import { useBiostatStore } from '@/stores/biostatStore';
+// NEW: Tab isolation imports — required for per-project tab save/restore
+import { useTabStore } from '@/stores/tabStore';
+import { useTabContentStore } from '@/stores/tabContentStore';
+// NEW: restore AI-generated results (charts, tables, interpretations) on project switch
+import { useAIPanelStore } from '@/stores/aiPanelStore';
+import {
+  saveProjectTabSnapshot,
+  loadProjectTabSnapshot,
+} from '@/utils/tabPersistence';
 
 interface BiostatProjectsSidebarProps {
   isOpen: boolean;
@@ -16,6 +25,69 @@ export default function BiostatProjectsSidebar({ isOpen, onToggle }: BiostatProj
   const [newProjectName, setNewProjectName] = useState('');
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
+
+  // NEW: Tab store access for per-project isolation
+  const { tabs, activeTabId, clearAllTabs } = useTabStore();
+  const { tabContent } = useTabContentStore();
+
+  // NEW: Save current project's tabs, clear state, then restore the target project's tabs.
+  // Mirrors the same logic in ChartHeader.handleSwitchProject so both entry points
+  // (top-bar dropdown and this sidebar) behave identically.
+  const handleSwitchProject = (newProjectId: string) => {
+    if (newProjectId === activeProjectId) return;
+
+    // 1. Snapshot the tabs we're leaving
+    if (activeProjectId) {
+      saveProjectTabSnapshot(activeProjectId, tabs, activeTabId, tabContent);
+    }
+
+    // 2. Commit the project switch
+    setActiveProject(newProjectId);
+
+    // 3a. Restore the new project's previously-saved tabs (if any)
+    const snapshot = loadProjectTabSnapshot(newProjectId);
+    if (snapshot && snapshot.tabs.length > 0) {
+      clearAllTabs(); // tear down old in-memory tab state in sibling stores
+      useTabStore.setState({ tabs: snapshot.tabs, activeTabId: snapshot.activeTabId });
+      useTabContentStore.setState({ tabContent: snapshot.tabContent });
+      // NEW: restore AI-generated results so switching back shows previous outputs
+      // REMOVED: was missing — panel results were always lost on project switch
+      if (snapshot.aiPanelData) {
+        useAIPanelStore.setState({
+          resultsByTab:        snapshot.aiPanelData.resultsByTab,
+          activeResultIdByTab: snapshot.aiPanelData.activeResultIdByTab,
+          customizationsByTab: snapshot.aiPanelData.customizationsByTab,
+        });
+      }
+    } else {
+      // 3b. New or first-visit project — auto-create one default tab so the user can start immediately
+      clearAllTabs();
+      useTabStore.getState().addTab();
+    }
+  };
+
+  // NEW: Save current tabs before creating the new project, then auto-create one default tab.
+  // REMOVED: was calling createProject() directly, which left old tabs visible.
+  const handleCreateProject = () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+
+    // Save current project's tabs before switching away
+    if (activeProjectId) {
+      saveProjectTabSnapshot(activeProjectId, tabs, activeTabId, tabContent);
+    }
+
+    // createProject internally sets activeProjectId to the new project's id
+    createProject(name, 'New biostatistics project');
+
+    // NEW: auto-create first tab for the new project so it's immediately ready
+    // REMOVED: was clearAllTabs() only, leaving the tab bar empty on new project
+    clearAllTabs();
+    useTabStore.getState().addTab();
+
+    setNewProjectName('');
+    setShowNewProjectForm(false);
+  };
 
   // Calculate left position based on MAIN sidebar state (not projects drawer state)
   // Main sidebar is 16rem (256px) when open, 4rem (64px) when collapsed
@@ -65,12 +137,15 @@ export default function BiostatProjectsSidebar({ isOpen, onToggle }: BiostatProj
           {projects.map((project) => (
             <div
               key={project.id}
-              onClick={() => setActiveProject(project.id)}
+              // NEW: was setActiveProject(project.id) — now saves current tabs and restores this project's tabs
+              onClick={() => handleSwitchProject(project.id)}
               className={`p-3 rounded-lg cursor-pointer transition-all duration-200 ${
                 activeProjectId === project.id
                   ? 'bg-blue-50 border-2 border-blue-500'
                   : 'bg-gray-50 border-2 border-transparent hover:bg-gray-100'
               }`}
+              role="button"
+              aria-current={activeProjectId === project.id ? 'page' : undefined}
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
@@ -114,19 +189,22 @@ export default function BiostatProjectsSidebar({ isOpen, onToggle }: BiostatProj
                 type="text"
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleCreateProject();
+                  if (e.key === 'Escape') {
+                    setShowNewProjectForm(false);
+                    setNewProjectName('');
+                  }
+                }}
                 placeholder="Project name..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 autoFocus
               />
               <div className="flex gap-2">
                 <button
-                  onClick={() => {
-                    if (newProjectName.trim()) {
-                      createProject(newProjectName, 'New biostatistics project');
-                      setNewProjectName('');
-                      setShowNewProjectForm(false);
-                    }
-                  }}
+                  // NEW: uses handleCreateProject (saves current tabs, creates, clears)
+                  // REMOVED: was createProject(...) directly which left old tabs visible
+                  onClick={handleCreateProject}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded-lg transition-colors text-sm font-medium"
                 >
                   Create

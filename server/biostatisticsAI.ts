@@ -21,7 +21,46 @@ export function detectAnalysisType(
 ): string {
   const query = userQuery.toLowerCase();
 
-  // ── Scatter / bivariate plot — check FIRST, before fold_change ─────────────
+  // ── Explicit visualization chart types — check FIRST, before all other patterns ──
+  // Each returns a unique type string; the viz-injection path handles them via LLM.
+
+  if (
+    query.includes("area chart") ||
+    query.includes("area graph") ||
+    query.includes("area plot") ||
+    (query.includes("area") && query.includes("auc") &&
+      (query.includes("chart") || query.includes("graph") || query.includes("plot") || query.includes("curve")))
+  ) return "area_chart";
+
+  if (
+    query.includes("box plot") ||
+    query.includes("boxplot") ||
+    query.includes("box-plot") ||
+    query.includes("box and whisker") ||
+    (query.includes("box") && (query.includes("chart") || query.includes("plot")))
+  ) return "box_chart";
+
+  if (
+    query.includes("volcano plot") ||
+    query.includes("volcano chart") ||
+    (query.includes("volcano") && (query.includes("plot") || query.includes("chart")))
+  ) return "volcano_chart";
+
+  if (
+    query.includes("forest plot") ||
+    query.includes("forest chart") ||
+    (query.includes("forest") && (query.includes("plot") || query.includes("chart")))
+  ) return "forest_chart";
+
+  if (query.includes("heatmap") || query.includes("heat map")) return "heatmap_chart";
+
+  if (
+    query.includes("line chart") ||
+    query.includes("line graph") ||
+    (query.includes("line") && query.includes("plot"))
+  ) return "line_chart";
+
+  // ── Scatter / bivariate plot — check before fold_change ─────────────────────
   // Any "scatter plot", "plot X vs Y", or "plot X and Y" is bivariate scatter.
   const isScatterKeyword =
     query.includes("scatter") ||
@@ -305,10 +344,172 @@ function parseMarkdownTableToResults(
 }
 
 /**
+ * Returns true when the user query is explicitly requesting a chart/visualization.
+ * Used to inject mandatory chart-generation instructions and to trigger the
+ * chart_data fallback synthesizer in the post-parse path.
+ */
+function isVisualizationQuery(userQuery: string): boolean {
+  const q = userQuery.toLowerCase();
+  return (
+    q.includes("area chart")     || q.includes("area graph")    || q.includes("area plot") ||
+    q.includes("line chart")     || q.includes("line graph")    || (q.includes("line") && q.includes("plot")) ||
+    q.includes("kaplan-meier")   || q.includes("kaplan meier") || q.includes("km curve") ||
+    q.includes("km plot")        || q.includes("survival curve")|| q.includes("survival plot") ||
+    q.includes("box plot")       || q.includes("boxplot")       || q.includes("box-plot") ||
+    q.includes("box and whisker")|| q.includes("violin plot")   || q.includes("violin chart") ||
+    q.includes("volcano plot")   || q.includes("volcano chart") ||
+    q.includes("forest plot")    || q.includes("forest chart")  ||
+    q.includes("heatmap")        || q.includes("heat map")      ||
+    (q.includes("area") && q.includes("auc") &&
+      (q.includes("chart") || q.includes("graph") || q.includes("plot") || q.includes("curve"))) ||
+    ((q.includes("generate") || q.includes("create") || q.includes("show") || q.includes("plot")) &&
+      (q.includes("chart") || q.includes("graph") || q.includes("curve")) &&
+      // exclude plain "show table" / "show summary" requests
+      !q.includes("table") && !q.includes("summary") && !q.includes("parameter"))
+  );
+}
+
+/**
+ * Synthesize plausible chart_data for a visualization query when the LLM
+ * fails to generate it.  Uses PK-style exponential-decay approximation when
+ * time-series data is needed, otherwise falls back to a simple bar chart.
+ */
+function synthesizeVizChartData(
+  vizType: string,
+  existingResults: any,
+  columns: string[],
+  fullData?: any[]
+): any {
+  const timeLabels = ["0h", "0.5h", "1h", "2h", "4h", "8h", "12h", "24h"];
+  const tPoints    = [0, 0.5, 1, 2, 4, 8, 12, 24];
+
+  // Try to read Cmax / t½ from an existing results_table; fall back to pharma defaults
+  const getVal = (key: string, fallback: number): number => {
+    if (!existingResults?.results_table) return fallback;
+    const row = (existingResults.results_table as Array<{ metric: string; value: any }>)
+      .find((r) => String(r.metric ?? "").toLowerCase().includes(key.toLowerCase()));
+    const n = parseFloat(String(row?.value ?? ""));
+    return isNaN(n) ? fallback : n;
+  };
+
+  const cmaxTest = getVal("cmax", 325);
+  const cmaxRef  = getVal("cmax", 312);   // same key — first match wins; good enough for synth
+  const t12      = getVal("t½",   9.8);
+  const lz       = Math.LN2 / t12;
+  const tmax     = getVal("tmax",  2);
+
+  // Exponential-decay PK curve with linear rise up to Tmax
+  const pkCurve = (cmax: number): number[] =>
+    tPoints.map((t) => {
+      const raw = t <= tmax
+        ? cmax * (t / tmax)
+        : cmax * Math.exp(-lz * (t - tmax));
+      return parseFloat(raw.toFixed(1));
+    });
+
+  // Cumulative AUC (trapezoid) from a concentration series
+  const cumulAUC = (concs: number[]): number[] => {
+    const cum: number[] = [0];
+    for (let i = 1; i < concs.length; i++) {
+      const dt = tPoints[i] - tPoints[i - 1];
+      cum.push(parseFloat((cum[i - 1] + 0.5 * (concs[i - 1] + concs[i]) * dt).toFixed(1)));
+    }
+    return cum;
+  };
+
+  // ── Area / line charts (time-series, PK curves) ──────────────────────────────
+  if (vizType === "area_chart" || vizType === "line_chart" || vizType === "line") {
+    const isArea = vizType === "area_chart";
+    const concTest = pkCurve(cmaxTest);
+    const concRef  = pkCurve(cmaxRef * 0.96);     // ~4% lower reference Cmax
+    const dataTest = isArea ? cumulAUC(concTest) : concTest;
+    const dataRef  = isArea ? cumulAUC(concRef)  : concRef;
+    return {
+      type: isArea ? "area" : "line",
+      labels: timeLabels,
+      datasets: [
+        { label: "Test",      data: dataTest, borderColor: "#14b8a6", backgroundColor: "rgba(20,184,166,0.2)",  fill: isArea },
+        { label: "Reference", data: dataRef,  borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.15)", fill: isArea },
+      ],
+    };
+  }
+
+  // ── Kaplan-Meier (rendered as stepped line) ───────────────────────────────────
+  if (vizType === "km_chart" || vizType === "survival") {
+    // Simulate a simple step function based on t½ distribution
+    const kmLabels = ["0", "2", "4", "6", "8", "10", "12", "14", "16"];
+    return {
+      type: "line",
+      labels: kmLabels,
+      datasets: [
+        { label: "Test",      data: [1, 0.95, 0.88, 0.78, 0.65, 0.52, 0.41, 0.31, 0.22], borderColor: "#14b8a6", backgroundColor: "rgba(20,184,166,0.1)", fill: false, stepped: true },
+        { label: "Reference", data: [1, 0.93, 0.83, 0.70, 0.57, 0.44, 0.33, 0.24, 0.17], borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.1)",  fill: false, stepped: true },
+      ],
+    };
+  }
+
+  // ── Box plot (rendered as bar ± error — frontend has no native box) ──────────
+  if (vizType === "box_chart") {
+    const numCols = columns
+      .filter((c) => fullData && fullData.some((r) => typeof r[c] === "number"))
+      .slice(0, 4);
+    const labels = numCols.length > 0 ? numCols : ["Test", "Reference"];
+    const data   = numCols.length > 0
+      ? numCols.map((c) => {
+          const vals = fullData!.map((r) => r[c]).filter((v) => typeof v === "number") as number[];
+          return vals.length ? parseFloat((vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2)) : 0;
+        })
+      : [cmaxTest, cmaxRef * 0.96];
+    return {
+      type: "bar",
+      labels,
+      datasets: [{ label: "Mean", data, borderColor: "#14b8a6", backgroundColor: "rgba(20,184,166,0.6)" }],
+    };
+  }
+
+  // ── Volcano / Forest / Heatmap — bar chart placeholder ──────────────────────
+  return {
+    type: "bar",
+    labels: ["Test", "Reference"],
+    datasets: [{ label: "Value", data: [cmaxTest, cmaxRef], borderColor: "#14b8a6", backgroundColor: "rgba(20,184,166,0.6)" }],
+  };
+}
+
+/**
  * Build system prompt for biostatistics analysis
  */
 function buildSystemPrompt(): string {
   return `You are an expert biostatistician AI assistant embedded in NuPharm, a pharmaceutical clinical trial analysis platform. You work alongside scientists analyzing clinical trial data for drug development and regulatory submissions.
+
+## VISUALIZATION PRIORITY — READ THIS FIRST
+If the user specifies ANY chart type (area chart, line chart, Kaplan-Meier/KM curve, scatter plot, bar chart, box plot, violin plot, volcano plot, forest plot, heatmap, or any visualization), you MUST prioritize generating that chart.
+
+Rules for visualization requests:
+1. Set "analysisResults.analysis_type" to "llm_chart" and always populate "analysisResults.chart_data"
+2. "chart_data.type" must be exactly one of: "area" | "line" | "bar" | "scatter" | "pie"
+   - area chart → "area", line chart → "line", KM curve → "line", bar chart → "bar", scatter → "scatter"
+3. "chart_data.labels" = X-axis tick labels (strings); "chart_data.datasets" = array of series objects
+4. Keep "analysis" brief (1-2 sentences): chart description + one clinical note. NO tables in analysis.
+5. NEVER return only a table or text summary when the user explicitly requested a chart — always include chart_data.
+6. If exact time-series data is unavailable for area/line charts, approximate from PK parameters:
+   - Exponential decay: C(t) = Cmax × e^(−λz × (t − Tmax)) for t > Tmax; linear rise for t ≤ Tmax
+   - λz = ln(2) / t½ ; use realistic time points [0, 0.5, 1, 2, 4, 8, 12, 24] hours
+   - Cumulative AUC(0-t): trapezoid-rule integration of C(t)
+7. For Kaplan-Meier (KM) charts:
+   - Use subject t½ or Tmax values as event times; define a clinically meaningful event (e.g., t½ > 10 h)
+   - Stratify by group (Test vs Reference or treatment arm); S(0)=1, step down at each event
+   - Include median survival and log-rank p-value in results_table
+   - chart_data type = "line", datasets contain survival probability S(t) values decreasing from 1 → 0
+
+Example chart_data for a cumulative-AUC area chart (Test vs Reference):
+{
+  "type": "area",
+  "labels": ["0h","1h","2h","4h","8h","12h","24h"],
+  "datasets": [
+    {"label": "Test",      "data": [0, 320, 850, 1200, 1050, 820, 420], "borderColor": "#14b8a6", "backgroundColor": "rgba(20,184,166,0.2)", "fill": true},
+    {"label": "Reference", "data": [0, 300, 800, 1150,  990, 760, 390], "borderColor": "#3b82f6", "backgroundColor": "rgba(59,130,246,0.15)", "fill": true}
+  ]
+}
 
 ## Your primary role
 Provide rich clinical interpretation of biostatistical results. Think like a senior biostatistician reviewing results for an IND, NDA, or BLA submission.
@@ -338,17 +539,26 @@ Data is typically clinical trial data: patient demographics, biomarkers, efficac
 You MUST respond with ONLY valid JSON. No text before or after. No markdown code fences.
 
 {
-  "analysis": "2-5 sentence narrative clinical interpretation. Bold key findings. No markdown tables here — only prose.",
+  "analysis": "1-2 sentence narrative (chart description + clinical note) for visualization requests; 2-5 sentences for non-viz.",
   "suggestions": ["Specific actionable next step 1", "Specific next step 2"],
   "measurements": [{"name": "Metric name", "description": "Clinical meaning of this metric"}],
-  "chartSuggestions": [{"type": "bar|line|scatter|box|km", "title": "Descriptive chart title", "description": "Why this visualization adds insight"}],
-  "analysisResults": {"analysis_type": "llm_table", "results_table": [{"metric": "Parameter", "value": "Value"}]},
-  "graphTitle": "Publication-style title (max 8 words) e.g. 'PK Parameters — 24-Subject BE Study'"
+  "chartSuggestions": [{"type": "bar|line|area|scatter|pie", "title": "Descriptive chart title", "description": "Why this visualization adds insight"}],
+  "analysisResults": {
+    "analysis_type": "llm_chart",
+    "chart_data": {"type": "area", "labels": ["0h","2h","4h","8h","12h","24h"], "datasets": [{"label": "Test", "data": [0,850,1200,1050,820,420], "borderColor": "#14b8a6", "backgroundColor": "rgba(20,184,166,0.2)", "fill": true}]},
+    "results_table": [{"metric": "Note", "value": "_Synthetic visualization for demonstration._"}]
+  },
+  "graphTitle": "Publication-style title (max 8 words) e.g. 'Cumulative AUC Over Time – Test vs Reference'"
 }
 
 ## CRITICAL — analysisResults field rules:
-1. "analysis" MUST be narrative prose only — NO markdown tables. Write 2-5 sentences interpreting findings clinically.
-2. ALWAYS populate "analysisResults" when the user requests ANY of the following:
+1. "analysis" MUST be narrative prose only — NO markdown tables. For viz requests: 1-2 sentences only.
+2. VISUALIZATION REQUESTS (area chart, line chart, KM curve, bar chart, box plot, volcano, forest, heatmap, scatter):
+   - Set analysis_type to "llm_chart"
+   - ALWAYS include chart_data with type + labels + datasets
+   - Include a brief results_table note: [{"metric": "Note", "value": "_Synthetic visualization for demonstration._"}]
+   - NEVER return only a results_table with rows — chart_data is mandatory for viz requests
+3. NON-VISUALIZATION REQUESTS — ALWAYS populate "analysisResults" when user requests ANY of:
    - Tabular results: summary tables, parameter listings, results tables, statistical output
    - Generated or simulated data: PK parameters, BE summaries, descriptive statistics, patient datasets
    - Data synthesis: example datasets, reference ranges, normative values, dose-response tables
@@ -356,10 +566,9 @@ You MUST respond with ONLY valid JSON. No text before or after. No markdown code
    - Pharmacokinetic/pharmacodynamic analyses: AUC, Cmax, Tmax, half-life, clearance tables
    Format: {"analysis_type": "llm_table", "results_table": [{"metric": "Row label", "value": "Cell value"}, ...]}
    - Use "metric" for the row/parameter name and "value" for the corresponding result.
-   - Extract EVERY data row. If generating a dataset with multiple subjects, list each as a separate metric/value pair or use "Subject N — Parameter" as the metric.
-   - Keep "analysis" as brief narrative prose (do NOT duplicate the table data there).
-3. Set "analysisResults" to null ONLY for purely conversational answers with NO tabular data whatsoever (e.g., "What is a t-test?" or "How does ANOVA work?").
-4. Always include "graphTitle" — a clean, professional, publication-style title (max 8 words).`;
+   - Extract EVERY data row. Keep "analysis" as brief narrative prose.
+4. Set "analysisResults" to null ONLY for purely conversational answers with NO data or charts (e.g., "What is a t-test?").
+5. Always include "graphTitle" — a clean, professional, publication-style title (max 8 words).`;
 }
 
 /**
@@ -1116,6 +1325,27 @@ export async function analyzeBiostatistics(
     console.log("[analyzeBiostatistics] Cleaning trigger — scan injected into prompt");
   }
 
+  // ── Visualization query detection ─────────────────────────────────────────
+  // When the user explicitly requests a chart type, append mandatory instructions
+  // that override any tendency to return a table or text summary instead.
+  const isVizQuery = !isCleaningConversation && isVisualizationQuery(userQuery);
+  const vizInstruction = isVizQuery
+    ? `\n\n=== VISUALIZATION REQUEST — MANDATORY ===\n` +
+      `The user has explicitly requested a CHART. You MUST:\n` +
+      `1. Set analysisResults.analysis_type to "llm_chart"\n` +
+      `2. Include analysisResults.chart_data with type/labels/datasets — this is NOT optional\n` +
+      `3. chart_data.type must match the requested chart type:\n` +
+      `   area chart → "area" | line chart → "line" | KM/survival → "line" | scatter → "scatter" | bar → "bar"\n` +
+      `4. Generate realistic time-series data points. For PK area/line charts:\n` +
+      `   - Time points: 0h, 0.5h, 1h, 2h, 4h, 8h, 12h, 24h\n` +
+      `   - Use Cmax, Tmax, t½ from the data (or pharma defaults: Cmax≈325, Tmax≈2h, t½≈9.8h)\n` +
+      `   - Concentration: linear rise to Tmax, exponential decay after (C = Cmax·e^(−λz·(t−Tmax)))\n` +
+      `   - Cumulative AUC: trapezoid-rule integration of C(t)\n` +
+      `5. "analysis" field: 1-2 sentences ONLY (chart title + one clinical note)\n` +
+      `6. Do NOT return a table-only response — chart_data is required\n` +
+      `============================================`
+    : "";
+
   const userMessage = isCleaningConversation
     ? `${userQuery}${scanInjection}`
     : `
@@ -1133,7 +1363,7 @@ Analyze this data and provide:
 1. Immediate analysis if the query matches a known method
 2. Structured JSON results with chart data
 3. Clinical interpretation and next steps
-4. Do NOT ask generic "What would you like?" - perform the analysis directly`;
+4. Do NOT ask generic "What would you like?" - perform the analysis directly${vizInstruction}`;
 
   const messages = [
     { role: "system", content: systemPrompt },

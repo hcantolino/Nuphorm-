@@ -40,6 +40,8 @@ import { useBiostatisticsStore } from '@/stores/biostatisticsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useTabStore } from '@/stores/tabStore';
 import { useTabContentStore } from '@/stores/tabContentStore';
+// NEW: restore AI-generated results (charts, tables, interpretations) on project switch
+import { useAIPanelStore } from '@/stores/aiPanelStore';
 import {
   saveProjectTabSnapshot,
   loadProjectTabSnapshot,
@@ -128,9 +130,19 @@ export default function ChartHeader() {
       clearAllTabs(); // clean up old tab state in sibling stores
       useTabStore.setState({ tabs: snapshot.tabs, activeTabId: snapshot.activeTabId });
       useTabContentStore.setState({ tabContent: snapshot.tabContent });
+      // NEW: restore AI-generated results so switching back shows previous outputs
+      // REMOVED: was missing — panel results were always lost on project switch
+      if (snapshot.aiPanelData) {
+        useAIPanelStore.setState({
+          resultsByTab:        snapshot.aiPanelData.resultsByTab,
+          activeResultIdByTab: snapshot.aiPanelData.activeResultIdByTab,
+          customizationsByTab: snapshot.aiPanelData.customizationsByTab,
+        });
+      }
     } else {
-      // 3b. No saved tabs → empty slate; user clicks "+" to open their first tab
+      // 3b. No saved tabs → auto-create one default tab so the user can start immediately
       clearAllTabs();
+      useTabStore.getState().addTab();
     }
   };
 
@@ -138,6 +150,7 @@ export default function ChartHeader() {
 
   /**
    * UPDATED: Save current project tabs before creating & switching to new project.
+   * NEW: auto-creates one default tab for the new project (was leaving tab bar empty).
    */
   const handleCreateProject = () => {
     const name = newProjectName.trim() || `Project ${projects.length + 1}`;
@@ -150,8 +163,10 @@ export default function ChartHeader() {
     // createProject internally sets activeProjectId to the new project's id
     createProject(name, 'New biostatistics project');
 
-    // New project has no tabs — start with empty slate
+    // NEW: auto-create first tab for the new project so it's immediately ready
+    // REMOVED: was clearAllTabs() only, leaving the tab bar empty on new project
     clearAllTabs();
+    useTabStore.getState().addTab();
 
     setNewProjectName('');
     setShowNewProjectInput(false);
@@ -160,7 +175,7 @@ export default function ChartHeader() {
 
   /**
    * ADDED: Delete the active project, clean up its snapshot, and restore the
-   * next-in-line project's saved tabs (or start empty).
+   * next-in-line project's saved tabs (or auto-create one if it has none).
    */
   const handleDeleteActiveProject = () => {
     if (!activeProjectId || projects.length <= 1) return;
@@ -180,11 +195,21 @@ export default function ChartHeader() {
         clearAllTabs();
         useTabStore.setState({ tabs: snapshot.tabs, activeTabId: snapshot.activeTabId });
         useTabContentStore.setState({ tabContent: snapshot.tabContent });
+        // NEW: restore AI results for the project we're switching to after delete
+        if (snapshot.aiPanelData) {
+          useAIPanelStore.setState({
+            resultsByTab:        snapshot.aiPanelData.resultsByTab,
+            activeResultIdByTab: snapshot.aiPanelData.activeResultIdByTab,
+            customizationsByTab: snapshot.aiPanelData.customizationsByTab,
+          });
+        }
       } else {
         clearAllTabs();
+        useTabStore.getState().addTab();
       }
     } else {
       clearAllTabs();
+      useTabStore.getState().addTab();
     }
   };
 

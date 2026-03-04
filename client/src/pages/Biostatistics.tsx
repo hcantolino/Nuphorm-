@@ -20,7 +20,8 @@ import { parseFile, getNumericColumns } from '@/services/fileParsingService';
 import { ChartVariable } from '@/stores/biostatStore';
 import { useTabStore, initializeTabStore } from '@/stores/tabStore';
 import { useTabContentStore } from '@/stores/tabContentStore';
-import { BarChart2 } from 'lucide-react';
+// NEW: subscribe aiPanelStore for auto-save so AI results persist across reloads
+import { useAIPanelStore } from '@/stores/aiPanelStore';
 import { TabBarDraggable } from '@/components/biostat/TabBarDraggable';
 import { TabContent } from '@/components/biostat/TabContent';
 import { restoreTabState, saveTabState } from '@/utils/tabPersistence';
@@ -63,14 +64,18 @@ export default function Biostatistics() {
     }
   }, []);
 
-  // Auto-save: subscribe to both tab stores so names/content persist across refreshes.
+  // Auto-save: subscribe to all three stores so tabs, content, AND AI results persist.
+  // NEW: added useAIPanelStore subscription — was missing, so generated results (charts,
+  //      tables, interpretations) were lost on every page reload.
   // Unsubscribes automatically when the Biostatistics page unmounts.
   useEffect(() => {
-    const unsubTabs = useTabStore.subscribe(() => saveTabState());
+    const unsubTabs    = useTabStore.subscribe(() => saveTabState());
     const unsubContent = useTabContentStore.subscribe(() => saveTabState());
+    const unsubPanel   = useAIPanelStore.subscribe(() => saveTabState()); // NEW
     return () => {
       unsubTabs();
       unsubContent();
+      unsubPanel();                                                        // NEW
     };
   }, []);
 
@@ -442,14 +447,15 @@ export default function Biostatistics() {
               </div>
             </TabContent>
           ) : (
-            /* ADDED: Empty state shown when no tabs are open for this project.
-               User clicks "+" in the tab bar above to open their first tab. */
-            <div className="flex-1 flex flex-col items-center justify-center bg-[#f8fafc] select-none">
-              <BarChart2 className="w-12 h-12 text-[#cbd5e1] mb-4" />
-              <p className="text-[15px] font-semibold text-[#64748b]">No analyses open</p>
-              <p className="text-[13px] text-[#94a3b8] mt-1">
-                Click <span className="font-semibold text-[#64748b]">+</span> in the tab bar to start a new analysis
-              </p>
+            /* CHANGED: When no tabs are open for this project (e.g. right after switching
+               to a new or different project), render GraphTablePanel full-width so the user
+               sees the same rich empty state ("No results generated yet …") with the
+               Calculator icon and capability bullet list — rather than a bespoke placeholder.
+               User clicks "+" in the tab bar above to open their first analysis tab. */
+            <div className="flex-1 flex overflow-hidden min-h-0">
+              <ErrorBoundary label="Analysis Chart & Results">
+                <GraphTablePanel />
+              </ErrorBoundary>
             </div>
           )}
         </div>

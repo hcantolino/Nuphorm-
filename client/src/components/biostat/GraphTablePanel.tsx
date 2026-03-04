@@ -8,6 +8,7 @@ import {
   Area,
   ScatterChart,
   Scatter,
+  ComposedChart,
   PieChart,
   Pie,
   Cell,
@@ -17,9 +18,10 @@ import {
   Tooltip,
   Legend,
   LabelList,
+  ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
-import { useAIPanelStore } from "@/stores/aiPanelStore";
+import { useAIPanelStore, DEFAULT_CUSTOMIZATIONS } from "@/stores/aiPanelStore";
 import type { TabCustomizations } from "@/stores/aiPanelStore";
 import { useTabStore } from "@/stores/tabStore";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,32 @@ function buildLegendProps(pos: TabCustomizations["legendPosition"]) {
   if (pos === "right") return { verticalAlign: "middle" as const, align: "right"  as const, layout: "vertical"   as const };
   if (pos === "top")   return { verticalAlign: "top"    as const, align: "center" as const, layout: "horizontal" as const };
   return                      { verticalAlign: "bottom" as const, align: "center" as const, layout: "horizontal" as const };
+}
+
+// ─── Linear regression helper ────────────────────────────────────────────────
+
+interface RegressionResult {
+  slope: number;
+  intercept: number;
+  r2: number;
+}
+
+function calcLinearRegression(points: { x: number; y: number }[]): RegressionResult | null {
+  const n = points.length;
+  if (n < 2) return null;
+  const sumX  = points.reduce((s, p) => s + p.x, 0);
+  const sumY  = points.reduce((s, p) => s + p.y, 0);
+  const sumXY = points.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = points.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+  const slope     = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  const yMean = sumY / n;
+  const ssTot = points.reduce((s, p) => s + (p.y - yMean) ** 2, 0);
+  const ssRes = points.reduce((s, p) => s + (p.y - (slope * p.x + intercept)) ** 2, 0);
+  const r2 = ssTot === 0 ? 1 : Math.max(0, 1 - ssRes / ssTot);
+  return { slope, intercept, r2 };
 }
 
 // ─── Markdown rendering helpers ──────────────────────────────────────────────
@@ -228,6 +256,21 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
     ? { value: customizations.yLabel, angle: -90, position: "insideLeft" as const, fontSize: 11, fill: "#64748b" }
     : undefined;
 
+  // Y-axis domain: guard against 0/negative with log scale
+  const yMin = customizations.yAxisMin;
+  const yMax = customizations.yAxisMax;
+  const yDomainMin: number | string =
+    customizations.yAxisLog && (yMin === null || yMin <= 0) ? "auto" : (yMin ?? "auto");
+  const yDomainMax: number | string = yMax ?? "auto";
+  const yDomain: [number | string, number | string] = [yDomainMin, yDomainMax];
+  const yScale = customizations.yAxisLog ? ("log" as const) : ("auto" as const);
+
+  // X-axis domain for numeric axes
+  const xDomain: [number | string, number | string] = [
+    customizations.xAxisMin ?? "auto",
+    customizations.xAxisMax ?? "auto",
+  ];
+
   // ── Pie ─────────────────────────────────────────────────────────────────
   if (type === "pie") {
     const firstKey = datasetKeys[0] ?? "value";
@@ -264,15 +307,141 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   // ── Scatter ──────────────────────────────────────────────────────────────
   if (type === "scatter" && chartData.points) {
     const scatterData = chartData.points.map((p: any) => ({ x: p.x, y: p.y }));
+    const r = customizations.markerSize;
+    const dotShape = (props: any) => (
+      <circle cx={props.cx} cy={props.cy} r={r} fill={colors[0]} />
+    );
+
+    // Linear trendline
+    const regression =
+      customizations.trendlineType === "linear"
+        ? calcLinearRegression(scatterData)
+        : null;
+
+    let trendlinePoints: { tx: number; ty: number }[] = [];
+    let trendLabel = "";
+    if (regression) {
+      const xs = scatterData.map((p: any) => p.x as number);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      trendlinePoints = [
+        { tx: minX, ty: regression.slope * minX + regression.intercept },
+        { tx: maxX, ty: regression.slope * maxX + regression.intercept },
+      ];
+      const eqParts: string[] = [];
+      if (customizations.showTrendlineEquation) {
+        eqParts.push(
+          `y = ${regression.slope.toFixed(3)}x ${regression.intercept >= 0 ? "+" : "−"} ${Math.abs(regression.intercept).toFixed(3)}`
+        );
+      }
+      if (customizations.showTrendlineR2) {
+        eqParts.push(`R² = ${regression.r2.toFixed(3)}`);
+      }
+      trendLabel = eqParts.length > 0 ? eqParts.join("  ") : "Trend";
+    }
+
+    // Use ComposedChart when trendline is active
+    if (regression) {
+      return (
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart margin={sharedMargin}>
+            <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+            <XAxis
+              dataKey="tx"
+              type="number"
+              tick={{ fontSize: 11 }}
+              label={xAxisLabel}
+              domain={xDomain}
+              name="x"
+              allowDataOverflow
+            />
+            <YAxis
+              type="number"
+              tick={{ fontSize: 11 }}
+              label={yAxisLabel}
+              domain={yDomain}
+              scale={yScale}
+              reversed={customizations.yAxisReverse}
+              allowDataOverflow
+            />
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+            {legendProps && <Legend {...legendProps} />}
+            <Scatter
+              name="Data"
+              data={scatterData.map((p: any) => ({ tx: p.x, ty: p.y }))}
+              dataKey="ty"
+              fill={colors[0]}
+              isAnimationActive={false}
+              shape={dotShape}
+            />
+            <Line
+              name={trendLabel || "Trend"}
+              data={trendlinePoints}
+              dataKey="ty"
+              dot={false}
+              stroke={colors[1] ?? "#ef4444"}
+              strokeWidth={1.5}
+              strokeDasharray="5 3"
+              isAnimationActive={false}
+              type="linear"
+              legendType="line"
+            />
+            {customizations.showDropLines &&
+              scatterData.map((p: any, i: number) => (
+                <ReferenceLine
+                  key={i}
+                  x={p.x}
+                  stroke={colors[0]}
+                  strokeOpacity={0.25}
+                  strokeDasharray="2 2"
+                />
+              ))}
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Regular scatter (no trendline)
     return (
       <ResponsiveContainer width="100%" height={280}>
         <ScatterChart margin={sharedMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-          <XAxis dataKey="x" type="number" tick={{ fontSize: 11 }} label={xAxisLabel} />
-          <YAxis dataKey="y" type="number" tick={{ fontSize: 11 }} label={yAxisLabel} />
+          <XAxis
+            dataKey="x"
+            type="number"
+            tick={{ fontSize: 11 }}
+            label={xAxisLabel}
+            domain={xDomain}
+            allowDataOverflow
+          />
+          <YAxis
+            dataKey="y"
+            type="number"
+            tick={{ fontSize: 11 }}
+            label={yAxisLabel}
+            domain={yDomain}
+            scale={yScale}
+            reversed={customizations.yAxisReverse}
+            allowDataOverflow
+          />
           <Tooltip cursor={{ strokeDasharray: "3 3" }} />
           {legendProps && <Legend {...legendProps} />}
-          <Scatter data={scatterData} fill={colors[0]} isAnimationActive={false} />
+          <Scatter
+            data={scatterData}
+            fill={colors[0]}
+            isAnimationActive={false}
+            shape={dotShape}
+          />
+          {customizations.showDropLines &&
+            scatterData.map((p: any, i: number) => (
+              <ReferenceLine
+                key={i}
+                x={p.x}
+                stroke={colors[0]}
+                strokeOpacity={0.25}
+                strokeDasharray="2 2"
+              />
+            ))}
         </ScatterChart>
       </ResponsiveContainer>
     );
@@ -285,7 +454,14 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
         <AreaChart data={data} margin={sharedMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis dataKey="name" tick={{ fontSize: 11 }} interval="preserveStartEnd" label={xAxisLabel} />
-          <YAxis tick={{ fontSize: 11 }} label={yAxisLabel} />
+          <YAxis
+            tick={{ fontSize: 11 }}
+            label={yAxisLabel}
+            domain={yDomain}
+            scale={yScale}
+            reversed={customizations.yAxisReverse}
+            allowDataOverflow
+          />
           <Tooltip />
           {legendProps && <Legend {...legendProps} />}
           {datasetKeys.map((key, i) => (
@@ -294,7 +470,9 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
               type="monotone"
               dataKey={key}
               stroke={colors[i % colors.length]}
-              fill={`${colors[i % colors.length]}33`}
+              strokeWidth={customizations.strokeWidth}
+              fill={colors[i % colors.length]}
+              fillOpacity={customizations.fillOpacity}
               dot={false}
               isAnimationActive={false}
             >
@@ -315,7 +493,14 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
         <LineChart data={data} margin={sharedMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis dataKey="name" tick={{ fontSize: 11 }} interval="preserveStartEnd" label={xAxisLabel} />
-          <YAxis tick={{ fontSize: 11 }} label={yAxisLabel} />
+          <YAxis
+            tick={{ fontSize: 11 }}
+            label={yAxisLabel}
+            domain={yDomain}
+            scale={yScale}
+            reversed={customizations.yAxisReverse}
+            allowDataOverflow
+          />
           <Tooltip />
           {legendProps && <Legend {...legendProps} />}
           {datasetKeys.map((key, i) => (
@@ -324,7 +509,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
               type="monotone"
               dataKey={key}
               stroke={colors[i % colors.length]}
-              strokeWidth={2}
+              strokeWidth={customizations.strokeWidth}
               dot={false}
               isAnimationActive={false}
             >
@@ -339,12 +524,26 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   }
 
   // ── Bar (default / scatter fallback) ─────────────────────────────────────
+  const barRadius: [number, number, number, number] = [
+    customizations.barBorderRadius,
+    customizations.barBorderRadius,
+    0,
+    0,
+  ];
+
   return (
     <ResponsiveContainer width="100%" height={280}>
-      <BarChart data={data} margin={sharedMargin}>
+      <BarChart data={data} margin={sharedMargin} barGap={customizations.barGap}>
         <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
         <XAxis dataKey="name" tick={{ fontSize: 11 }} label={xAxisLabel} />
-        <YAxis tick={{ fontSize: 11 }} label={yAxisLabel} />
+        <YAxis
+          tick={{ fontSize: 11 }}
+          label={yAxisLabel}
+          domain={yDomain}
+          scale={yScale}
+          reversed={customizations.yAxisReverse}
+          allowDataOverflow
+        />
         <Tooltip />
         {legendProps && <Legend {...legendProps} />}
         {datasetKeys.map((key, i) => (
@@ -352,7 +551,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
             key={key}
             dataKey={key}
             fill={colors[i % colors.length]}
-            radius={[3, 3, 0, 0]}
+            radius={barRadius}
             isAnimationActive={false}
           >
             {customizations.showDataLabels && (
@@ -461,19 +660,7 @@ export const GraphTablePanel: React.FC = () => {
 
   const customizations = activeTabId
     ? getTabCustomizations(activeTabId)
-    : {
-        chartType:       "bar"    as const,
-        palette:         "finbox" as const,
-        customColors:    [],
-        xLabel:          "",
-        yLabel:          "",
-        legendPosition:  "bottom" as const,
-        showGrid:        true,
-        showDataLabels:  false,
-        tableSort:       null,
-        tableFilter:     "",
-        zebraStriping:   false,
-      };
+    : { ...DEFAULT_CUSTOMIZATIONS };
 
   const activeColors = useMemo(() => resolveColors(customizations), [customizations]);
 
