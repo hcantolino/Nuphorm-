@@ -61,8 +61,6 @@ export default function MeasurementTooltip({
 
       {/* Tooltip Popover */}
       {isVisible && (
-        {/* BEFORE: bg-white border-gray-200 (light card) */}
-        {/* AFTER:  bg-slate-800 border-slate-700 (dark tooltip — matches spec) */}
         <div
           ref={tooltipRef}
           className="fixed z-50 bg-slate-800 rounded-lg shadow-xl border border-slate-700 max-w-sm p-4 animate-in fade-in duration-200 pointer-events-auto"

@@ -351,22 +351,72 @@ function parseMarkdownTableToResults(
 function isVisualizationQuery(userQuery: string): boolean {
   const q = userQuery.toLowerCase();
   return (
+    // ── Spaced chart-type keywords ────────────────────────────────────────────
+    // RESTORED: explicit chart-type keywords — these fire regardless of action verb
     q.includes("area chart")     || q.includes("area graph")    || q.includes("area plot") ||
     q.includes("line chart")     || q.includes("line graph")    || (q.includes("line") && q.includes("plot")) ||
+    // RESTORED: bar/scatter/pie — previously missing, caused "bar chart of mean AUC" to return false
+    q.includes("bar chart")      || q.includes("bar graph")     || q.includes("bar plot") ||
+    q.includes("scatter chart")  || q.includes("scatter plot")  || q.includes("scatter graph") || q.includes("scatterplot") ||
+    q.includes("pie chart")      || q.includes("pie graph")     ||
+    // Kaplan-Meier / survival
     q.includes("kaplan-meier")   || q.includes("kaplan meier") || q.includes("km curve") ||
     q.includes("km plot")        || q.includes("survival curve")|| q.includes("survival plot") ||
+    // Box / violin / volcano / forest / heatmap
     q.includes("box plot")       || q.includes("boxplot")       || q.includes("box-plot") ||
     q.includes("box and whisker")|| q.includes("violin plot")   || q.includes("violin chart") ||
     q.includes("volcano plot")   || q.includes("volcano chart") ||
     q.includes("forest plot")    || q.includes("forest chart")  ||
     q.includes("heatmap")        || q.includes("heat map")      ||
+    // AUC curve
     (q.includes("area") && q.includes("auc") &&
       (q.includes("chart") || q.includes("graph") || q.includes("plot") || q.includes("curve"))) ||
-    ((q.includes("generate") || q.includes("create") || q.includes("show") || q.includes("plot")) &&
+
+    // ── NEW: CamelCase Recharts component names (no space between words) ──────
+    // RESTORED: "areachart" ≠ "area chart" after toLowerCase() — was never detected.
+    // Catches: "use Recharts AreaChart", "render BarChart", "display a LineChart"
+    q.includes("recharts")    ||
+    q.includes("areachart")   || q.includes("linechart")  || q.includes("barchart")  ||
+    q.includes("scatterchart")|| q.includes("piechart")   || q.includes("boxchart")  ||
+
+    // ── NEW: "render/display/show as (a) chart" and intent-based phrases ──────
+    // RESTORED: action-verb catch-all below was blocking "no table, render as chart"
+    // because !q.includes("table") fired when "table" appeared in the user's negation.
+    // These explicit phrases are table-exclusion-free.
+    q.includes("render as chart")       || q.includes("render as a chart")    ||
+    q.includes("display as chart")      || q.includes("display as a chart")   ||
+    q.includes("show as chart")         || q.includes("show as a chart")      ||
+    q.includes("make a chart")          || q.includes("make a graph")         ||
+    q.includes("turn into chart")       || q.includes("turn into a chart")    ||
+    q.includes("convert to chart")      || q.includes("convert to a chart")   ||
+    q.includes("visualize as")          || q.includes("visualize this")       ||
+    q.includes("chart this")            || q.includes("plot this")            ||
+    q.includes("no table")              ||   // "no table, just a chart"
+    q.includes("instead of table")      || q.includes("instead of a table")   ||
+
+    // ── Generic action-verb catch-all: "generate/create/show/plot/render + chart/graph/curve"
+    // NOTE: changed !q.includes("table") to a more targeted exclusion so "show as chart not table"
+    // is no longer blocked — we only exclude pure table/summary requests with no chart intent.
+    ((q.includes("generate") || q.includes("create") || q.includes("show") ||
+      q.includes("plot") || q.includes("render") || q.includes("draw") || q.includes("visualize")) &&
       (q.includes("chart") || q.includes("graph") || q.includes("curve")) &&
-      // exclude plain "show table" / "show summary" requests
-      !q.includes("table") && !q.includes("summary") && !q.includes("parameter"))
+      // CHANGED: exclude only pure "show table" / "show summary" (exact phrases), not any query
+      // containing "table" — prevents "show as chart (not table)" from being blocked.
+      !(q.includes("show table") || q.includes("display table") ||
+        q.includes("show summary") || q.includes("display summary") || q.includes("show parameter")))
   );
+}
+
+/**
+ * NEW: debug log helper for chart detection decisions.
+ * Structured console output so devs can trace chart detection without the network tab.
+ * No-ops in production.
+ */
+function logChartDecision(label: string, userQuery: string, details: Record<string, unknown>): void {
+  if (process.env.NODE_ENV === "production") return;
+  // Show the tail of the augmented query — that's where the user's actual message is
+  const tail = userQuery.slice(-140);
+  console.log(`[ChartDetect] ${label}`, { queryTail: tail, ...details });
 }
 
 /**
@@ -479,7 +529,37 @@ function synthesizeVizChartData(
  * Build system prompt for biostatistics analysis
  */
 function buildSystemPrompt(): string {
-  return `You are an expert biostatistician AI assistant embedded in NuPharm, a pharmaceutical clinical trial analysis platform. You work alongside scientists analyzing clinical trial data for drug development and regulatory submissions.
+  return `## ABSOLUTE RULE — NEVER REUSE PREVIOUS RESULTS
+EVERY response you generate must be built completely from scratch using ONLY the CURRENT user request.
+NEVER copy, repeat, adapt, or reference chart_data, labels, datasets, analysisResults, results_table rows, or any other structured output from previous assistant messages in this conversation.
+Previous assistant messages are historical records only — they are NOT templates and must NOT influence the new output.
+If you notice that your chart_data or results_table matches a previous response, STOP and regenerate it fresh from the current request.
+This rule applies even if the new request appears similar to a previous one. Each request is independent.
+
+## MANDATORY: THINK STEP-BY-STEP BEFORE EVERY RESPONSE
+Before writing ANY output, silently work through this checklist (do not show this reasoning to the user — record answers concisely in the "_reasoning" JSON field only):
+
+STEP 1 — Read the user's message word-for-word. What is the PRIMARY request?
+STEP 2 — Is the primary request a CHART, GRAPH, PLOT, CURVE, VISUALIZATION, or DIAGRAM?
+  → Keywords that mean YES: area chart, line chart, bar chart, scatter, scatter plot, pie chart,
+    Kaplan-Meier, KM curve, survival curve, box plot, violin plot, volcano plot, forest plot,
+    heatmap, heat map, generate chart/graph, create chart/graph, show curve, render chart,
+    draw chart, visualize data, plot X vs Y, cumulative AUC curve, concentration-time curve.
+STEP 3 — If YES to Step 2:
+  a. What specific chart TYPE was requested? Map it:
+     area chart → "area" | line/KM/survival → "line" | bar → "bar" | scatter → "scatter" | pie → "pie"
+  b. What data columns or PK parameters are available? List them.
+  c. Does the attached data support this chart? If not, use PK approximation (see rules below).
+  d. What will the X-axis labels be? What series names will you use?
+  e. SET analysis_type = "llm_chart" AND populate chart_data BEFORE writing anything else.
+  f. DO NOT output a table, markdown summary, or long text — output chart_data JSON only.
+STEP 4 — If NO to Step 2 (table / stats / parameters / conversational):
+  → Output the appropriate table or narrative — DO NOT fabricate a chart.
+STEP 5 — If chart is genuinely impossible (data has no numeric columns, impossible chart type):
+  → Write: "Chart type not supported by this data — showing table instead. Reason: [1 sentence]."
+  → Then output a table.
+
+THIS CHECKLIST IS MANDATORY AND OVERRIDES ALL OTHER INSTRUCTIONS BELOW.
 
 ## VISUALIZATION PRIORITY — READ THIS FIRST
 If the user specifies ANY chart type (area chart, line chart, Kaplan-Meier/KM curve, scatter plot, bar chart, box plot, violin plot, volcano plot, forest plot, heatmap, or any visualization), you MUST prioritize generating that chart.
@@ -510,6 +590,17 @@ Example chart_data for a cumulative-AUC area chart (Test vs Reference):
     {"label": "Reference", "data": [0, 300, 800, 1150,  990, 760, 390], "borderColor": "#3b82f6", "backgroundColor": "rgba(59,130,246,0.15)", "fill": true}
   ]
 }
+
+## STEP-BY-STEP REASONING — VISUALIZATION REQUESTS
+Before generating any response to a visualization request, reason through these 5 questions and record your concise answers (one sentence each) in the "_reasoning" JSON field:
+
+1. **Is this a visualization request?** Identify the chart-type keyword that triggered it (area chart, line chart, KM curve, scatter, bar chart, box plot, volcano plot, forest plot, heatmap).
+2. **What chart type to generate?** Map it to chart_data.type: area chart→"area", line/KM/survival→"line", bar→"bar", scatter→"scatter", pie→"pie".
+3. **What data is available?** List relevant columns or PK parameters (Cmax, Tmax, t½, AUC, group labels, time columns).
+4. **Does the available data support this chart type?** If not, state your approximation strategy (PK exponential-decay, trapezoid AUC, KM step-function, or bar fallback).
+5. **What X-axis time points and series groupings will you use?** Specify the exact labels array and series names before building chart_data.
+
+Always populate "_reasoning" for visualization requests. For non-visualization requests, omit "_reasoning" or set it to null.
 
 ## Your primary role
 Provide rich clinical interpretation of biostatistical results. Think like a senior biostatistician reviewing results for an IND, NDA, or BLA submission.
@@ -548,7 +639,8 @@ You MUST respond with ONLY valid JSON. No text before or after. No markdown code
     "chart_data": {"type": "area", "labels": ["0h","2h","4h","8h","12h","24h"], "datasets": [{"label": "Test", "data": [0,850,1200,1050,820,420], "borderColor": "#14b8a6", "backgroundColor": "rgba(20,184,166,0.2)", "fill": true}]},
     "results_table": [{"metric": "Note", "value": "_Synthetic visualization for demonstration._"}]
   },
-  "graphTitle": "Publication-style title (max 8 words) e.g. 'Cumulative AUC Over Time – Test vs Reference'"
+  "graphTitle": "Publication-style title (max 8 words) e.g. 'Cumulative AUC Over Time – Test vs Reference'",
+  "_reasoning": "1. Yes — area chart requested (keyword: 'area chart'). 2. type='area'. 3. Cmax≈325 ng/mL, Tmax≈2h, t½≈9.8h available from PK table. 4. Will use PK exponential-decay approximation (no raw time-series in data). 5. Time points [0h,2h,4h,8h,12h,24h]; series: Test, Reference."
 }
 
 ## CRITICAL — analysisResults field rules:
@@ -568,7 +660,65 @@ You MUST respond with ONLY valid JSON. No text before or after. No markdown code
    - Use "metric" for the row/parameter name and "value" for the corresponding result.
    - Extract EVERY data row. Keep "analysis" as brief narrative prose.
 4. Set "analysisResults" to null ONLY for purely conversational answers with NO data or charts (e.g., "What is a t-test?").
-5. Always include "graphTitle" — a clean, professional, publication-style title (max 8 words).`;
+5. Always include "graphTitle" — a publication-quality scientific title modelled on journal conventions
+   (NEJM, JAMA, CPT, Biometrics, J Clin Pharmacol, Stat Med). Rules:
+   - 10–18 words preferred; never truncate to 8 words.
+   - Structure: [What was measured] + [Key comparison or endpoint] + [Study context if available]
+   - Use standard biostatistics / pharmacokinetics terminology:
+       Charts: "Mean (± SD) plasma concentration–time profiles following single oral dosing — Test vs. Reference"
+               "Kaplan–Meier estimates of overall survival by treatment arm"
+               "Cumulative AUC(0–∞) over time: Test vs. Reference formulations"
+               "Volcano plot of differential gene expression: treated vs. control"
+               "Forest plot of hazard ratios across pre-specified subgroups"
+               "Box-and-whisker plot of [biomarker] concentrations by [group variable]"
+       Tables: "Summary of pharmacokinetic parameters (mean ± SD) — [drug / formulation]"
+               "Descriptive statistics for [variable] across [groups] (N = [n])"
+               "Two-sample independent t-test results: [outcome] by [group]"
+               "One-way ANOVA summary: effect of [factor] on [outcome]"
+               "Pearson correlation matrix — [variable set]"
+   - Use en-dash (–) between contrasting groups, not a hyphen.
+   - Sentence case only: capitalise first word + proper nouns + abbreviations.
+   - Never use generic fillers: "Chart", "Graph", "Table", "Analysis results", "Output".
+   - Include drug/compound names, formulation labels, or column names when known.
+   - "graphTitle" must always be a non-empty string — never null or omitted.
+
+## RULE — AUTO DATA TABLE
+Whenever you generate any chart, graph, or visualization, you MUST immediately
+follow it with a structured data table displaying all numerical values used to
+construct that chart. This is mandatory and applies to every chart type without
+exception.
+
+The table must:
+1. Appear as rows in "results_table" directly alongside the chart_data, labeled "Underlying Data" or "Summary Data Table"
+2. Include ALL data points plotted (every x/y value, every group, every timepoint)
+3. Include summary statistics where applicable: Mean, SD, SE, N, 95% CI
+4. Use the same group labels/colors referenced in the chart legend
+5. Be formatted with clear column headers and aligned decimal places
+6. For PK charts: include columns for Timepoint, N, Mean, SD, SE, CV%
+7. For efficacy charts: include columns for Visit, Treatment Arm, N, Mean, SD, Change from Baseline, p-value
+8. For survival charts: include columns for Timepoint, At Risk, Events, Censored, KM Estimate, 95% CI
+9. For bar/box charts: include columns for Group, N, Mean, Median, SD, IQR, Min, Max
+
+Example results_table for a PK concentration-time chart (include one row per timepoint per group):
+[
+  {"metric": "Time 0.5h — Drug A", "value": "Mean=129.7 ng/mL, SD=12.4, CV%=9.6%, N=5"},
+  {"metric": "Time 0.5h — Drug B", "value": "Mean=238.0 ng/mL, SD=7.1, CV%=3.0%, N=5"},
+  {"metric": "Time 1.0h — Drug A", "value": "Mean=202.8 ng/mL, SD=16.4, CV%=8.1%, N=5"},
+  {"metric": "Time 1.0h — Drug B", "value": "Mean=377.8 ng/mL, SD=10.4, CV%=2.7%, N=5"}
+]
+
+## RULE — PK CHART STANDARDS
+All pharmacokinetic concentration-time plots must:
+- Use a logarithmic (semi-log) y-axis by default unless the user explicitly requests linear scale.
+  To signal this, include {"metric": "Y-Axis Scale", "value": "logarithmic"} in results_table
+  and add "yAxisScale": "log" to chart_data.
+- Render ±SD as a shaded translucent ribbon (not separate lines). Include upper/lower bound
+  arrays in each dataset: "upperBound": [...], "lowerBound": [...]
+- Set Tmax markers at the correct observed peak timepoint
+- Clearly separate dose groups visually (distinct colors + markers)
+- Label axes: x = "Time (hours post-dose)", y = "Mean Plasma Concentration (ng/mL)"
+- Include a legend identifying each treatment arm and dose
+- Drug B / higher-dose groups MUST have proportionally higher concentrations than Drug A / lower-dose groups at every timepoint`;
 }
 
 /**
@@ -791,21 +941,44 @@ function generateSyntheticPKDataset(params: DatasetParams): {
  * (no uploaded file required — purely generative)
  */
 function isDatasetGenerationQuery(userQuery: string): boolean {
+  // Visualization requests are NEVER dataset-generation requests.
+  // Guard first: "Create a bar chart", "Make a line graph", etc. contain
+  // generative verbs ("create", "make") and the frontend augmented-query prefix
+  // always injects "[Current Dataset: ...]" so q.includes("dataset") is true
+  // whenever any file is attached — which would cause every viz request to
+  // short-circuit into synthetic PK data instead of calling the LLM.
+  if (isVisualizationQuery(userQuery)) return false;
+
   const q = userQuery.toLowerCase();
+
+  // Only the clearly generative verbs that don't overlap with chart-creation
+  // language.  "create" and "make" are intentionally excluded here — they are
+  // too common in viz requests ("create a chart", "make a plot").
   const generativeVerbs =
-    q.includes("generate") || q.includes("create") ||
-    q.includes("simulate") || q.includes("make") ||
-    q.includes("produce") || q.includes("build");
+    q.includes("generate") ||
+    q.includes("simulate") ||
+    q.includes("produce");
+
+  // Require explicitly synthetic/generative dataset language.
+  // Plain q.includes("dataset") is removed: the frontend's augmented-query
+  // prefix "[Current Dataset: filename.csv, …]" puts "dataset" into EVERY
+  // query that has an attached file, creating unavoidable false positives.
   const datasetTarget =
-    q.includes("dataset") || q.includes("data set") ||
-    q.includes("fake data") || q.includes("synthetic data") ||
-    q.includes("mock data") || q.includes("dummy data") ||
-    q.includes("sample data") || q.includes("example data") ||
-    (q.includes("data") && (q.includes("study") || q.includes("trial") || q.includes("crossover")));
+    q.includes("synthetic dataset") || q.includes("fake dataset") ||
+    q.includes("mock dataset")      || q.includes("dummy dataset") ||
+    q.includes("sample dataset")   || q.includes("example dataset") ||
+    q.includes("fake data")        || q.includes("synthetic data") ||
+    q.includes("mock data")        || q.includes("dummy data") ||
+    q.includes("sample data")      || q.includes("example data") ||
+    q.includes("data set")         ||
+    // "generate N subjects" / "simulate a crossover study"
+    (q.includes("data") && (q.includes("crossover") || q.includes("simulate study")));
+
   const pkDataset =
-    q.includes("pk parameter") || q.includes("pk table") ||
-    q.includes("pharmacokinetic") && q.includes("table") ||
-    q.includes("bioequivalence") && (q.includes("data") || q.includes("table"));
+    q.includes("pk parameter")     || q.includes("pk table") ||
+    (q.includes("pharmacokinetic") && q.includes("table")) ||
+    (q.includes("bioequivalence")  && (q.includes("generate") || q.includes("simulate")));
+
   return (generativeVerbs && datasetTarget) || pkDataset;
 }
 
@@ -905,11 +1078,11 @@ function scanDataIssues(
     )
       continue;
 
-    const vals = [
-      ...new Set(
+    const vals = Array.from(
+      new Set(
         fullData.map((row) => String(row[col] ?? "")).filter((v) => v !== "")
-      ),
-    ];
+      )
+    );
     if (vals.length > 30) continue; // high-cardinality columns skipped
 
     // Group by lowercase — find variant groups with > 1 surface form
@@ -1221,6 +1394,7 @@ export async function analyzeBiostatistics(
   llmUnavailable?: boolean;
   llmError?: string;
   llmUsed?: boolean;
+  graphTitle?: string;
 }> {
   // ── Dataset generation — short-circuit LLM, return locally generated data ──
   if (isDatasetGenerationQuery(userQuery)) {
@@ -1329,9 +1503,23 @@ export async function analyzeBiostatistics(
   // When the user explicitly requests a chart type, append mandatory instructions
   // that override any tendency to return a table or text summary instead.
   const isVizQuery = !isCleaningConversation && isVisualizationQuery(userQuery);
+  // NEW: log detection result so devs can verify the right branch fires
+  logChartDecision("isVizQuery decision", userQuery, {
+    isVizQuery,
+    isCleaningConversation,
+    detectedType: detectAnalysisType(userQuery, dataColumns),
+  });
   const vizInstruction = isVizQuery
     ? `\n\n=== VISUALIZATION REQUEST — MANDATORY ===\n` +
-      `The user has explicitly requested a CHART. You MUST:\n` +
+      // NEW: force step-by-step reasoning before generating chart JSON
+      `STEP 0 — REASON FIRST (populate "_reasoning" field with one sentence per question):\n` +
+      `  Q1. Is this a visualization request? → Yes — identify which chart keyword triggered it\n` +
+      `  Q2. What chart type to generate? → map to chart_data.type (area/line/bar/scatter/pie)\n` +
+      `  Q3. What data columns / PK parameters are available for the axes and series?\n` +
+      `  Q4. Does the available data support this chart? If not, what approximation will you use?\n` +
+      `  Q5. What exact X-axis labels and series names will you use?\n` +
+      `Answer all 5 before writing chart_data — then proceed:\n\n` +
+      // REMOVED: table-first bias — chart_data is now always required for viz queries
       `1. Set analysisResults.analysis_type to "llm_chart"\n` +
       `2. Include analysisResults.chart_data with type/labels/datasets — this is NOT optional\n` +
       `3. chart_data.type must match the requested chart type:\n` +
@@ -1365,12 +1553,30 @@ Analyze this data and provide:
 3. Clinical interpretation and next steps
 4. Do NOT ask generic "What would you like?" - perform the analysis directly${vizInstruction}`;
 
+  // For visualization queries: send NO prior conversation history.
+  // Each chart request must be answered completely from scratch — sending previous
+  // assistant messages risks the LLM copying chart_data / analysisResults from an
+  // earlier response (the "reuse" bug).  For non-viz queries we send history but
+  // sanitize any assistant message that leaked raw JSON so the model can't treat
+  // a previous chart as a template.
+  const historyForLLM: Array<{ role: "user" | "assistant"; content: string }> = isVizQuery
+    ? []
+    : conversationHistory.map((msg) => {
+        const isJsonBlob =
+          msg.role === "assistant" &&
+          (msg.content.trimStart().startsWith("{") ||
+            msg.content.includes('"chart_data"') ||
+            msg.content.includes('"analysis_type"') ||
+            msg.content.includes('"analysisResults"'));
+        return {
+          role: msg.role as "user" | "assistant",
+          content: isJsonBlob ? "[Previous analysis — see Results panel]" : msg.content,
+        };
+      });
+
   const messages = [
     { role: "system", content: systemPrompt },
-    ...conversationHistory.map((msg) => ({
-      role: msg.role as "user" | "assistant",
-      content: msg.content,
-    })),
+    ...historyForLLM,
     { role: "user", content: userMessage },
   ];
 
@@ -1925,7 +2131,42 @@ Analyze this data and provide:
         parsed = JSON.parse(rawJson);
       } catch (parseErr) {
         console.error("[analyzeBiostatistics] JSON.parse failed. Raw content:", content.slice(0, 300));
-        // Claude responded but not in JSON — show the raw text + local stats
+
+        // NEW: when JSON parse fails on a viz query, synthesize chart_data rather than
+        // returning raw text. Previously the isVizQuery safety-net (Cases A/B/C below)
+        // was never reached because this block returned early — so chart requests that
+        // triggered a malformed LLM response always showed a plain text/table instead of
+        // a chart. Now we fall through with a synthetic result.
+        // DEBUG: log chart detection outcome even on parse failure
+        logChartDecision("JSON parse failed", userQuery, { isVizQuery, rawContentHead: content.slice(0, 120) });
+
+        if (isVizQuery) {
+          // RESTORED: synthesize chart_data on JSON parse failure so the Results panel
+          // renders a chart instead of raw LLM text. The analysis prose is the cleaned
+          // raw content (code fences stripped above); chart is synthesized from PK params.
+          const vizType = detectAnalysisType(userQuery, dataColumns);
+          const synthChart = synthesizeVizChartData(vizType, analysisResults, dataColumns, fullData);
+          console.log(`[analyzeBiostatistics] ✓ JSON parse failed but isVizQuery — synthesized chart_data (${vizType})`);
+          return {
+            analysis: (analysisResults
+              ? `${buildAnalysisText(analysisResults, userQuery)}\n\n---\n`
+              : "") +
+              content.replace(/```[\s\S]*?```/g, "").replace(/^```.*$/gm, "").trim(),
+            suggestions: ["Attach a data file for exact values", "Try rephrasing your chart request"],
+            measurements: [],
+            chartSuggestions: [],
+            analysisResults: {
+              analysis_type: "llm_chart",
+              chart_data: synthChart,
+              results_table: [{ metric: "Note", value: "_Synthetic chart — LLM returned non-JSON. Attach data for exact values._" }],
+            },
+            chartConfig,
+            tableData,
+            llmUsed: false,
+          };
+        }
+
+        // Non-viz JSON parse failure — return raw text + local stats as before
         return {
           analysis: analysisResults
             ? `${buildAnalysisText(analysisResults, userQuery)}\n\n---\n${content}`
@@ -1940,10 +2181,26 @@ Analyze this data and provide:
         };
       }
 
-      // Merge local computations into Claude's response (local stats always win)
+      // Merge local computations into Claude's response.
+      // RESTORED: for visualization requests, preserve LLM chart_data rather than
+      //           blindly overwriting parsed.analysisResults — the old "always win"
+      //           rule was destroying chart_data the LLM correctly generated,
+      //           leaving the panel with a table (or nothing) instead of a chart.
       if (analysisResults) {
-        parsed.analysisResults = analysisResults;
-        console.log("[analyzeBiostatistics] ✓ Merged local stats into Claude response");
+        if (isVizQuery && parsed.analysisResults?.chart_data) {
+          // Viz request: LLM produced chart_data — keep it, but fold in the local
+          // stats table so the panel shows both the chart and accurate numbers.
+          parsed.analysisResults = {
+            ...analysisResults,          // local stats table + analysis_type
+            analysis_type: "llm_chart",  // override to chart so panel renders chart-first
+            chart_data: parsed.analysisResults.chart_data, // RESTORED: LLM chart data
+          };
+          console.log("[analyzeBiostatistics] ✓ Merged local stats into LLM chart result (chart_data preserved)");
+        } else {
+          // Non-viz or LLM produced no chart_data: local stats take precedence as before
+          parsed.analysisResults = analysisResults;
+          console.log("[analyzeBiostatistics] ✓ Merged local stats into Claude response");
+        }
       }
 
       // Fallback: if the LLM returned null for analysisResults but embedded a markdown
@@ -1962,6 +2219,70 @@ Analyze this data and provide:
             .replace(/\n{3,}/g, "\n\n")
             .trim();
           console.log(`[analyzeBiostatistics] ✓ Extracted markdown table → results_table (${extracted.length} rows)`);
+        }
+      }
+
+      // ── Text-analysis fallback ─────────────────────────────────────────────
+      // If the LLM returned null analysisResults but provided substantive prose
+      // AND data columns are present (data-analysis context), synthesize a
+      // minimal "text_analysis" result.  This ensures the frontend's
+      // routeToPanel check fires so the Results panel always updates for
+      // free-form data queries — even when the model omits analysisResults
+      // against instructions or produces only narrative output.
+      if (
+        !parsed.analysisResults &&
+        typeof parsed.analysis === "string" &&
+        parsed.analysis.trim().length > 100 &&
+        (dataColumns.length > 0 || (fullData && fullData.length > 0))
+      ) {
+        parsed.analysisResults = {
+          analysis_type: "text_analysis",
+          results_table: [],
+        };
+        console.log("[analyzeBiostatistics] ✓ Synthesized text_analysis result (LLM returned null analysisResults with data context)");
+      }
+
+      // ── Visualization fallback ─────────────────────────────────────────────
+      // If this was a chart request, ensure chart_data is present and
+      // analysis_type is exactly "llm_chart" — the client-side isChartResult
+      // check requires both.  Three sub-cases:
+      //  A) LLM included chart_data but wrote the wrong analysis_type (e.g.
+      //     "dataset_generation") → RESTORED: force type to "llm_chart".
+      //     Previously this case was NOT handled — the chart_data was present
+      //     but the panel never rendered it because isChartResult was false.
+      //  B) LLM returned analysisResults without chart_data → synthesize.
+      //  C) LLM returned null analysisResults → build full synthetic result.
+      if (isVizQuery) {
+        const vizType = detectAnalysisType(userQuery, dataColumns);
+
+        if (parsed.analysisResults?.chart_data) {
+          // Case A: chart_data exists — guarantee analysis_type is correct.
+          // RESTORED: LLM was writing "dataset_generation" / "llm_table" /
+          //           other custom types instead of "llm_chart", causing
+          //           isChartResult to return false even when chart_data was
+          //           populated and ready to render.
+          if (parsed.analysisResults.analysis_type !== "llm_chart") {
+            console.log(
+              `[analyzeBiostatistics] ✓ Fixed analysis_type: "${parsed.analysisResults.analysis_type}" → "llm_chart" (chart_data is present)`
+            );
+            parsed.analysisResults.analysis_type = "llm_chart";
+          }
+        } else if (parsed.analysisResults && !parsed.analysisResults.chart_data) {
+          // Case B: LLM returned a table but forgot chart_data — synthesize it.
+          parsed.analysisResults.chart_data = synthesizeVizChartData(
+            vizType, parsed.analysisResults, dataColumns, fullData
+          );
+          parsed.analysisResults.analysis_type = "llm_chart";
+          console.log(`[analyzeBiostatistics] ✓ Synthesized fallback chart_data (${vizType}) — merged into LLM analysisResults`);
+        } else if (!parsed.analysisResults) {
+          // Case C: LLM returned null — build a complete result with synthetic chart.
+          const synthChart = synthesizeVizChartData(vizType, null, dataColumns, fullData);
+          parsed.analysisResults = {
+            analysis_type: "llm_chart",
+            chart_data: synthChart,
+            results_table: [{ metric: "Note", value: "_Synthetic visualization for demonstration — attach real data for exact values._" }],
+          };
+          console.log(`[analyzeBiostatistics] ✓ Synthesized full analysisResults with chart_data (${vizType})`);
         }
       }
 

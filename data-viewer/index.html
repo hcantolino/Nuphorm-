@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PK Raw Data Viewer</title>
+  <style>
+    /* ── Reset & base ──────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f8f9fa;
+      --card:      #ffffff;
+      --accent:    #0d6efd;
+      --accent-h:  #0b5ed7;
+      --heading:   #1e40af;
+      --text:      #1a1f36;
+      --text-2:    #6b7280;
+      --border:    #dee2e6;
+      --row-even:  #f8f9fa;
+      --row-hover: #e7f1ff;
+      --th-bg:     #e9ecef;
+      --sort-act:  #0d6efd;
+      --danger:    #dc3545;
+      --success:   #198754;
+      --warn:      #ffc107;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    /* ── Layout ────────────────────────────────────────────────────────────── */
+    #app { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* ── Sticky header ─────────────────────────────────────────────────────── */
+    #header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--card);
+      border-bottom: 2px solid var(--accent);
+      box-shadow: 0 2px 8px rgba(13,110,253,.12);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 20px;
+      height: 56px;
+      flex-shrink: 0;
+    }
+
+    #header .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+    }
+
+    #header .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--heading);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    #header .logo-icon svg { display: block; }
+
+    #header .logo-text {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--heading);
+      letter-spacing: -0.3px;
+      white-space: nowrap;
+    }
+
+    #header .logo-text span {
+      font-weight: 400;
+      color: var(--text-2);
+    }
+
+    #header .spacer { flex: 1; }
+
+    /* ── Buttons ───────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background .15s, box-shadow .15s, opacity .15s;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-h); border-color: var(--accent-h); }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .btn-outline:hover:not(:disabled) { background: #ebf3ff; }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-2);
+      border-color: var(--border);
+    }
+    .btn-ghost:hover:not(:disabled) { background: var(--th-bg); }
+
+    .btn svg { flex-shrink: 0; }
+
+    /* ── Stats bar ─────────────────────────────────────────────────────────── */
+    #stats-bar {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+
+    .stat-pill {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px 10px 0;
+      border-right: 1px solid var(--border);
+      margin-right: 20px;
+    }
+    .stat-pill:last-child { border-right: none; margin-right: 0; }
+
+    .stat-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .stat-icon.blue   { background: #dbeafe; color: var(--heading); }
+    .stat-icon.green  { background: #d1fae5; color: #065f46; }
+    .stat-icon.purple { background: #ede9fe; color: #5b21b6; }
+    .stat-icon.orange { background: #ffedd5; color: #9a3412; }
+
+    .stat-label { font-size: 11px; color: var(--text-2); text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+    .stat-value { font-size: 18px; font-weight: 700; color: var(--text); line-height: 1; margin-top: 1px; }
+    .stat-sub   { font-size: 11px; color: var(--text-2); margin-top: 1px; }
+
+    /* ── Toolbar ───────────────────────────────────────────────────────────── */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    #search-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 200px;
+      max-width: 380px;
+    }
+    #search-wrap svg {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-2);
+      pointer-events: none;
+    }
+    #search-input {
+      width: 100%;
+      padding: 7px 10px 7px 34px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      background: var(--card);
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    #search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(13,110,253,.15); }
+
+    #row-count-label {
+      font-size: 12px;
+      color: var(--text-2);
+      white-space: nowrap;
+      margin-left: auto;
+    }
+
+    #col-toggle-wrap {
+      position: relative;
+    }
+    #col-toggle-menu {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.12);
+      padding: 8px 0;
+      min-width: 180px;
+      z-index: 200;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    #col-toggle-menu.open { display: block; }
+    .col-toggle-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+      color: var(--text);
+    }
+    .col-toggle-item:hover { background: var(--row-hover); }
+    .col-toggle-item input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+
+    /* ── Table container ───────────────────────────────────────────────────── */
+    #table-wrap {
+      flex: 1;
+      overflow: auto;
+      padding: 0 20px 20px;
+    }
+
+    #data-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 13px;
+      min-width: 600px;
+    }
+
+    #data-table thead { position: sticky; top: 0; z-index: 10; }
+
+    #data-table th {
+      background: var(--th-bg);
+      color: var(--text-2);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      padding: 10px 12px;
+      border-bottom: 2px solid var(--border);
+      border-right: 1px solid var(--border);
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+      transition: background .12s, color .12s;
+      position: relative;
+    }
+    #data-table th:last-child { border-right: none; }
+    #data-table th:hover { background: #dde1e7; color: var(--text); }
+    #data-table th.sorted-asc,
+    #data-table th.sorted-desc { color: var(--sort-act); background: #dbeafe; }
+
+    .sort-indicator { margin-left: 4px; opacity: .5; font-size: 10px; }
+    th.sorted-asc .sort-indicator,
+    th.sorted-desc .sort-indicator { opacity: 1; }
+
+    /* row number col */
+    th.col-rownum, td.col-rownum {
+      color: var(--text-2);
+      font-weight: 400;
+      text-align: right;
+      min-width: 42px;
+      cursor: default;
+      background: var(--th-bg) !important;
+      border-right: 2px solid var(--border) !important;
+      font-size: 11px;
+    }
+    th.col-rownum { cursor: default; }
+
+    #data-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      vertical-align: middle;
+      white-space: nowrap;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #data-table td:last-child { border-right: none; }
+    #data-table tr:last-child td { border-bottom: none; }
+
+    /* Zebra */
+    #data-table tbody tr:nth-child(even) td:not(.col-rownum) { background: var(--row-even); }
+    #data-table tbody tr:nth-child(odd)  td:not(.col-rownum) { background: var(--card); }
+    #data-table tbody tr:hover td:not(.col-rownum) { background: var(--row-hover); }
+
+    /* Numeric right-align */
+    td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* Missing / dot values */
+    td.missing { color: var(--text-2); font-style: italic; }
+
+    /* ── States ────────────────────────────────────────────────────────────── */
+    #state-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 40px 20px;
+      text-align: center;
+    }
+
+    .state-icon {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto;
+    }
+    .state-icon.blue   { background: #dbeafe; color: var(--heading); }
+    .state-icon.red    { background: #fee2e2; color: var(--danger); }
+    .state-icon.yellow { background: #fef9c3; color: #92400e; }
+
+    .state-title { font-size: 17px; font-weight: 700; color: var(--text); }
+    .state-body  { font-size: 13px; color: var(--text-2); max-width: 380px; line-height: 1.6; }
+
+    /* spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      margin: 0 auto;
+    }
+
+    /* drop zone highlight */
+    body.drag-over #state-view { background: #ebf3ff; }
+    body.drag-over #state-view .drop-zone-border {
+      border: 2px dashed var(--accent);
+      border-radius: 12px;
+      padding: 24px 32px;
+    }
+
+    /* ── Toast ─────────────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--text);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.2);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .25s, transform .25s;
+      pointer-events: none;
+      z-index: 9999;
+      max-width: 320px;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+
+    /* ── Scrollbar styling ─────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: #c1c9d2; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ba5b4; }
+
+    /* ── Responsive ────────────────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      #header { padding: 0 12px; }
+      #stats-bar, #toolbar, #table-wrap { padding-left: 12px; padding-right: 12px; }
+      .stat-pill { padding-right: 14px; margin-right: 14px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" accept=".txt,.csv,.tsv" style="display:none" />
+
+<!-- ── App shell ──────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Sticky header -->
+  <header id="header">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3h18v18H3z"/><path d="M3 9h18M3 15h18M9 3v18"/>
+        </svg>
+      </div>
+      <div class="logo-text">PK Data <span>Viewer</span></div>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button class="btn btn-ghost" id="btn-upload" title="Load a new data file">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      Upload New Data
+    </button>
+
+    <button class="btn btn-primary" id="btn-download" disabled title="Download current view as CSV">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Download CSV
+    </button>
+  </header>
+
+  <!-- Stats bar (hidden until data loaded) -->
+  <div id="stats-bar" style="display:none">
+    <div class="stat-pill">
+      <div class="stat-icon blue">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Rows</div>
+        <div class="stat-value" id="stat-rows">—</div>
+        <div class="stat-sub" id="stat-rows-sub"></div>
+      </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon green">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="18" r="1"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Columns</div>
+        <div class="stat-value" id="stat-cols">—</div>
+        <div class="stat-sub" id="stat-cols-sub"></div>
+      </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon purple">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Numeric Cols</div>
+        <div class="stat-value" id="stat-numeric">—</div>
+        <div class="stat-sub" id="stat-numeric-sub"></div>
+      </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon orange">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Time Range</div>
+        <div class="stat-value" id="stat-range">—</div>
+        <div class="stat-sub" id="stat-range-sub"></div>
+      </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon blue">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </div>
+      <div>
+        <div class="stat-label">Subjects</div>
+        <div class="stat-value" id="stat-subjects">—</div>
+        <div class="stat-sub" id="stat-subjects-sub"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toolbar (hidden until data loaded) -->
+  <div id="toolbar" style="display:none">
+    <div id="search-wrap">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input type="text" id="search-input" placeholder="Search all columns…" autocomplete="off" />
+    </div>
+
+    <div id="col-toggle-wrap">
+      <button class="btn btn-ghost" id="btn-cols">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+        </svg>
+        Columns
+      </button>
+      <div id="col-toggle-menu">
+        <!-- dynamically populated -->
+      </div>
+    </div>
+
+    <button class="btn btn-ghost" id="btn-reset-sort">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+      </svg>
+      Reset Sort
+    </button>
+
+    <span id="row-count-label">— rows</span>
+  </div>
+
+  <!-- State view (loading / error / empty) -->
+  <div id="state-view">
+    <div class="spinner" id="spinner" style="display:none"></div>
+    <div class="drop-zone-border" id="drop-zone-content">
+      <div class="state-icon blue" id="state-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="state-title" id="state-title">Loading data…</div>
+      <div class="state-body" id="state-body">Fetching <code>fakepkrawdata.txt</code> from the same directory.</div>
+      <div id="state-actions" style="margin-top:4px"></div>
+    </div>
+  </div>
+
+  <!-- Table (hidden until data loaded) -->
+  <div id="table-wrap" style="display:none; flex:1; overflow:auto; padding:16px 20px 20px;">
+    <table id="data-table">
+      <thead><tr id="thead-row"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+</div><!-- /#app -->
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════════
+   PK Raw Data Viewer — standalone, zero dependencies
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// ── State ─────────────────────────────────────────────────────────────────
+
+const state = {
+  headers: [],          // string[]
+  rawRows: [],          // string[][] (all rows, original order)
+  numericCols: new Set(), // Set<number> (column indices)
+  visibleCols: [],      // boolean[] (per column)
+  sortCol: -1,          // -1 = original order
+  sortDir: 'asc',       // 'asc' | 'desc'
+  filter: '',           // search string
+  filename: '',
+};
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+
+const $ = (id) => document.getElementById(id);
+
+const els = {
+  fileInput:    $('file-input'),
+  btnUpload:    $('btn-upload'),
+  btnDownload:  $('btn-download'),
+  btnCols:      $('btn-cols'),
+  btnResetSort: $('btn-reset-sort'),
+  searchInput:  $('search-input'),
+  statsBar:     $('stats-bar'),
+  toolbar:      $('toolbar'),
+  stateView:    $('state-view'),
+  tableWrap:    $('table-wrap'),
+  spinner:      $('spinner'),
+  stateTitle:   $('state-title'),
+  stateBody:    $('state-body'),
+  stateActions: $('state-actions'),
+  stateIcon:    $('state-icon'),
+  theadRow:     $('thead-row'),
+  tbody:        $('tbody'),
+  rowCountLabel:$('row-count-label'),
+  colMenu:      $('col-toggle-menu'),
+  toast:        $('toast'),
+  // stats
+  statRows:     $('stat-rows'),
+  statRowsSub:  $('stat-rows-sub'),
+  statCols:     $('stat-cols'),
+  statColsSub:  $('stat-cols-sub'),
+  statNumeric:  $('stat-numeric'),
+  statNumericSub: $('stat-numeric-sub'),
+  statRange:    $('stat-range'),
+  statRangeSub: $('stat-range-sub'),
+  statSubjects: $('stat-subjects'),
+  statSubjectsSub: $('stat-subjects-sub'),
+};
+
+// ── Toast ─────────────────────────────────────────────────────────────────
+
+let toastTimer;
+function showToast(msg, duration = 3000) {
+  els.toast.textContent = msg;
+  els.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => els.toast.classList.remove('show'), duration);
+}
+
+// ── Number formatting ─────────────────────────────────────────────────────
+
+function fmtNum(v) {
+  if (v === null || v === undefined || v === '.') return v;
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  if (Number.isInteger(n)) return n.toString();
+  // Use up to 4 decimal places, trim trailing zeros
+  const s = n.toFixed(4).replace(/\.?0+$/, '');
+  return s;
+}
+
+function isNumericValue(v) {
+  if (v === '' || v === '.' || v === 'NA' || v === 'NaN' || v === 'na') return false;
+  return !isNaN(parseFloat(v)) && isFinite(v);
+}
+
+// ── Delimiter detection ───────────────────────────────────────────────────
+
+function detectDelimiter(text) {
+  const lines = text.split('\n').filter(l => l.trim()).slice(0, 5);
+  const counts = {
+    '\t': 0,
+    ',': 0,
+    ' ': 0,
+  };
+  for (const line of lines) {
+    counts['\t'] += (line.match(/\t/g) || []).length;
+    counts[','] += (line.match(/,/g) || []).length;
+    // multi-space: count groups of 2+ spaces
+    counts[' '] += (line.match(/ {2,}/g) || []).length;
+  }
+  if (counts['\t'] >= counts[','] && counts['\t'] > 0) return '\t';
+  if (counts[','] > 0) return ',';
+  return /\s+/; // regex for multi-space
+}
+
+// ── Parse text ────────────────────────────────────────────────────────────
+
+function parseText(text) {
+  const lines = text
+    .split('\n')
+    .map(l => l.replace(/\r$/, ''))
+    .filter(l => l.trim() !== '');
+
+  if (lines.length < 2) {
+    throw new Error('File appears to have fewer than 2 non-empty lines. Please check the file format.');
+  }
+
+  const delim = detectDelimiter(text);
+
+  const splitLine = (line) =>
+    typeof delim === 'string'
+      ? line.split(delim)
+      : line.split(delim);   // regex
+
+  const headers = splitLine(lines[0]).map(h => h.trim());
+  const rawRows = lines.slice(1).map(l => {
+    const cells = splitLine(l);
+    // Pad short rows
+    while (cells.length < headers.length) cells.push('');
+    return cells.map(c => c.trim());
+  });
+
+  return { headers, rawRows, delimiter: delim };
+}
+
+// ── Detect numeric columns ────────────────────────────────────────────────
+
+function detectNumericCols(headers, rows) {
+  const numericCols = new Set();
+  for (let ci = 0; ci < headers.length; ci++) {
+    let numCount = 0, total = 0;
+    for (const row of rows) {
+      const v = (row[ci] ?? '').trim();
+      if (v === '' || v === '.') continue;
+      total++;
+      if (isNumericValue(v)) numCount++;
+    }
+    if (total > 0 && numCount / total >= 0.8) numericCols.add(ci);
+  }
+  return numericCols;
+}
+
+// ── Stats computation ─────────────────────────────────────────────────────
+
+function computeStats(headers, rows, numericCols) {
+  // Rows
+  els.statRows.textContent = rows.length.toLocaleString();
+  els.statRowsSub.textContent = `data rows`;
+
+  // Columns
+  els.statCols.textContent = headers.length;
+  els.statColsSub.textContent = `${numericCols.size} numeric, ${headers.length - numericCols.size} text`;
+
+  // Numeric columns
+  els.statNumeric.textContent = numericCols.size;
+  const numNames = [...numericCols].map(i => headers[i]).slice(0, 3).join(', ');
+  els.statNumericSub.textContent = numNames + (numericCols.size > 3 ? '…' : '');
+
+  // Time range — look for TIME column first
+  const timeIdx = headers.findIndex(h => /^time$/i.test(h));
+  const firstNumIdx = timeIdx >= 0 ? timeIdx : [...numericCols][0];
+  if (firstNumIdx !== undefined && firstNumIdx >= 0) {
+    const vals = rows
+      .map(r => parseFloat(r[firstNumIdx]))
+      .filter(v => !isNaN(v));
+    if (vals.length > 0) {
+      const mn = Math.min(...vals), mx = Math.max(...vals);
+      els.statRange.textContent = `${fmtNum(mn)} – ${fmtNum(mx)}`;
+      els.statRangeSub.textContent = headers[firstNumIdx];
+    }
+  }
+
+  // Subjects — look for USUBJID or SUBJID
+  const subjIdx = headers.findIndex(h => /usubjid|subjid|subject/i.test(h));
+  if (subjIdx >= 0) {
+    const uniq = new Set(rows.map(r => r[subjIdx]).filter(Boolean));
+    els.statSubjects.textContent = uniq.size;
+    els.statSubjectsSub.textContent = `unique IDs`;
+  } else {
+    els.statSubjects.textContent = '—';
+    els.statSubjectsSub.textContent = 'no subject col';
+  }
+}
+
+// ── Load data into state and render ──────────────────────────────────────
+
+function loadData(headers, rawRows, filename) {
+  const numericCols = detectNumericCols(headers, rawRows);
+
+  state.headers = headers;
+  state.rawRows = rawRows;
+  state.numericCols = numericCols;
+  state.visibleCols = headers.map(() => true);
+  state.sortCol = -1;
+  state.sortDir = 'asc';
+  state.filter = '';
+  state.filename = filename;
+
+  // Clear search
+  els.searchInput.value = '';
+
+  computeStats(headers, rawRows, numericCols);
+  buildColMenu();
+  buildTableHeader();
+  renderRows();
+
+  // Show table UI
+  els.stateView.style.display = 'none';
+  els.statsBar.style.display = 'flex';
+  els.toolbar.style.display = 'flex';
+  els.tableWrap.style.display = 'block';
+  els.btnDownload.disabled = false;
+
+  showToast(`Loaded ${rawRows.length.toLocaleString()} rows × ${headers.length} columns from "${filename}"`);
+}
+
+// ── Column toggle menu ────────────────────────────────────────────────────
+
+function buildColMenu() {
+  els.colMenu.innerHTML = '';
+  state.headers.forEach((h, i) => {
+    const item = document.createElement('label');
+    item.className = 'col-toggle-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.visibleCols[i];
+    cb.addEventListener('change', () => {
+      state.visibleCols[i] = cb.checked;
+      buildTableHeader();
+      renderRows();
+    });
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(h));
+    els.colMenu.appendChild(item);
+  });
+}
+
+// ── Table header ──────────────────────────────────────────────────────────
+
+function buildTableHeader() {
+  els.theadRow.innerHTML = '';
+
+  // Row number column
+  const th0 = document.createElement('th');
+  th0.className = 'col-rownum';
+  th0.textContent = '#';
+  els.theadRow.appendChild(th0);
+
+  state.headers.forEach((h, i) => {
+    if (!state.visibleCols[i]) return;
+    const th = document.createElement('th');
+    th.dataset.col = i;
+
+    const isActive = state.sortCol === i;
+    if (isActive) th.classList.add(state.sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+
+    const label = document.createTextNode(h);
+    const indicator = document.createElement('span');
+    indicator.className = 'sort-indicator';
+    indicator.textContent = isActive ? (state.sortDir === 'asc' ? '▲' : '▼') : '⇅';
+
+    th.appendChild(label);
+    th.appendChild(indicator);
+
+    th.addEventListener('click', () => {
+      if (state.sortCol === i) {
+        state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sortCol = i;
+        state.sortDir = 'asc';
+      }
+      buildTableHeader();
+      renderRows();
+    });
+
+    els.theadRow.appendChild(th);
+  });
+}
+
+// ── Filter + sort + render rows ───────────────────────────────────────────
+
+function getDisplayRows() {
+  const q = state.filter.toLowerCase();
+
+  // Filter
+  let rows = state.rawRows;
+  if (q) {
+    rows = rows.filter(row => row.some(cell => cell.toLowerCase().includes(q)));
+  }
+
+  // Sort
+  if (state.sortCol >= 0) {
+    const ci = state.sortCol;
+    const isNum = state.numericCols.has(ci);
+    const dir = state.sortDir === 'asc' ? 1 : -1;
+    rows = [...rows].sort((a, b) => {
+      const av = a[ci] ?? '', bv = b[ci] ?? '';
+      if (isNum) {
+        const an = parseFloat(av), bn = parseFloat(bv);
+        if (isNaN(an) && isNaN(bn)) return 0;
+        if (isNaN(an)) return 1;
+        if (isNaN(bn)) return -1;
+        return (an - bn) * dir;
+      }
+      return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' }) * dir;
+    });
+  }
+
+  return rows;
+}
+
+function renderRows() {
+  const displayRows = getDisplayRows();
+  const frag = document.createDocumentFragment();
+
+  if (displayRows.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = state.headers.filter((_, i) => state.visibleCols[i]).length + 1;
+    td.style.cssText = 'text-align:center; color:#6b7280; padding:32px; font-style:italic;';
+    td.textContent = state.filter
+      ? `No rows match "${state.filter}"`
+      : 'No data rows.';
+    tr.appendChild(td);
+    frag.appendChild(tr);
+  } else {
+    displayRows.forEach((row, ri) => {
+      const tr = document.createElement('tr');
+
+      // Row number
+      const td0 = document.createElement('td');
+      td0.className = 'col-rownum';
+      td0.textContent = ri + 1;
+      tr.appendChild(td0);
+
+      state.headers.forEach((_, ci) => {
+        if (!state.visibleCols[ci]) return;
+        const td = document.createElement('td');
+        const raw = row[ci] ?? '';
+
+        if (raw === '' || raw === '.') {
+          td.className = 'missing';
+          td.textContent = raw === '.' ? '·' : '';
+          td.title = 'Missing / not applicable';
+        } else if (state.numericCols.has(ci)) {
+          td.className = 'numeric';
+          td.textContent = fmtNum(raw);
+          td.title = raw; // show full precision on hover
+        } else {
+          td.textContent = raw;
+        }
+
+        tr.appendChild(td);
+      });
+
+      frag.appendChild(tr);
+    });
+  }
+
+  els.tbody.innerHTML = '';
+  els.tbody.appendChild(frag);
+
+  // Update row count label
+  const total = state.rawRows.length;
+  const shown = displayRows.length;
+  els.rowCountLabel.textContent = shown === total
+    ? `${total.toLocaleString()} rows`
+    : `${shown.toLocaleString()} of ${total.toLocaleString()} rows`;
+}
+
+// ── Download CSV ──────────────────────────────────────────────────────────
+
+function downloadCSV() {
+  const visibleIdx = state.headers
+    .map((_, i) => i)
+    .filter(i => state.visibleCols[i]);
+
+  const displayRows = getDisplayRows();
+
+  const escape = (v) => {
+    const s = String(v ?? '');
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"`
+      : s;
+  };
+
+  const lines = [
+    visibleIdx.map(i => escape(state.headers[i])).join(','),
+    ...displayRows.map(row => visibleIdx.map(i => escape(row[i] ?? '')).join(',')),
+  ];
+
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const base = state.filename.replace(/\.[^.]+$/, '');
+  a.download = `${base}_export.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Downloaded ${displayRows.length.toLocaleString()} rows as CSV`);
+}
+
+// ── Show state views ──────────────────────────────────────────────────────
+
+function showLoading(msg) {
+  els.stateView.style.display = 'flex';
+  els.statsBar.style.display = 'none';
+  els.toolbar.style.display = 'none';
+  els.tableWrap.style.display = 'none';
+  els.spinner.style.display = 'block';
+  els.stateIcon.style.display = 'none';
+  els.stateTitle.textContent = msg || 'Loading…';
+  els.stateBody.textContent = '';
+  els.stateActions.innerHTML = '';
+}
+
+function showError(title, body) {
+  els.stateView.style.display = 'flex';
+  els.statsBar.style.display = 'none';
+  els.toolbar.style.display = 'none';
+  els.tableWrap.style.display = 'none';
+  els.spinner.style.display = 'none';
+  els.stateIcon.style.display = 'flex';
+  els.stateIcon.className = 'state-icon red';
+  els.stateIcon.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+  els.stateTitle.textContent = title;
+  els.stateBody.textContent = body;
+  els.stateActions.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-primary';
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload a File`;
+  btn.addEventListener('click', () => els.fileInput.click());
+  els.stateActions.appendChild(btn);
+}
+
+function showUploadPrompt() {
+  els.stateView.style.display = 'flex';
+  els.statsBar.style.display = 'none';
+  els.toolbar.style.display = 'none';
+  els.tableWrap.style.display = 'none';
+  els.spinner.style.display = 'none';
+  els.stateIcon.style.display = 'flex';
+  els.stateIcon.className = 'state-icon blue';
+  els.stateIcon.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`;
+  els.stateTitle.textContent = 'Drop a file or click to upload';
+  els.stateBody.innerHTML = 'Accepts <strong>.txt</strong>, <strong>.csv</strong>, <strong>.tsv</strong>. Tab-delimited, comma-separated, and space-separated formats are supported. Headers must be in the first row.';
+  els.stateActions.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-primary';
+  btn.style.marginTop = '4px';
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Choose File`;
+  btn.addEventListener('click', () => els.fileInput.click());
+  els.stateActions.appendChild(btn);
+}
+
+// ── Fetch default file ────────────────────────────────────────────────────
+
+async function fetchDefaultFile() {
+  showLoading('Loading fakepkrawdata.txt…');
+  try {
+    const resp = await fetch('fakepkrawdata.txt');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} — file not found`);
+    const text = await resp.text();
+    const { headers, rawRows } = parseText(text);
+    loadData(headers, rawRows, 'fakepkrawdata.txt');
+  } catch (err) {
+    showUploadPrompt();
+    // Silently fall back — user can upload manually
+    console.info('Could not auto-load fakepkrawdata.txt:', err.message);
+  }
+}
+
+// ── Handle file upload ────────────────────────────────────────────────────
+
+function handleFile(file) {
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['txt', 'csv', 'tsv'].includes(ext)) {
+    showToast('Unsupported file type. Please use .txt, .csv, or .tsv', 4000);
+    return;
+  }
+  showLoading(`Parsing ${file.name}…`);
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const { headers, rawRows } = parseText(e.target.result);
+      loadData(headers, rawRows, file.name);
+    } catch (err) {
+      showError('Parse error', err.message);
+    }
+  };
+  reader.onerror = () => showError('Read error', 'Could not read the file.');
+  reader.readAsText(file);
+}
+
+// ── Events ────────────────────────────────────────────────────────────────
+
+// Upload button
+els.btnUpload.addEventListener('click', () => els.fileInput.click());
+
+// File input change
+els.fileInput.addEventListener('change', (e) => {
+  handleFile(e.target.files[0]);
+  e.target.value = ''; // allow re-upload same file
+});
+
+// Download
+els.btnDownload.addEventListener('click', downloadCSV);
+
+// Reset sort
+els.btnResetSort.addEventListener('click', () => {
+  state.sortCol = -1;
+  state.sortDir = 'asc';
+  buildTableHeader();
+  renderRows();
+  showToast('Sort reset to original order');
+});
+
+// Search
+let searchTimer;
+els.searchInput.addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  state.filter = e.target.value;
+  searchTimer = setTimeout(renderRows, 120);
+});
+
+// Column toggle menu open/close
+els.btnCols.addEventListener('click', (e) => {
+  e.stopPropagation();
+  els.colMenu.classList.toggle('open');
+});
+document.addEventListener('click', (e) => {
+  if (!$('col-toggle-wrap').contains(e.target)) {
+    els.colMenu.classList.remove('open');
+  }
+});
+
+// Drag-and-drop onto the whole page
+document.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  document.body.classList.add('drag-over');
+});
+document.addEventListener('dragleave', (e) => {
+  if (!e.relatedTarget || e.relatedTarget === document.documentElement) {
+    document.body.classList.remove('drag-over');
+  }
+});
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('drag-over');
+  const file = e.dataTransfer?.files?.[0];
+  if (file) handleFile(file);
+});
+
+// Keyboard shortcut: Ctrl/Cmd+F → focus search
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f' && state.headers.length > 0) {
+    e.preventDefault();
+    els.searchInput.focus();
+    els.searchInput.select();
+  }
+  if (e.key === 'Escape') {
+    els.colMenu.classList.remove('open');
+    els.searchInput.blur();
+  }
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+
+fetchDefaultFile();
+</script>
+</body>
+</html>

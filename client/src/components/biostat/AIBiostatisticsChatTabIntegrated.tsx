@@ -8,13 +8,8 @@ import React, {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-// NEW: scope-picker dropdown when attaching files (project vs tab level)
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+// REMOVED: DropdownMenu scope-picker (was used for attach-to: Tab / Project choice).
+// Attachment management now happens inside AttachmentModal (paperclip button).
 import {
   Dialog,
   DialogContent,
@@ -48,7 +43,6 @@ import {
   CheckCircle2,
   RefreshCw,
   WifiOff,
-  FolderOpen,   // NEW: project-scope indicator icon in attach dropdown + chips
 } from "lucide-react";
 import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
 import { formatDistanceToNow } from "date-fns";
@@ -64,6 +58,8 @@ import { getSessionAwareStorageManager } from "@/lib/sessionAwareStorage";
 import { useSessionEvents } from "@/lib/useSessionEvents";
 import { useProjectStore, type ProjectSource, formatBytes } from "@/stores/projectStore";
 import { useBiostatisticsStore } from "@/stores/biostatisticsStore";
+// NEW: paperclip modal for managing attached sources (replaces inline chip strip)
+import { AttachmentModal } from "./AttachmentModal";
 
 interface AIBiostatisticsChatProps {
   onMeasurementSelect?: (measurement: string) => void;
@@ -1084,6 +1080,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   );
 
   const [inputValue, setInputValue] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [uploadedData, setUploadedData] = useState<any>(null);
   const [fullData, setFullData] = useState<Array<Record<string, any>>>([]);
@@ -1103,6 +1101,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   // Set by the scope picker dropdown before opening the file picker or upload dialog.
   // BEFORE: all attached files silently went to tab-level only — no project scope option existed.
   const [attachScope, setAttachScope] = useState<'project' | 'tab'>('tab');
+  // NEW: controls the AttachmentModal (paperclip) — replaces inline chip strip
+  const [attachModalOpen, setAttachModalOpen] = useState(false);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1593,15 +1593,18 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       const augmentedQuery =
         datasetLine + instructionsPrefix + projectSourceContext + tabSourceContext + userMessage;
 
+      // NOTE: do NOT append the current user message here.
+      // The server already adds the current turn (augmented with data context) as the
+      // final message in the messages array.  Appending it here too would produce two
+      // consecutive user-role messages at the end of the context, which causes the
+      // model to treat the new request as a continuation of the previous one instead
+      // of a fresh task — the root cause of the "same chart reused" bug.
       const response = await analyzeMutation.mutateAsync({
         userQuery: augmentedQuery,
         dataPreview,
         dataColumns,
         classifications: effectiveClassifications,
-        conversationHistory: [
-          ...conversationHistory,
-          { role: "user", content: userMessage },
-        ],
+        conversationHistory,
         fullData: effectiveData,
       });
 
@@ -1611,18 +1614,72 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       else if (responseObj.llmUsed) setLlmStatus('online');
       // else: local-only path (shouldn't happen now, leave as-is)
 
-      const content =
+      // NEW: strip raw JSON dumps and code fences that the LLM sometimes leaks into
+      //      the analysis field before storing or displaying it.
+      // REMOVED: was using raw content directly — code fences rendered as plain text in the panel
+      const rawContent =
         typeof response === "string"
           ? response
           : responseObj.analysis ?? "No analysis result";
+      const content = rawContent
+        .replace(/```[\s\S]*?```/g, "")   // remove full code blocks
+        .replace(/^```.*$/gm, "")          // remove dangling fence lines
+        .trim();
 
       const assistantMsgId = `msg-${Date.now()}`;
       const isLLMUnavailable = !!responseObj.llmUnavailable;
+
+      // RESTORED: detect chart result — check for chart_data presence first,
+      // then fall back to analysis_type === "llm_chart".
+      // REMOVED: was only checking analysis_type === "llm_chart" which missed the
+      //          case where the LLM returned chart_data with analysis_type set to
+      //          "dataset_generation" or another non-standard value — causing every
+      //          chart response to be silently treated as a table and never rendered.
+      const chartData = responseObj.analysisResults?.chart_data;
+      const analysisType = responseObj.analysisResults?.analysis_type as string | undefined;
+      const isChartResult = !!chartData && (
+        analysisType === "llm_chart" ||
+        // Defensive: accept chart_data regardless of analysis_type label
+        (!!chartData.labels && !!chartData.datasets) ||
+        !!chartData.type
+      );
+
       const hasStructuredData = !!responseObj.analysisResults;
       // Detect markdown table syntax: a separator row like |---|---| or | :--- |
       const hasMarkdownTable = /\|\s*[-:]+[-|\s:]*\|/.test(content);
-      // Route to Results panel for analytical responses (structured data OR markdown table)
-      const routeToPanel = !!activeTabIdMemo && (hasStructuredData || hasMarkdownTable);
+      // Belt-and-suspenders: if the LLM actually processed the query (llmUsed=true) and
+      // returned substantial content, always push to the Results panel.  This catches any
+      // remaining cases where the server didn't synthesize analysisResults (e.g. an older
+      // server build) so free-form data queries never leave stale panel content.
+      const hasLLMAnalysis = !!responseObj.llmUsed && content.length > 100;
+      const routeToPanel = !!activeTabIdMemo && (isChartResult || hasStructuredData || hasMarkdownTable || hasLLMAnalysis);
+
+      // NEW: dev-mode diagnostics — log chart detection outcome every time
+      if (process.env.NODE_ENV !== "production") {
+        const q = userMessage.toLowerCase();
+        // RESTORED: expanded keyword list (bar chart, scatter, pie were missing)
+        const vizKeywords = [
+          "area chart","area graph","bar chart","bar graph","scatter plot","scatter chart",
+          "line chart","line graph","pie chart","kaplan-meier","km curve","km plot",
+          "box plot","boxplot","violin plot","volcano","forest plot","heatmap","heat map",
+        ];
+        const isVizRequest = vizKeywords.some((k) => q.includes(k));
+        if (isVizRequest) {
+          if (isChartResult) {
+            console.log("[ChartRequest] ✓ Chart detected — routing to Results panel.",
+              { analysisType, hasChartData: !!chartData });
+          } else {
+            // RESTORED: warn when chart requested but neither chart_data nor llm_chart type present
+            console.warn("[ChartRequest] ✗ Chart request — no chart_data in response. Showing table fallback.",
+              { analysisType, hasChartData: false, query: userMessage.slice(0, 120) });
+          }
+          // RESTORED: catch case where chart_data exists but analysis_type is wrong
+          if (chartData && analysisType !== "llm_chart") {
+            console.warn("[ChartRequest] chart_data present but analysis_type is not 'llm_chart'.",
+              { analysisType, chartDataType: chartData?.type });
+          }
+        }
+      }
 
       addChatMessage({
         id: assistantMsgId,
@@ -1845,56 +1902,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         "flex-shrink-0 bg-background/95 backdrop-blur-md border-t border-border/50 z-10",
         !compact && "shadow-[0_-8px_30px_-8px_rgba(0,0,0,0.12)] dark:shadow-[0_-8px_30px_-8px_rgba(0,0,0,0.35)]"
       )}>
-        <div className={cn("mx-auto", compact ? "px-3 py-2" : "max-w-5xl px-5 py-6")}>
+        <div className={cn("mx-auto", compact ? "px-3 py-2" : "max-w-5xl px-6 py-4")}>
 
-          {/* ── Attached file chips — shown above the input when any sources are active.
-              NEW: visible chip strip replaces the hidden badge-only approach.
-              Project sources = teal chips (FolderOpen icon, shared across tabs).
-              Tab sources    = blue chips (FileText icon, this tab only).
-              Each chip has an accessible X button to remove it.
-              BEFORE: only a count badge on the Files button; chips lived inside the SourcesPanel drawer. */}
-          {(projectSettings.sources.length > 0 || attachedFiles.length > 0) && (
-            <div className="flex flex-wrap gap-1.5 mb-3 px-0.5" role="list" aria-label="Attached sources">
-              {/* Project-level sources (teal) */}
-              {projectSettings.sources.map((src) => (
-                <span
-                  key={src.id}
-                  role="listitem"
-                  className="inline-flex items-center gap-1.5 bg-teal-50 text-teal-800 border border-teal-200 rounded-full px-3 py-1 text-sm font-medium max-w-[220px] group"
-                >
-                  <FolderOpen className="w-3 h-3 flex-shrink-0 text-teal-600" aria-hidden />
-                  <span className="truncate">{src.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => activeProjectId && removeProjectSource(activeProjectId, src.id)}
-                    className="flex-shrink-0 ml-0.5 text-teal-400 hover:text-red-500 transition-colors rounded-full focus:outline-none focus:ring-1 focus:ring-red-400"
-                    aria-label={`Remove ${src.name} from project sources`}
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-              {/* Tab-level sources (blue) */}
-              {attachedFiles.map((f) => (
-                <span
-                  key={f.id}
-                  role="listitem"
-                  className="inline-flex items-center gap-1.5 bg-blue-50 text-blue-800 border border-blue-200 rounded-full px-3 py-1 text-sm font-medium max-w-[220px] group"
-                >
-                  <FileText className="w-3 h-3 flex-shrink-0 text-blue-500" aria-hidden />
-                  <span className="truncate">{f.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => setAttachedFiles((prev) => prev.filter((x) => x.id !== f.id))}
-                    className="flex-shrink-0 ml-0.5 text-blue-300 hover:text-red-500 transition-colors rounded-full focus:outline-none focus:ring-1 focus:ring-red-400"
-                    aria-label={`Remove ${f.name}`}
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
+          {/* REMOVED: inline attachment chip strip — file attachments are now managed
+              exclusively through the AttachmentModal (paperclip button).
+              No file names, row counts, or X-buttons appear in the chat flow. */}
 
           {/* LLM offline status banner — visible only while status is known-offline */}
           {llmStatus === 'offline' && (
@@ -1920,122 +1932,86 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             </div>
           )}
           {/* Card-style input container */}
-          <div className="flex items-center gap-2 rounded-2xl border border-border/70 bg-background shadow-lg px-3 py-2.5 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
+          <div className={cn(
+            "flex gap-3 rounded-2xl border-2 bg-background shadow-md px-4 transition-all duration-200",
+            compact
+              ? "items-center py-2 border-border/70 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+              : "items-end py-3 border-[#E5E7EB] focus-within:border-[#00B8A9] focus-within:shadow-[0_0_0_3px_rgba(0,184,169,0.14)]"
+          )}>
 
-            {/* Left: Paperclip (repo files) + Upload (computer) — each with a scope picker.
-                CHANGED: both buttons now open a small dropdown asking "Attach to: Tab / Project"
-                before opening the file picker or upload dialog.
-                BEFORE: buttons called setPickerOpen(true) / computerUploadRef.click() directly
-                with no scope choice; all files went to tab-level only. */}
-            <div className="flex items-center gap-1 flex-shrink-0">
+            {/* Left: Paperclip (manage sources) + Upload (computer).
+                CHANGED: paperclip now opens AttachmentModal instead of a scope-picker dropdown.
+                Upload button triggers computer upload directly (tab scope, no dropdown).
+                REMOVED: both inline scope-picker DropdownMenus — no clutter in the UI. */}
+            <div className="flex items-center gap-2 flex-shrink-0 self-end pb-1.5">
 
-              {/* ── Paperclip: attach from file library ──────────────────── */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                    title="Attach from file library — choose scope"
-                  >
-                    <Paperclip className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" sideOffset={6} className="w-60">
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider select-none">
-                    Attach to…
-                  </div>
-                  {/* NEW: tab-level option (default) */}
-                  <DropdownMenuItem
-                    onSelect={() => { setAttachScope('tab'); setPickerOpen(true); }}
-                    className="flex items-start gap-2.5 py-2.5 cursor-pointer"
-                    aria-label="Attach to current tab only"
-                  >
-                    <FileText className="w-4 h-4 mt-0.5 text-blue-500 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium leading-tight">Current Tab only</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">Not shared with other tabs</p>
-                    </div>
-                  </DropdownMenuItem>
-                  {/* NEW: project-level option */}
-                  <DropdownMenuItem
-                    onSelect={() => { setAttachScope('project'); setPickerOpen(true); }}
-                    className="flex items-start gap-2.5 py-2.5 cursor-pointer"
-                    aria-label="Attach to project — visible in all tabs"
-                  >
-                    <FolderOpen className="w-4 h-4 mt-0.5 text-[#14b8a6] flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium leading-tight">Project (all tabs)</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">Shared across every tab in this project</p>
-                    </div>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* ── Paperclip: open AttachmentModal to view/manage attached sources ── */}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setAttachModalOpen(true)}
+                className={cn(
+                  "h-9 w-9 rounded-xl transition-colors text-muted-foreground",
+                  (attachedFiles.length > 0 || projectSettings.sources.length > 0)
+                    ? "hover:bg-teal-50 hover:text-[#00B8A9] text-[#00B8A9]"
+                    : "hover:bg-accent/60 hover:text-foreground"
+                )}
+                aria-label="Attach files for analysis"
+                title={
+                  (attachedFiles.length + projectSettings.sources.length) > 0
+                    ? `${attachedFiles.length + projectSettings.sources.length} file(s) attached — click to manage`
+                    : "Attach files for analysis"
+                }
+              >
+                <Paperclip className="h-5 w-5" />
+              </Button>
 
-              {/* ── Upload: from computer ─────────────────────────────────── */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    disabled={uploadFileMutation.isPending}
-                    className="h-8 w-8 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                    title="Upload from computer — choose scope"
-                  >
-                    {uploadFileMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Upload className="h-4 w-4" />
-                    )}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" sideOffset={6} className="w-60">
-                  <div className="px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider select-none">
-                    Upload to…
-                  </div>
-                  {/* NEW: tab-level upload (default) */}
-                  <DropdownMenuItem
-                    onSelect={() => { setAttachScope('tab'); computerUploadRef.current?.click(); }}
-                    className="flex items-start gap-2.5 py-2.5 cursor-pointer"
-                    aria-label="Upload to current tab only"
-                  >
-                    <FileText className="w-4 h-4 mt-0.5 text-blue-500 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium leading-tight">Current Tab only</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">Not shared with other tabs</p>
-                    </div>
-                  </DropdownMenuItem>
-                  {/* NEW: project-level upload */}
-                  <DropdownMenuItem
-                    onSelect={() => { setAttachScope('project'); computerUploadRef.current?.click(); }}
-                    className="flex items-start gap-2.5 py-2.5 cursor-pointer"
-                    aria-label="Upload to project — visible in all tabs"
-                  >
-                    <FolderOpen className="w-4 h-4 mt-0.5 text-[#14b8a6] flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium leading-tight">Project (all tabs)</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-tight">Shared across every tab in this project</p>
-                    </div>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* ── Upload: from computer (tab scope by default) ── */}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                disabled={uploadFileMutation.isPending}
+                onClick={() => { setAttachScope('tab'); computerUploadRef.current?.click(); }}
+                className="h-9 w-9 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+                title="Upload file from computer"
+                aria-label="Upload file from computer"
+              >
+                {uploadFileMutation.isPending ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Upload className="h-5 w-5" />
+                )}
+              </Button>
 
             </div>
 
             {/* Divider */}
-            <div className="w-px h-7 bg-border/60 flex-shrink-0 mx-1" />
+            <div className="w-px h-6 bg-border/60 flex-shrink-0 mx-0.5 self-end mb-2.5" />
 
-            {/* Text input — transparent, fills remaining space */}
-            <input
+            {/* Auto-grow textarea — transparent, fills remaining space */}
+            <textarea
+              ref={textareaRef}
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              rows={1}
+              onChange={(e) => {
+                setInputValue(e.target.value);
+                // Auto-grow up to ~3 lines (120px)
+                e.target.style.height = "auto";
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !isLoading) {
+                  e.preventDefault();
                   handleSendMessage();
+                  requestAnimationFrame(() => {
+                    if (textareaRef.current) textareaRef.current.style.height = "auto";
+                  });
                 }
               }}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
               placeholder={
                 isLoading
                   ? "Thinking…"
@@ -2044,14 +2020,13 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                   : "Attach a file, then ask a question…"
               }
               disabled={isLoading}
-              className="flex-1 min-w-0 h-10 text-base bg-transparent outline-none placeholder:text-muted-foreground/55 caret-primary disabled:cursor-not-allowed"
+              className="flex-1 min-w-0 text-base bg-transparent outline-none placeholder:text-muted-foreground/55 caret-primary disabled:cursor-not-allowed resize-none overflow-hidden leading-6 py-1.5"
+              style={{ minHeight: "28px", maxHeight: "120px" }}
             />
 
             {/* Right: Sources badge + Send */}
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {/* Sources panel trigger — always visible, badge when files attached */}
-              {/* CHANGED: badge now counts project + tab sources combined.
-                  BEFORE: only counted attachedFiles (tab-level); project sources were invisible here. */}
+            <div className="flex items-center gap-2 flex-shrink-0 self-end pb-1.5">
+              {/* Sources panel trigger */}
               {(() => {
                 const totalCount = attachedFiles.length + projectSettings.sources.length;
                 return (
@@ -2060,7 +2035,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     variant="ghost"
                     size="icon"
                     onClick={() => setSourcesOpen(true)}
-                    className="relative h-10 w-10 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+                    className="relative h-9 w-9 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
+                    aria-label="View attached sources"
                     title={
                       totalCount > 0
                         ? `${totalCount} source${totalCount !== 1 ? "s" : ""} attached (${projectSettings.sources.length} project, ${attachedFiles.length} tab)`
@@ -2079,21 +2055,40 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
 
               {/* Send */}
               <Button
-                onClick={() => handleSendMessage()}
+                onClick={() => {
+                  handleSendMessage();
+                  requestAnimationFrame(() => {
+                    if (textareaRef.current) textareaRef.current.style.height = "auto";
+                  });
+                }}
                 disabled={isLoading || !inputValue.trim()}
+                aria-label="Send message"
                 className={cn(
-                  "rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all p-0 flex-shrink-0",
-                  compact ? "h-8 w-8" : "h-14 w-14 shadow-lg hover:shadow-xl"
+                  "rounded-full bg-[#0D6EFD] text-white transition-all p-0 flex-shrink-0",
+                  "hover:bg-[#2563EB] active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed",
+                  compact
+                    ? "h-8 w-8"
+                    : "h-12 w-12 shadow-[0_2px_6px_rgba(13,110,253,0.30)] hover:shadow-[0_4px_14px_rgba(13,110,253,0.42)] hover:scale-110"
                 )}
               >
                 {isLoading ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <Loader2 className={compact ? "h-4 w-4 animate-spin" : "h-5 w-5 animate-spin"} />
                 ) : (
-                  <Send className="h-5 w-5" />
+                  <Send className={compact ? "h-4 w-4" : "h-6 w-6"} />
                 )}
               </Button>
             </div>
           </div>
+
+          {/* "Enter to send" hint — fades in when textarea is focused (non-compact only) */}
+          {!compact && inputFocused && (
+            <div className="flex items-center justify-center mt-1.5 animate-in fade-in duration-200">
+              <span className="text-[11px] select-none" style={{ color: "#00B8A9", opacity: 0.75 }}>
+                ↵ Enter to send · Shift+Enter for new line
+              </span>
+            </div>
+          )}
+
           {/* "Powered by Claude" footnote — shown only after a successful LLM response */}
           {llmStatus === 'online' && (
             <div className="flex items-center gap-1 mt-1.5 px-1">
@@ -2107,6 +2102,24 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       </div>
 
       {/* ── Dialogs & panels ───────────────────────────────────────────── */}
+
+      {/* NEW: AttachmentModal — opened by paperclip button.
+          Shows project-level + tab-level sources with remove/clear actions.
+          Also provides "Add from Library" and "Upload File" action buttons.
+          REMOVED: inline chip strip above input bar (no more chat clutter). */}
+      <AttachmentModal
+        open={attachModalOpen}
+        onClose={() => setAttachModalOpen(false)}
+        tabFiles={attachedFiles}
+        onRemoveTabFile={(id) => setAttachedFiles((prev) => prev.filter((f) => f.id !== id))}
+        onClearAllTabFiles={() => setAttachedFiles([])}
+        projectSources={projectSettings.sources}
+        onRemoveProjectSource={(id) => activeProjectId && removeProjectSource(activeProjectId, id)}
+        onAddFromLibrary={() => { setAttachScope('tab'); setPickerOpen(true); }}
+        onUploadFromComputer={() => { setAttachScope('tab'); computerUploadRef.current?.click(); }}
+        tabName={activeTabName}
+      />
+
       <FilePickerDialog
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}

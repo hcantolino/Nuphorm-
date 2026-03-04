@@ -393,7 +393,7 @@ async function invokeAnthropicLLM(params: InvokeParams): Promise<InvokeResult> {
 
   const payload: Record<string, unknown> = {
     model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
-    max_tokens: maxTokens ?? max_tokens ?? 4096,
+    max_tokens: maxTokens ?? max_tokens ?? 16000,
     messages: anthropicMessages,
   };
 
@@ -472,9 +472,11 @@ async function invokeOpenAICompatibleLLM(params: InvokeParams): Promise<InvokeRe
   const normalizedToolChoice = normalizeToolChoice(toolChoice || tool_choice, tools);
   if (normalizedToolChoice) payload.tool_choice = normalizedToolChoice;
 
-  payload.max_tokens = 4096;
-  if (!resolvedUrl.includes("openai.com")) {
-    payload.thinking = { budget_tokens: 128 };
+  payload.max_tokens = 8192;
+  // Only add Gemini-specific thinking budget when routing to a Gemini model via Forge.
+  // Omitting it for plain OpenAI-compatible providers avoids 400 errors on unknown fields.
+  if (!resolvedUrl.includes("openai.com") && model.startsWith("gemini")) {
+    payload.thinking = { budget_tokens: 512 };
   }
 
   const normalizedResponseFormat = normalizeResponseFormat({

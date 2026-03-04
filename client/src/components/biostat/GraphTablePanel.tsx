@@ -22,7 +22,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useAIPanelStore, DEFAULT_CUSTOMIZATIONS } from "@/stores/aiPanelStore";
-import type { TabCustomizations } from "@/stores/aiPanelStore";
+// NEW: ControlChartType needed for preferredType prop + auto-sync effect
+import type { TabCustomizations, ControlChartType } from "@/stores/aiPanelStore";
 import { useTabStore } from "@/stores/tabStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,11 +34,12 @@ import {
   Calculator,
   ChevronLeft,
   ChevronRight,
-  FileDown,
+
   Save,
   Table2,
   Trash2,
   TrendingUp,
+  TriangleAlert,
 } from "lucide-react";
 // BEFORE: import PharmaChartPanel, { type PharmaChartType } from "./PharmaChartPanel"
 // AFTER:  Charts tab removed — PharmaChartPanel no longer rendered as a separate view
@@ -214,14 +216,22 @@ interface ChartProps {
   chartData: any;
   customizations: TabCustomizations;
   colors: string[];
+  // NEW: chart type requested by LLM — takes priority over user's stored customization.
+  // REMOVED: was only using customizations.chartType which defaults to "bar" even for
+  //          area/line/KM charts, so LLM-generated charts always rendered as bar.
+  preferredType?: ControlChartType;
 }
 
-const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors }) => {
+const VALID_CHART_TYPES = new Set<ControlChartType>(["bar", "line", "area", "scatter", "pie"]);
+
+const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors, preferredType }) => {
   if (!chartData) return null;
 
   let data: any[] = [];
   let datasetKeys: string[] = [];
-  const type = customizations.chartType;
+  // NEW: prefer LLM-requested type; fall back to user customization
+  // REMOVED: was `customizations.chartType` always — ignored chart_data.type from LLM
+  const type: ControlChartType = preferredType ?? customizations.chartType;
 
   if (chartData.labels && chartData.datasets) {
     data = chartData.labels.map((label: any, idx: number) => {
@@ -564,6 +574,30 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   );
 };
 
+// ─── Chart error boundary ─────────────────────────────────────────────────────
+// NEW: React class-based boundary so a malformed chart_data doesn't crash the panel.
+// The parent supplies an onError callback to show a fallback message in its own state.
+
+interface ChartEBProps  { children: React.ReactNode; onError: () => void }
+interface ChartEBState  { hasError: boolean }
+
+class ChartErrorBoundary extends React.Component<ChartEBProps, ChartEBState> {
+  constructor(props: ChartEBProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(): ChartEBState { return { hasError: true }; }
+  componentDidCatch(err: Error) {
+    console.warn("[ChartRenderer] Rendering error — falling back to table view.", err.message);
+    this.props.onError();
+  }
+  render() {
+    // When hasError, the parent renders the fallback; we just render nothing here
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
 // ─── Editable cell ────────────────────────────────────────────────────────────
 
 interface EditableCellProps {
@@ -585,9 +619,29 @@ const EditableCell: React.FC<EditableCellProps> = ({
   const activeTabId = useTabStore((s) => s.activeTabId);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(value));
+  const [validationError, setValidationError] = useState(false);
+
+  // Keep draft in sync when value prop changes from outside (e.g. store reset)
+  React.useEffect(() => {
+    if (!editing) setDraft(String(value));
+  }, [value, editing]);
+
+  // For "value" fields that were originally numeric, validate on commit
+  const isNumericField = field === "value" && typeof value === "number";
 
   const commit = () => {
+    if (isNumericField && draft.trim() !== "" && isNaN(Number(draft))) {
+      // Non-numeric input in a numeric field — show orange error, revert after delay
+      setValidationError(true);
+      setTimeout(() => {
+        setValidationError(false);
+        setDraft(String(value));
+        setEditing(false);
+      }, 1200);
+      return;
+    }
     if (activeTabId) editTableCell(activeTabId, resultId, rowIndex, field, draft);
+    setValidationError(false);
     setEditing(false);
   };
 
@@ -599,13 +653,18 @@ const EditableCell: React.FC<EditableCellProps> = ({
       <Input
         autoFocus
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          if (validationError) setValidationError(false);
+        }}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") commit();
-          if (e.key === "Escape") setEditing(false);
+          if (e.key === "Escape") { setDraft(String(value)); setEditing(false); }
         }}
         className={`h-6 text-sm py-0 px-1 ${align === "right" ? "text-right" : ""}`}
+        style={validationError ? { borderColor: "#FD7E14", boxShadow: "0 0 0 2px rgba(253,126,20,0.2)" } : undefined}
+        title={validationError ? "Please enter a valid number" : "Press Enter to confirm, Escape to cancel"}
       />
     );
   }
@@ -664,6 +723,12 @@ export const GraphTablePanel: React.FC = () => {
 
   const activeColors = useMemo(() => resolveColors(customizations), [customizations]);
 
+  // All results across every tab in the project (for "Save all in project")
+  const allProjectResults = useMemo(
+    () => tabs.flatMap((tab) => resultsByTab[tab.id] ?? []),
+    [tabs, resultsByTab]
+  );
+
   // Save modal
   const [saveModalOpen, setSaveModalOpen] = useState(false);
 
@@ -675,6 +740,70 @@ export const GraphTablePanel: React.FC = () => {
   // Chart data
   const chartData = activeResult?.analysisResults?.chart_data;
   const analysisType = activeResult?.analysisResults?.analysis_type;
+
+  // NEW: true when the LLM explicitly generated a chart (area/line/KM/box/etc.)
+  // REMOVED: was no viz-result flag — table always rendered first regardless of request type
+  const isVizResult = analysisType === "llm_chart" && !!chartData;
+
+  // NEW: LLM-requested chart type extracted from chart_data so ChartRenderer uses it.
+  // REMOVED: ChartRenderer always used customizations.chartType which defaults to "bar",
+  //          causing every LLM chart (area, line, KM…) to silently render as a bar chart.
+  const llmChartType: ControlChartType | undefined = (() => {
+    const t = chartData?.type as string | undefined;
+    if (t && VALID_CHART_TYPES.has(t as ControlChartType)) return t as ControlChartType;
+    return undefined;
+  })();
+
+  // NEW: auto-sync customizations.chartType when an llm_chart result arrives so the
+  //      Customize panel badge and any downstream logic reflect the correct type.
+  React.useEffect(() => {
+    if (!activeTabId || !llmChartType) return;
+    setCustomization(activeTabId, "chartType", llmChartType);
+  }, [activeResult?.id, llmChartType, activeTabId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // NEW: chart error state — set by ChartErrorBoundary when rendering throws
+  const [chartError, setChartError] = useState(false);
+  // Reset chart error whenever the active result changes
+  React.useEffect(() => { setChartError(false); }, [activeResult?.id]);
+
+  // NEW: for llm_chart results the stats table is often just a "Note" row — suppress it
+  //      so the chart is the primary visual and the note appears as a small italic caption.
+  // REMOVED: was always showing the stats table even when it only contained a footnote
+  const isNoteOnlyTable = useMemo(() => {
+    if (!isVizResult) return false;
+    const tbl: Array<{ metric: string; value: any }> =
+      activeResult?.editedTable ??
+      activeResult?.analysisResults?.results_table ??
+      [];
+    return tbl.length === 1 && String(tbl[0]?.metric ?? "").toLowerCase() === "note";
+  }, [isVizResult, activeResult]);
+
+  // NEW: detect when the user asked for a chart but the result has no chart_data.
+  // Used to show the amber "chart not generated" warning so the user knows why they
+  // see a table instead of a visualization.
+  // REMOVED: there was no user-visible feedback when chart generation silently failed.
+  const isVizQueryByKeywords = useMemo(() => {
+    const q = (activeResult?.query ?? "").toLowerCase();
+    return [
+      "area chart", "area graph", "area plot",
+      "line chart", "line graph", "line plot",
+      "bar chart", "bar graph", "bar plot",
+      "scatter plot", "scatter chart", "scatter graph", "scatterplot",
+      "pie chart", "pie graph",
+      "kaplan-meier", "kaplan meier", "km curve", "km plot",
+      "survival curve", "survival plot",
+      "box plot", "boxplot", "box-plot", "box and whisker",
+      "violin plot", "violin chart",
+      "volcano plot", "volcano chart",
+      "forest plot", "forest chart",
+      "heatmap", "heat map",
+      "generate chart", "create chart", "show chart", "render chart",
+      "draw chart", "visualize", "cumulative auc curve", "concentration-time",
+    ].some((kw) => q.includes(kw));
+  }, [activeResult?.query]);
+
+  // Show warning when a viz was requested but no chart was produced
+  const showChartFallbackWarning = isVizQueryByKeywords && !isVizResult && !!activeResult;
 
   const seriesCount = useMemo(() => {
     if (!chartData) return 1;
@@ -712,6 +841,51 @@ export const GraphTablePanel: React.FC = () => {
     return table;
   }, [activeResult, customizations.tableFilter, customizations.tableSort]);
 
+  // ── Table → Chart live sync ──────────────────────────────────────────────
+  // Rebuilds chartData from editedTable so Recharts auto-re-renders whenever
+  // the user edits a VALUE cell in the Statistics Summary table.
+  // Only syncs when the edited row count matches chart label count (1:1 mapping).
+  const syncedChartData = useMemo(() => {
+    if (!chartData) return null;
+    const editedRows = activeResult?.editedTable;
+    if (!editedRows || editedRows.length === 0) return chartData;
+    if (!chartData.labels || !chartData.datasets) return chartData;
+    if (editedRows.length !== chartData.labels.length) return chartData;
+    return {
+      ...chartData,
+      labels: editedRows.map((r: any) => String(r.metric ?? "")),
+      datasets: chartData.datasets.map((ds: any) => ({
+        ...ds,
+        data: editedRows.map((r: any) => {
+          const v = Number(r.value);
+          return isNaN(v) ? 0 : v;
+        }),
+      })),
+    };
+  }, [chartData, activeResult?.editedTable]);
+
+  // True when editedTable has diverged from original chart_data — drives the "Live" badge
+  const hasTableSync = useMemo(
+    () => !!activeResult?.editedTable && syncedChartData !== chartData,
+    [activeResult?.editedTable, syncedChartData, chartData]
+  );
+
+  // ── Auto-chart from stats table (no LLM chart_data) ─────────────────────
+  // When there is no LLM-generated chart_data but the stats table has ≥2 numeric
+  // rows, synthesise a bar chart so VALUE cell edits instantly update the preview.
+  const autoChartFromTable = useMemo(() => {
+    if (chartData) return null; // real chart_data takes precedence
+    if (displayTable.length === 0) return null;
+    const numRows = (displayTable as Array<{ metric: string; value: any }>).filter(
+      (r) => r.value !== "" && !isNaN(Number(r.value))
+    );
+    if (numRows.length < 2) return null;
+    return {
+      labels: numRows.map((r) => String(r.metric ?? "")),
+      datasets: [{ label: "Value", data: numRows.map((r) => Number(r.value)) }],
+    };
+  }, [chartData, displayTable]);
+
   // Customization handlers
   const handleSet = useCallback(
     <K extends keyof TabCustomizations>(key: K, value: TabCustomizations[K]) => {
@@ -731,27 +905,7 @@ export const GraphTablePanel: React.FC = () => {
     if (activeTabId) resetCustomizations(activeTabId);
   }, [activeTabId, resetCustomizations]);
 
-  // Export CSV
-  const handleExportCSV = useCallback(() => {
-    if (!activeResult) return;
-    const table =
-      activeResult.editedTable ??
-      activeResult.analysisResults?.results_table ??
-      [];
-    const header = ["Metric", "Value"];
-    const rows = table.map((r: any) => [
-      `"${String(r.metric).replace(/"/g, '""')}"`,
-      `"${String(r.value).replace(/"/g, '""')}"`,
-    ]);
-    const csv = [header, ...rows].map((r) => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `analysis-${activeResult.id}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [activeResult]);
+
 
   // BEFORE: requestedChartType useMemo — used to detect pharma chart type for PharmaChartPanel
   // AFTER:  removed — Charts tab is gone; Recharts ChartRenderer handles all chart output inline
@@ -869,7 +1023,7 @@ export const GraphTablePanel: React.FC = () => {
           )}
         </div>
 
-        {/* Right: Customize · Save · CSV · Clear */}
+        {/* Right: Customize · Save · Clear */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {/* Customize control panel */}
           <ControlPanel
@@ -890,19 +1044,6 @@ export const GraphTablePanel: React.FC = () => {
           >
             <Save className="w-3.5 h-3.5" />
             Save
-          </Button>
-
-          {/* Export CSV */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 text-xs px-2 text-[#64748b] hover:text-[#0f172a]"
-            onClick={handleExportCSV}
-            disabled={!activeResult || displayTable.length === 0}
-            title="Export table as CSV"
-          >
-            <FileDown className="w-3.5 h-3.5" />
-            CSV
           </Button>
 
           {/* Clear */}
@@ -960,9 +1101,147 @@ export const GraphTablePanel: React.FC = () => {
           </p>
         )}
 
-        {/* Stats table */}
-        {displayTable.length > 0 && (
+        {/* ── NEW: chart-requested-but-table-returned warning ──────────────── */}
+        {/* RESTORED: previously there was no user-facing signal when chart gen failed —  */}
+        {/*           users just saw a silent table with no explanation.                  */}
+        {/* showChartFallbackWarning = isVizQueryByKeywords && !isVizResult && !!activeResult */}
+        {showChartFallbackWarning && (
+          <div
+            className="flex items-start gap-3 text-amber-700 bg-amber-50 border border-amber-200 p-4 rounded-xl text-sm"
+            role="alert"
+            aria-label="Chart generation notice"
+          >
+            <TriangleAlert className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-500" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="font-semibold">Chart generation failed — showing table instead</p>
+              <p className="text-amber-600 text-xs mt-0.5 leading-relaxed">
+                The AI did not return chart data for this request. Try rephrasing:{" "}
+                <em>"Generate an area chart of…"</em> or{" "}
+                <em>"Show a bar chart comparing…"</em>. Check the browser console for{" "}
+                <code className="font-mono text-[11px] bg-amber-100 px-1 rounded">[ChartDetect]</code>{" "}
+                logs to diagnose why chart detection fired or was skipped.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Chart card (shared JSX — rendered above or below stats table) ── */}
+        {/* NEW: extracted so we can render it first for llm_chart (viz) results.   */}
+        {/* REMOVED: chart was always below the stats table even for chart requests. */}
+        {chartData && (() => {
+          const chartLabel = (llmChartType ?? customizations.chartType);
+          const headerLabel = isVizResult ? "Chart" : (
+            analysisType
+              ? `${analysisType.charAt(0).toUpperCase()}${analysisType.slice(1).replace(/_/g, " ")} Chart`
+              : "Chart"
+          );
+
+          return (
+            // NEW: for viz results, chart is the primary output — render it first.
+            // Container uses the exact Tailwind classes requested for production readiness.
+            <Card
+              className="h-96 w-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col"
+              aria-label={`${headerLabel} — ${activeResult?.graphTitle ?? activeResult?.query ?? "analysis"}`}
+              role="img"
+            >
+              <CardHeader className="flex-shrink-0 py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
+                <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
+                  <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
+                  {headerLabel}
+                  <Badge className="text-[10px] h-4 bg-[#f1f5f9] text-[#64748b] border-0 capitalize font-normal">
+                    {chartLabel}
+                  </Badge>
+                  {hasTableSync && (
+                    <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal ml-0.5">
+                      Live
+                    </Badge>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1 pb-4 pt-3 min-h-0">
+                {chartError ? (
+                  // NEW: error fallback — replaces ChartRenderer output when boundary catches
+                  <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
+                    <p className="text-sm text-[#64748b]">
+                      Chart rendering error — data may be malformed.
+                    </p>
+                    <div className="flex gap-3">
+                      <button
+                        className="text-xs text-[#14b8a6] underline underline-offset-2 hover:text-[#0d9488] transition-colors"
+                        onClick={() => setChartError(false)}
+                        aria-label="Retry chart render"
+                      >
+                        Retry
+                      </button>
+                      <span className="text-xs text-[#94a3b8]">or</span>
+                      <button
+                        className="text-xs text-[#64748b] underline underline-offset-2 hover:text-[#0f172a] transition-colors"
+                        onClick={() => {
+                          // Scroll to the stats table below
+                          document.querySelector("[data-stats-table]")?.scrollIntoView({ behavior: "smooth" });
+                        }}
+                        aria-label="View data as table"
+                      >
+                        View as table ↓
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  // NEW: wrapped in ChartErrorBoundary so a crash doesn't take down the panel
+                  <ChartErrorBoundary onError={() => setChartError(true)}>
+                    <ChartRenderer
+                      // Use syncedChartData when table edits exist; falls back to original
+                      chartData={syncedChartData ?? chartData}
+                      customizations={customizations}
+                      colors={activeColors}
+                      preferredType={llmChartType}
+                    />
+                  </ChartErrorBoundary>
+                )}
+              </CardContent>
+              {/* NEW: show the "Note" row as a small italic caption beneath the chart */}
+              {isNoteOnlyTable && (
+                <p className="flex-shrink-0 text-xs italic text-[#94a3b8] px-4 pb-2.5 border-t border-[#e2e8f0] pt-2">
+                  {String(activeResult?.analysisResults?.results_table?.[0]?.value ?? "")}
+                </p>
+              )}
+            </Card>
+          );
+        })()}
+
+        {/* Auto-chart from table — rendered when no LLM chart_data exists but stats table  */}
+        {/* has ≥2 numeric rows. Editing any VALUE cell instantly updates this chart because  */}
+        {/* autoChartFromTable is derived from displayTable which reads from editedTable.      */}
+        {autoChartFromTable && !isNoteOnlyTable && !isVizResult && (
           <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
+            <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
+              <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
+                <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
+                Live Preview
+                <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal">
+                  synced from table
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pb-4 pt-3">
+              <ChartErrorBoundary onError={() => {}}>
+                <ChartRenderer
+                  chartData={autoChartFromTable}
+                  customizations={customizations}
+                  colors={activeColors}
+                />
+              </ChartErrorBoundary>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Stats table */}
+        {/* Hidden when a chart is rendering (isVizResult) — the chart IS the output.          */}
+        {/* Previously showed both chart AND table simultaneously, giving the "two outputs"     */}
+        {/* impression. Now: chart results show only the chart; table results show only the     */}
+        {/* table. The note-only caption case is still rendered inside the chart card above.    */}
+        {displayTable.length > 0 && !isNoteOnlyTable && !isVizResult && (
+          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="">
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
               <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
                 <Table2 className="w-4 h-4 text-[#14b8a6]" />
@@ -1026,32 +1305,6 @@ export const GraphTablePanel: React.FC = () => {
           </Card>
         )}
 
-        {/* Chart */}
-        {chartData && (
-          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
-            <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-              <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
-                {analysisType
-                  ? `${analysisType.charAt(0).toUpperCase()}${analysisType
-                      .slice(1)
-                      .replace(/_/g, " ")} Chart`
-                  : "Chart"}
-                <Badge className="text-[10px] h-4 bg-[#f1f5f9] text-[#64748b] border-0 capitalize font-normal">
-                  {customizations.chartType}
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pb-4 pt-3">
-              <ChartRenderer
-                chartData={chartData}
-                customizations={customizations}
-                colors={activeColors}
-              />
-            </CardContent>
-          </Card>
-        )}
-
         {/* Raw data table */}
         {activeResult?.tableData?.rows?.length > 0 && (
           <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
@@ -1108,7 +1361,7 @@ export const GraphTablePanel: React.FC = () => {
                 </table>
                 {activeResult.tableData.rows.length > 100 && (
                   <p className="text-xs text-[#64748b] px-4 py-2 border-t border-[#e2e8f0]">
-                    Showing 100 of {activeResult.tableData.rows.length} rows — export CSV to view all
+                    Showing 100 of {activeResult.tableData.rows.length} rows
                   </p>
                 )}
               </div>
@@ -1154,6 +1407,7 @@ export const GraphTablePanel: React.FC = () => {
         activeIndex={activeIndex}
         tabName={activeTabName}
         graphTitle={titleOverride ?? activeResult?.graphTitle}
+        allProjectResults={allProjectResults}
       />
     </div>
   );

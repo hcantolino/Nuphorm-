@@ -9,11 +9,10 @@
  *   4. Colors — preset palettes, react-colorful color wheel, per-series overrides
  */
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import Draggable from "react-draggable";
 import { HexColorPicker } from "react-colorful";
 import { Switch } from "@/components/ui/switch";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Settings2,
   BarChart2,
@@ -747,6 +746,53 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [section, setSection] = useState<ControlSection>("chart");
   const [open, setOpen] = useState(false);
   const nodeRef = useRef<HTMLDivElement>(null);
+  const [panelWidth, setPanelWidth] = useState(360);
+  const [panelHeight, setPanelHeight] = useState<number | null>(null);
+  const resizeState = useRef<{
+    type: "right" | "bottom" | "corner";
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizeState.current) return;
+      const { type, startX, startY, startW, startH } = resizeState.current;
+      if (type === "right" || type === "corner") {
+        const newW = Math.max(320, Math.min(700, startW + (e.clientX - startX)));
+        setPanelWidth(newW);
+      }
+      if (type === "bottom" || type === "corner") {
+        const maxH = window.innerHeight * 0.92;
+        const newH = Math.max(280, Math.min(maxH, startH + (e.clientY - startY)));
+        setPanelHeight(newH);
+      }
+    };
+    const onUp = () => { resizeState.current = null; };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  const startResize = useCallback(
+    (type: "right" | "bottom" | "corner", e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resizeState.current = {
+        type,
+        startX: e.clientX,
+        startY: e.clientY,
+        startW: panelWidth,
+        startH: nodeRef.current?.offsetHeight ?? 400,
+      };
+    },
+    [panelWidth]
+  );
 
   // Suppress unused warning — hasChartData available for future scatter-specific logic
   void hasChartData;
@@ -769,11 +815,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         <Draggable nodeRef={nodeRef} handle=".drag-handle">
           <div
             ref={nodeRef}
-            className="fixed top-20 right-4 w-[360px] bg-white border border-[#e2e8f0] rounded-xl overflow-hidden z-[200]"
-            style={{ boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)" }}
+            className="fixed top-20 right-4 bg-white border border-[#e2e8f0] rounded-xl z-[200] flex flex-col"
+            style={{
+              width: panelWidth,
+              height: panelHeight ?? "auto",
+              maxHeight: panelHeight ? "none" : "85vh",
+              boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
+            }}
           >
             {/* Drag handle / header */}
-            <div className="drag-handle flex items-center justify-between px-4 py-2.5 border-b border-[#e2e8f0] bg-[#f8fafc] cursor-grab active:cursor-grabbing select-none">
+            <div className="drag-handle flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-[#e2e8f0] bg-[#f8fafc] rounded-tl-xl rounded-tr-xl cursor-grab active:cursor-grabbing select-none">
               <div className="flex items-center gap-2">
                 <GripHorizontal className="w-4 h-4 text-[#94a3b8]" />
                 <span className="text-sm font-semibold text-[#0f172a]">Customize Results</span>
@@ -798,7 +849,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             </div>
 
             {/* Section tabs */}
-            <div className="flex border-b border-[#e2e8f0] bg-[#f8fafc]">
+            <div className="flex-shrink-0 flex border-b border-[#e2e8f0] bg-[#f8fafc]">
               {SECTION_TABS.map(({ key, label, Icon }) => (
                 <button
                   key={key}
@@ -816,8 +867,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               ))}
             </div>
 
-            {/* Section content */}
-            <ScrollArea className="max-h-[440px]">
+            {/* Section content — scrollable only when content overflows height */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
               <div className="p-4">
                 {section === "chart" && (
                   <ChartSection customizations={customizations} onSet={onSet} />
@@ -836,7 +887,62 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   />
                 )}
               </div>
-            </ScrollArea>
+            </div>
+
+            {/* Right edge — drag to resize width */}
+            <div
+              onMouseDown={(e) => startResize("right", e)}
+              title="Drag to resize width"
+              style={{
+                position: "absolute",
+                top: 0,
+                right: -3,
+                bottom: 10,
+                width: 6,
+                cursor: "col-resize",
+                borderRadius: "0 4px 4px 0",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(0,184,169,0.35)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+            />
+
+            {/* Bottom edge — drag to resize height */}
+            <div
+              onMouseDown={(e) => startResize("bottom", e)}
+              title="Drag to resize height"
+              style={{
+                position: "absolute",
+                bottom: -3,
+                left: 10,
+                right: 10,
+                height: 6,
+                cursor: "row-resize",
+                borderRadius: "0 0 4px 4px",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(0,184,169,0.35)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+            />
+
+            {/* Bottom-right corner — drag to resize both */}
+            <div
+              onMouseDown={(e) => startResize("corner", e)}
+              title="Drag to resize"
+              style={{
+                position: "absolute",
+                bottom: 0,
+                right: 0,
+                width: 14,
+                height: 14,
+                cursor: "nwse-resize",
+                background: "#DEE2E6",
+                borderRadius: "0 0 10px 0",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#00B8A9"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#DEE2E6"; }}
+            />
           </div>
         </Draggable>
       )}
