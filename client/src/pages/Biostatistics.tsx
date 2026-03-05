@@ -425,7 +425,7 @@ export default function Biostatistics() {
               <div className="flex-1 flex overflow-hidden min-h-0">
                 <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
                   {/* Left Panel - Dataset Manager + Analysis Tools */}
-                  <ResizablePanel defaultSize={35} minSize={22} maxSize={55}>
+                  <ResizablePanel defaultSize={30} minSize={20} maxSize={55}>
                     <div className="flex flex-col h-full overflow-hidden">
                       <ErrorBoundary label="Dataset Manager & Analysis Tools">
                         <BiostatisticsMeasurementsPanel />
@@ -436,7 +436,7 @@ export default function Biostatistics() {
                   <ResizableHandle />
 
                   {/* Right Panel - Charts + AI Results Table (full height) */}
-                  <ResizablePanel defaultSize={65} minSize={45}>
+                  <ResizablePanel defaultSize={70} minSize={30}>
                     <div className="flex flex-col h-full overflow-hidden">
                       <ErrorBoundary label="Analysis Chart & Results">
                         <GraphTablePanel />

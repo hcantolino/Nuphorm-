@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Plus } from 'lucide-react';
+import { X, Plus, Pencil } from 'lucide-react';
 import {
   DragDropContext,
   Droppable,
@@ -122,7 +122,7 @@ export const TabBarDraggable: React.FC = () => {
                           {...provided.draggableProps}
                           {...provided.dragHandleProps}
                           className={cn(
-                            'flex items-center gap-2 px-3 py-2 rounded-t-lg border border-b-0 transition-all min-w-max max-w-[180px]',
+                            'group/tab flex items-center gap-1.5 px-3 py-2 rounded-t-lg border border-b-0 transition-all min-w-max max-w-[220px]',
                             isActive
                               ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-slate-200 dark:border-slate-700 shadow-sm'
                               : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600 hover:bg-slate-300 dark:hover:bg-slate-600',
@@ -133,7 +133,7 @@ export const TabBarDraggable: React.FC = () => {
                           aria-selected={isActive}
                           aria-label={`Tab: ${tab.title}`}
                         >
-                          {/* Tab title (double-click to edit) */}
+                          {/* Tab title — pencil icon on hover to rename */}
                           {isEditing ? (
                             <input
                               autoFocus
@@ -142,17 +142,30 @@ export const TabBarDraggable: React.FC = () => {
                               onChange={(e) => setEditingTitle(e.target.value)}
                               onKeyDown={(e) => handleEditKeyDown(e, tab.id)}
                               onBlur={() => saveTabTitle(tab.id)}
-                              className="bg-transparent outline-none text-sm font-medium px-1 w-32"
+                              className="bg-transparent outline-none text-sm font-medium px-0 py-0 w-32 border-none ring-0"
+                              style={{ font: 'inherit', lineHeight: 'inherit' }}
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <span
-                              className="text-sm font-medium truncate cursor-text hover:opacity-75 max-w-[140px]"
-                              onDoubleClick={() => startEditingTab(tab.id, tab.title)}
-                              title={tab.title}
-                            >
-                              {tab.title}
-                            </span>
+                            <>
+                              <span
+                                className="text-sm font-medium truncate max-w-[140px]"
+                                title={tab.title}
+                              >
+                                {tab.title}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startEditingTab(tab.id, tab.title);
+                                }}
+                                className="p-0.5 rounded hover:bg-slate-300 dark:hover:bg-slate-600 transition-all flex-shrink-0 opacity-0 group-hover/tab:opacity-100 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                                aria-label={`Rename ${tab.title}`}
+                                title="Rename tab"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                            </>
                           )}
 
                           {/* Close button */}
@@ -165,7 +178,7 @@ export const TabBarDraggable: React.FC = () => {
                               'p-0.5 rounded hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors flex-shrink-0',
                               isActive
                                 ? 'text-slate-500 dark:text-slate-400'
-                                : 'text-slate-500 dark:text-slate-400 opacity-0 group-hover:opacity-100'
+                                : 'text-slate-500 dark:text-slate-400 opacity-0 group-hover/tab:opacity-100'
                             )}
                             aria-label={`Close ${tab.title}`}
                             title="Close tab (Ctrl+W)"

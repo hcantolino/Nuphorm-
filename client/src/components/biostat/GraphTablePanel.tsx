@@ -25,6 +25,7 @@ import { useAIPanelStore, DEFAULT_CUSTOMIZATIONS } from "@/stores/aiPanelStore";
 // NEW: ControlChartType needed for preferredType prop + auto-sync effect
 import type { TabCustomizations, ControlChartType } from "@/stores/aiPanelStore";
 import { useTabStore } from "@/stores/tabStore";
+import { useBiostatisticsStore } from "@/stores/biostatisticsStore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,10 +61,11 @@ function resolveColors(customizations: TabCustomizations): string[] {
 
 function buildLegendProps(pos: TabCustomizations["legendPosition"]) {
   if (pos === "none") return null;
-  if (pos === "left")  return { verticalAlign: "middle" as const, align: "left"   as const, layout: "vertical"   as const };
-  if (pos === "right") return { verticalAlign: "middle" as const, align: "right"  as const, layout: "vertical"   as const };
-  if (pos === "top")   return { verticalAlign: "top"    as const, align: "center" as const, layout: "horizontal" as const };
-  return                      { verticalAlign: "bottom" as const, align: "center" as const, layout: "horizontal" as const };
+  const wrapperStyle: React.CSSProperties = { position: "relative", paddingTop: 12 };
+  if (pos === "left")  return { verticalAlign: "middle" as const, align: "left"   as const, layout: "vertical"   as const, wrapperStyle };
+  if (pos === "right") return { verticalAlign: "middle" as const, align: "right"  as const, layout: "vertical"   as const, wrapperStyle };
+  if (pos === "top")   return { verticalAlign: "top"    as const, align: "center" as const, layout: "horizontal" as const, wrapperStyle };
+  return                      { verticalAlign: "bottom" as const, align: "center" as const, layout: "horizontal" as const, wrapperStyle };
 }
 
 // ─── Linear regression helper ────────────────────────────────────────────────
@@ -255,7 +257,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   const gridStroke = customizations.showGrid ? "#e2e8f0" : "transparent";
   const legendProps = buildLegendProps(customizations.legendPosition);
 
-  const bottomMargin = customizations.xLabel ? 30 : 8;
+  const bottomMargin = customizations.xLabel ? 36 : 20;
   const leftMargin   = customizations.yLabel ? 20 : 0;
   const sharedMargin = { top: 8, right: 16, bottom: bottomMargin, left: leftMargin };
 
@@ -289,7 +291,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
       value: typeof d[firstKey] === "number" ? d[firstKey] : (d.value ?? 0),
     }));
     return (
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={320} minHeight={280}>
         <PieChart margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
           <Pie
             data={pieData}
@@ -353,7 +355,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
     // Use ComposedChart when trendline is active
     if (regression) {
       return (
-        <ResponsiveContainer width="100%" height={280}>
+        <ResponsiveContainer width="100%" height={320} minHeight={280}>
           <ComposedChart margin={sharedMargin}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
             <XAxis
@@ -413,7 +415,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
 
     // Regular scatter (no trendline)
     return (
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={320} minHeight={280}>
         <ScatterChart margin={sharedMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis
@@ -460,7 +462,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   // ── Area ─────────────────────────────────────────────────────────────────
   if (type === "area") {
     return (
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={320} minHeight={280}>
         <AreaChart data={data} margin={sharedMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis dataKey="name" tick={{ fontSize: 11 }} interval="preserveStartEnd" label={xAxisLabel} />
@@ -499,7 +501,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   // ── Line ─────────────────────────────────────────────────────────────────
   if (type === "line") {
     return (
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={320} minHeight={280}>
         <LineChart data={data} margin={sharedMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis dataKey="name" tick={{ fontSize: 11 }} interval="preserveStartEnd" label={xAxisLabel} />
@@ -542,7 +544,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   ];
 
   return (
-    <ResponsiveContainer width="100%" height={280}>
+    <ResponsiveContainer width="100%" height={320} minHeight={280}>
       <BarChart data={data} margin={sharedMargin} barGap={customizations.barGap}>
         <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
         <XAxis dataKey="name" tick={{ fontSize: 11 }} label={xAxisLabel} />
@@ -723,11 +725,13 @@ export const GraphTablePanel: React.FC = () => {
 
   const activeColors = useMemo(() => resolveColors(customizations), [customizations]);
 
-  // All results across every tab in the project (for "Save all in project")
-  const allProjectResults = useMemo(
-    () => tabs.flatMap((tab) => resultsByTab[tab.id] ?? []),
-    [tabs, resultsByTab]
-  );
+  // Project name for save modal folder hierarchy
+  const projectName = useBiostatisticsStore((s) => {
+    const proj = s.projects.find((p) => p.id === s.activeProjectId);
+    return proj?.name ?? "Untitled Project";
+  });
+
+  // tabs + resultsByTab are passed directly to SaveAnalysisModal
 
   // Save modal
   const [saveModalOpen, setSaveModalOpen] = useState(false);
@@ -1125,10 +1129,37 @@ export const GraphTablePanel: React.FC = () => {
           </div>
         )}
 
+        {/* ── Blocked analysis error card ──────────────────────────────────── */}
+        {/* When the backend blocks a synthetic/fabricated chart, it returns an     */}
+        {/* "Error" row in results_table. Show a red error card instead of chart.   */}
+        {activeResult?.analysisResults?.results_table?.[0]?.metric === "Error" && (() => {
+          const errorValue = activeResult.analysisResults.results_table[0].value ?? "";
+          const isSubjectMismatch = errorValue.includes("subject mismatch");
+          return (
+            <div
+              className="flex items-start gap-3 text-red-800 bg-red-50 border border-red-300 p-4 rounded-xl text-sm"
+              role="alert"
+              aria-label="Analysis blocked"
+            >
+              <TriangleAlert className="w-5 h-5 flex-shrink-0 mt-0.5 text-red-500" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="font-semibold">
+                  {isSubjectMismatch ? "Analysis blocked — subject mismatch" : "Analysis blocked"}
+                </p>
+                <p className="text-red-700 text-xs mt-1 leading-relaxed">
+                  {isSubjectMismatch
+                    ? "The AI reported subjects not found in the uploaded file. No fabricated data will be shown. Please re-run the analysis."
+                    : "The AI did not return verifiable data from the uploaded file. Please rephrase your query or re-upload your data."}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ── Chart card (shared JSX — rendered above or below stats table) ── */}
         {/* NEW: extracted so we can render it first for llm_chart (viz) results.   */}
         {/* REMOVED: chart was always below the stats table even for chart requests. */}
-        {chartData && (() => {
+        {chartData && activeResult?.analysisResults?.results_table?.[0]?.metric !== "Error" && (() => {
           const chartLabel = (llmChartType ?? customizations.chartType);
           const headerLabel = isVizResult ? "Chart" : (
             analysisType
@@ -1140,7 +1171,7 @@ export const GraphTablePanel: React.FC = () => {
             // NEW: for viz results, chart is the primary output — render it first.
             // Container uses the exact Tailwind classes requested for production readiness.
             <Card
-              className="h-96 w-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col"
+              className="w-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col"
               aria-label={`${headerLabel} — ${activeResult?.graphTitle ?? activeResult?.query ?? "analysis"}`}
               role="img"
             >
@@ -1158,7 +1189,7 @@ export const GraphTablePanel: React.FC = () => {
                   )}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="flex-1 pb-4 pt-3 min-h-0">
+              <CardContent className="pb-4 pt-3">
                 {chartError ? (
                   // NEW: error fallback — replaces ChartRenderer output when boundary catches
                   <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
@@ -1209,6 +1240,74 @@ export const GraphTablePanel: React.FC = () => {
           );
         })()}
 
+        {/* ── Fallback: chart source data table ─────────────────────────────────── */}
+        {/* When the AI returns a chart (isVizResult) but the results_table is only a  */}
+        {/* "Note" row or empty, auto-render the chart's underlying data as a table.   */}
+        {isVizResult && isNoteOnlyTable && chartData && (() => {
+          // Extract tabular data from chartData (labels + datasets format)
+          const labels: string[] = chartData.labels ?? [];
+          const datasets: Array<{ label: string; data: number[] }> = chartData.datasets ?? [];
+          if (labels.length === 0 || datasets.length === 0) return null;
+
+          const dsLabels = datasets.map((ds: any) => ds.label ?? "Value");
+
+          return (
+            <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="">
+              <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
+                <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
+                  <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                  Chart Source Data
+                  <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal">
+                    auto-generated
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-0 pb-2">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#e2e8f0] bg-[#f8fafc]">
+                        <th className="text-left py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide">
+                          Label
+                        </th>
+                        {dsLabels.map((dl: string, i: number) => (
+                          <th key={i} className="text-right py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide whitespace-nowrap">
+                            {dl}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {labels.map((label: string, rowIdx: number) => (
+                        <tr
+                          key={rowIdx}
+                          className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#f0fdfa] transition-colors"
+                          style={
+                            customizations.zebraStriping && rowIdx % 2 === 0
+                              ? { backgroundColor: "#f1f5f9" }
+                              : undefined
+                          }
+                        >
+                          <td className="py-1.5 px-4 font-medium text-[#0f172a]">{label}</td>
+                          {datasets.map((ds: any, dsIdx: number) => (
+                            <td key={dsIdx} className="py-1.5 px-4 text-right font-mono text-xs text-[#0f172a]">
+                              {typeof ds.data?.[rowIdx] === "number"
+                                ? Number.isInteger(ds.data[rowIdx])
+                                  ? ds.data[rowIdx]
+                                  : ds.data[rowIdx].toFixed(2)
+                                : String(ds.data?.[rowIdx] ?? "")}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })()}
+
         {/* Auto-chart from table — rendered when no LLM chart_data exists but stats table  */}
         {/* has ≥2 numeric rows. Editing any VALUE cell instantly updates this chart because  */}
         {/* autoChartFromTable is derived from displayTable which reads from editedTable.      */}
@@ -1236,11 +1335,10 @@ export const GraphTablePanel: React.FC = () => {
         )}
 
         {/* Stats table */}
-        {/* Hidden when a chart is rendering (isVizResult) — the chart IS the output.          */}
-        {/* Previously showed both chart AND table simultaneously, giving the "two outputs"     */}
-        {/* impression. Now: chart results show only the chart; table results show only the     */}
-        {/* table. The note-only caption case is still rendered inside the chart card above.    */}
-        {displayTable.length > 0 && !isNoteOnlyTable && !isVizResult && (
+        {/* Shown when there are real data rows (not just a "Note" row).                       */}
+        {/* Now also shown alongside charts (isVizResult) so users always get both              */}
+        {/* a visual and tabular representation of the data.                                    */}
+        {displayTable.length > 0 && !isNoteOnlyTable && (
           <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="">
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
               <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
@@ -1407,7 +1505,9 @@ export const GraphTablePanel: React.FC = () => {
         activeIndex={activeIndex}
         tabName={activeTabName}
         graphTitle={titleOverride ?? activeResult?.graphTitle}
-        allProjectResults={allProjectResults}
+        tabs={tabs}
+        resultsByTab={resultsByTab}
+        projectName={projectName}
       />
     </div>
   );

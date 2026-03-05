@@ -6,22 +6,29 @@
  *  • Save Format selector (CSV / XLSX / PDF / JSON / SAS / DTA) — REQUIRED
  *  • Tags multi-select (sourced from existing technical files)
  *  • Where folder dropdown (sourced from existing files) + inline new-folder creator
- *  • Master toggles: "Save all in project" / "Save all in tab"
- *  • Granular checkboxes: graph / table / AI query
- *  • Custom quantity steppers
+ *  • Dynamic "Tabs to Include" section — one collapsible row per tab
+ *  • Per-item chip selection: graphs, tables, queries
+ *  • Include All Tabs master button
+ *  • Live summary footer
  *  • Generates the file in the chosen format, triggers immediate download,
  *    AND stores a retrievable copy in Technical Files
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import Draggable from "react-draggable";
 import {
   Save,
   X,
   ChevronDown,
+  ChevronRight,
   Plus,
   FolderOpen,
   Tag,
   Check,
+  GripHorizontal,
+  BarChart2,
+  Table2,
+  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -29,6 +36,7 @@ import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { jsPDF } from "jspdf";
 import type { PanelResult } from "@/stores/aiPanelStore";
+import type { Tab } from "@/stores/tabStore";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -96,7 +104,7 @@ const FORMAT_OPTIONS: FormatOption[] = [
     ext: ".dta",
     description: "Stata-compatible CSV",
     bg: "#faf5ff",
-    textColor: "#7c3aed",
+    textColor: "#3b82f6",
     borderColor: "#ddd6fe",
   },
 ];
@@ -237,7 +245,7 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
   };
 
   // ── Teal header bar
-  doc.setFillColor(20, 184, 166);
+  doc.setFillColor(37, 99, 235);
   doc.rect(0, 0, pageW, 20, "F");
   doc.setFontSize(11);
   doc.setFont("helvetica", "bold");
@@ -315,7 +323,7 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
     checkPage();
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
-    (doc as any).setTextColor(20, 184, 166);
+    (doc as any).setTextColor(37, 99, 235);
     doc.text("AI Interpretation", margin, y);
     y += 5;
 
@@ -335,6 +343,103 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
   });
 
   // Return raw base64 (strip data URI prefix if present)
+  const uri = doc.output("datauristring");
+  return uri.includes(",") ? uri.split(",")[1] : uri;
+}
+
+/** Build a single-result PDF (graph OR table OR query) — returns base64 */
+function buildSingleResultPDF(
+  resultTitle: string,
+  itemType: "Graph" | "Table" | "Query",
+  r: PanelResult
+): string {
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const margin = 14;
+  const pageW = 210;
+  let y = 28;
+
+  const checkPage = () => { if (y > 272) { doc.addPage(); y = 20; } };
+
+  // Header bar
+  doc.setFillColor(37, 99, 235);
+  doc.rect(0, 0, pageW, 20, "F");
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "bold");
+  (doc as any).setTextColor(255, 255, 255);
+  doc.text("NuPhorm Biostatistics Platform", margin, 13);
+
+  // Title
+  (doc as any).setTextColor(15, 23, 42);
+  doc.setFontSize(13);
+  const titleLines = doc.splitTextToSize(resultTitle, pageW - margin * 2) as string[];
+  doc.text(titleLines, margin, y);
+  y += titleLines.length * 6 + 3;
+
+  // Item type badge
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  (doc as any).setTextColor(100, 116, 139);
+  doc.text(`Type: ${itemType}  |  Generated: ${new Date().toLocaleDateString("en-US")}`, margin, y);
+  y += 8;
+
+  // Query
+  if (r.query) {
+    checkPage();
+    doc.setFont("helvetica", "bold");
+    (doc as any).setTextColor(15, 23, 42);
+    doc.setFontSize(10);
+    const qLines = doc.splitTextToSize(`Query: ${r.query.slice(0, 200)}`, pageW - margin * 2) as string[];
+    doc.text(qLines, margin, y);
+    y += qLines.length * 5 + 4;
+  }
+
+  const tbl = r.editedTable ?? r.analysisResults?.results_table ?? [];
+
+  // Table data (for Table and Graph items)
+  if ((itemType === "Table" || itemType === "Graph") && tbl.length > 0) {
+    checkPage();
+    const colMetric = margin;
+    const colValue = margin + 110;
+    doc.setFillColor(241, 245, 249);
+    doc.rect(margin, y - 4, pageW - margin * 2, 7, "F");
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    (doc as any).setTextColor(51, 65, 85);
+    doc.text("Metric", colMetric + 2, y);
+    doc.text("Value", colValue + 2, y);
+    y += 5;
+
+    tbl.forEach((row: { metric: any; value: any }, idx: number) => {
+      checkPage();
+      if (idx % 2 === 0) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(margin, y - 4, pageW - margin * 2, 7, "F");
+      }
+      doc.setFontSize(8.5);
+      doc.setFont("helvetica", "normal");
+      (doc as any).setTextColor(15, 23, 42);
+      doc.text(String(row.metric ?? "").slice(0, 55), colMetric + 2, y);
+      doc.text(formatValue(row.value).slice(0, 28), colValue + 2, y);
+      y += 6.5;
+    });
+    y += 3;
+  }
+
+  // AI Interpretation
+  if (r.analysis) {
+    checkPage();
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    (doc as any).setTextColor(37, 99, 235);
+    doc.text("AI Interpretation", margin, y);
+    y += 5;
+    doc.setFont("helvetica", "normal");
+    (doc as any).setTextColor(51, 65, 85);
+    doc.setFontSize(8.5);
+    const aLines = doc.splitTextToSize(r.analysis.slice(0, 1200), pageW - margin * 2) as string[];
+    aLines.forEach((line) => { checkPage(); doc.text(line, margin, y); y += 4.8; });
+  }
+
   const uri = doc.output("datauristring");
   return uri.includes(",") ? uri.split(",")[1] : uri;
 }
@@ -380,9 +485,13 @@ const FORMAT_EXT: Record<SaveFormat, string> = {
 
 // ── existing helpers (kept) ────────────────────────────────────────────────────
 
-function todayDDMMYYYY(): string {
-  const d = new Date();
-  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+/** Returns today's date as MM/DD/YYYY — used in filenames and titles */
+function todayMMDDYYYY(): string {
+  return new Date().toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  });
 }
 
 function buildCSV(table: Array<{ metric: string; value: any }>): string {
@@ -534,46 +643,41 @@ function Toggle({ id, checked, onChange, label, sublabel, disabled, tooltip }: T
   );
 }
 
-// ── Horizontal slider ─────────────────────────────────────────────────────────
+// ── Per-result item categorisation ────────────────────────────────────────────
 
-interface SliderProps {
-  label: string;
-  value: number;
-  min?: number;
-  max: number;
-  onChange: (n: number) => void;
-  disabled?: boolean;
+/** Unique key for a selectable item across all tabs */
+type ItemKey = string; // `${tabId}::${category}::${resultId}`
+
+interface TabItemInfo {
+  tabId: string;
+  tabTitle: string;
+  graphs: PanelResult[];  // results that have chart_data
+  tables: PanelResult[];  // results that have results_table
+  queries: PanelResult[]; // all results (every result has a query)
 }
-function Slider({ label, value, min = 1, max, onChange, disabled }: SliderProps) {
-  const clampedMax = Math.max(min, max);
-  const pct = clampedMax <= min ? 100 : ((value - min) / (clampedMax - min)) * 100;
-  return (
-    <div className={`space-y-1.5 ${disabled ? "opacity-40" : ""}`}>
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-[#0f172a]">{label}</span>
-        <span
-          className="text-xs tabular-nums font-semibold px-1.5 py-0.5 rounded"
-          style={{ color: "#0D6EFD", background: "#EFF6FF" }}
-        >
-          {value} of {clampedMax}
-        </span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={clampedMax}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-1.5 rounded-full appearance-none disabled:cursor-not-allowed"
-        style={{
-          background: `linear-gradient(to right, #00B8A9 ${pct}%, #E5E7EB ${pct}%)`,
-          accentColor: "#0D6EFD",
-          cursor: disabled ? "not-allowed" : "pointer",
-        }}
-      />
-    </div>
-  );
+
+function categoriseTabResults(
+  tabs: Tab[],
+  resultsByTab: Record<string, PanelResult[]>
+): TabItemInfo[] {
+  return tabs.map((tab) => {
+    const results = resultsByTab[tab.id] ?? [];
+    return {
+      tabId: tab.id,
+      tabTitle: tab.title,
+      graphs: results.filter((r) => r.analysisResults?.chart_data),
+      tables: results.filter(
+        (r) =>
+          (r.editedTable && r.editedTable.length > 0) ||
+          (r.analysisResults?.results_table && r.analysisResults.results_table.length > 0)
+      ),
+      queries: results,
+    };
+  });
+}
+
+function makeKey(tabId: string, category: string, resultId: string): ItemKey {
+  return `${tabId}::${category}::${resultId}`;
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -586,7 +690,12 @@ interface Props {
   activeIndex: number;
   tabName?: string;
   graphTitle?: string;
-  allProjectResults: PanelResult[];
+  /** All tabs in the project (from useTabStore) */
+  tabs: Tab[];
+  /** Per-tab results map (from useAIPanelStore) */
+  resultsByTab: Record<string, PanelResult[]>;
+  /** Active project name — auto-creates project subfolder */
+  projectName?: string;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -599,15 +708,30 @@ export default function SaveAnalysisModal({
   activeIndex,
   tabName,
   graphTitle,
-  allProjectResults,
+  tabs,
+  resultsByTab,
+  projectName,
 }: Props) {
-  const total = allResults.length;
-  const currentPage = activeIndex + 1;
-  const projectTotal = allProjectResults.length;
-
-  const derivedTitle = [tabName ?? "Analysis", graphTitle ?? "Results", todayDDMMYYYY()]
+  const derivedTitle = [tabName ?? "Analysis", graphTitle ?? "Results", todayMMDDYYYY()]
     .filter(Boolean)
     .join(" – ");
+
+  // ── Categorise results per tab ────────────────────────────────────────────
+  const tabItems = useMemo(
+    () => categoriseTabResults(tabs, resultsByTab),
+    [tabs, resultsByTab]
+  );
+
+  // Build the set of ALL possible item keys across every tab
+  const allItemKeys = useMemo(() => {
+    const keys = new Set<ItemKey>();
+    for (const ti of tabItems) {
+      for (const r of ti.graphs) keys.add(makeKey(ti.tabId, "graph", r.id));
+      for (const r of ti.tables) keys.add(makeKey(ti.tabId, "table", r.id));
+      for (const r of ti.queries) keys.add(makeKey(ti.tabId, "query", r.id));
+    }
+    return keys;
+  }, [tabItems]);
 
   // ── state ──────────────────────────────────────────────────────────────────
   const [saveAs, setSaveAs] = useState(derivedTitle);
@@ -626,17 +750,131 @@ export default function SaveAnalysisModal({
   const [creatingFolder, setCreatingFolder] = useState(false);
   const folderRef = useRef<HTMLDivElement>(null);
 
-  const [saveAllProject, setSaveAllProject] = useState(false);
-  const [saveAllTab, setSaveAllTab] = useState(false);
-  const [saveGraph, setSaveGraph] = useState(true);
-  const [saveTable, setSaveTable] = useState(true);
-  const [saveAIQuery, setSaveAIQuery] = useState(true);
-
-  const [graphCount, setGraphCount] = useState(currentPage);
-  const [tableCount, setTableCount] = useState(currentPage);
-  const [aiQueryCount, setAiQueryCount] = useState(currentPage);
-
   const [includeMetadata, setIncludeMetadata] = useState(true);
+
+  // ── Tabs to Include — item selection state ────────────────────────────────
+  const [selectedItems, setSelectedItems] = useState<Set<ItemKey>>(new Set());
+  const [expandedTabs, setExpandedTabs] = useState<Set<string>>(new Set());
+
+  // Derived selection counts
+  const selectionSummary = useMemo(() => {
+    let graphs = 0, tables = 0, queries = 0;
+    const tabsWithSelection = new Set<string>();
+    Array.from(selectedItems).forEach((key) => {
+      const [tabId, category] = key.split("::");
+      tabsWithSelection.add(tabId);
+      if (category === "graph") graphs++;
+      else if (category === "table") tables++;
+      else if (category === "query") queries++;
+    });
+    return { graphs, tables, queries, tabCount: tabsWithSelection.size };
+  }, [selectedItems]);
+
+  const isAllSelected = allItemKeys.size > 0 && allItemKeys.size === selectedItems.size
+    && Array.from(allItemKeys).every((k) => selectedItems.has(k));
+
+  // Toggle a single item
+  const toggleItem = useCallback((key: ItemKey) => {
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Select / deselect all items in a single tab
+  const toggleTabAll = useCallback((ti: TabItemInfo, forceSelect?: boolean) => {
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      const tabKeys: ItemKey[] = [
+        ...ti.graphs.map((r) => makeKey(ti.tabId, "graph", r.id)),
+        ...ti.tables.map((r) => makeKey(ti.tabId, "table", r.id)),
+        ...ti.queries.map((r) => makeKey(ti.tabId, "query", r.id)),
+      ];
+      const allSelected = forceSelect !== undefined
+        ? !forceSelect
+        : tabKeys.every((k) => next.has(k));
+      if (allSelected) {
+        for (const k of tabKeys) next.delete(k);
+      } else {
+        for (const k of tabKeys) next.add(k);
+      }
+      return next;
+    });
+  }, []);
+
+  // Include All Tabs
+  const toggleIncludeAll = useCallback(() => {
+    setSelectedItems((prev) => {
+      if (prev.size === allItemKeys.size && Array.from(allItemKeys).every((k) => prev.has(k))) {
+        return new Set<ItemKey>();
+      }
+      return new Set(allItemKeys);
+    });
+  }, [allItemKeys]);
+
+  // Toggle expanded state for a tab row
+  const toggleExpanded = useCallback((tabId: string) => {
+    setExpandedTabs((prev) => {
+      const next = new Set(prev);
+      if (next.has(tabId)) next.delete(tabId); else next.add(tabId);
+      return next;
+    });
+  }, []);
+
+  // ── floating panel drag / resize ──────────────────────────────────────────
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
+  const [savePanelWidth, setSavePanelWidth] = useState(600);
+  const [savePanelHeight, setSavePanelHeight] = useState<number | null>(null);
+
+  type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+  const resizeRef = useRef<{
+    dir: ResizeDir;
+    startX: number; startY: number;
+    startW: number; startH: number;
+    startPosX: number; startPosY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizeRef.current) return;
+      const { dir, startX, startY, startW, startH, startPosX, startPosY } = resizeRef.current;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const maxH = window.innerHeight * 0.92;
+      const goesN = dir === "n" || dir === "ne" || dir === "nw";
+      const goesS = dir === "s" || dir === "se" || dir === "sw";
+      const goesE = dir === "e" || dir === "ne" || dir === "se";
+      const goesW = dir === "w" || dir === "nw" || dir === "sw";
+      let nW = startW, nH = startH, nX = startPosX, nY = startPosY;
+      if (goesE) nW = Math.max(280, Math.min(800, startW + dx));
+      if (goesW) { nW = Math.max(280, Math.min(800, startW - dx)); nX = startPosX + (startW - nW); }
+      if (goesS) nH = Math.max(300, Math.min(maxH, startH + dy));
+      if (goesN) { nH = Math.max(300, Math.min(maxH, startH - dy)); nY = startPosY + (startH - nH); }
+      setSavePanelWidth(nW);
+      setSavePanelHeight(nH);
+      if (goesW || goesN) setDragPos({ x: nX, y: nY });
+    };
+    const onUp = () => { resizeRef.current = null; };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+  }, []);
+
+  const startResize = useCallback(
+    (dir: ResizeDir, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resizeRef.current = {
+        dir, startX: e.clientX, startY: e.clientY,
+        startW: savePanelWidth,
+        startH: savePanelHeight ?? panelRef.current?.offsetHeight ?? 500,
+        startPosX: dragPos.x, startPosY: dragPos.y,
+      };
+    },
+    [savePanelWidth, savePanelHeight, dragPos]
+  );
 
   // Reset on open
   useEffect(() => {
@@ -648,36 +886,11 @@ export default function SaveAnalysisModal({
       setSelectedTags([]);
       setNewTagInput("");
       setFolder("");
-      setSaveAllProject(false);
-      setSaveAllTab(false);
-      setSaveGraph(true);
-      setSaveTable(true);
-      setSaveAIQuery(true);
       setIncludeMetadata(true);
-      setGraphCount(currentPage);
-      setTableCount(currentPage);
-      setAiQueryCount(currentPage);
+      setSelectedItems(new Set());
+      setExpandedTabs(new Set());
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Master toggle side-effects
-  useEffect(() => {
-    if (saveAllProject) {
-      setSaveGraph(true);
-      setSaveTable(true);
-      setSaveAIQuery(true);
-      setGraphCount(projectTotal || 1);
-      setTableCount(projectTotal || 1);
-      setAiQueryCount(projectTotal || 1);
-    } else if (saveAllTab) {
-      setSaveGraph(true);
-      setSaveTable(true);
-      setSaveAIQuery(true);
-      setGraphCount(total || 1);
-      setTableCount(total || 1);
-      setAiQueryCount(total || 1);
-    }
-  }, [saveAllProject, saveAllTab, total, projectTotal]);
 
   // Click-outside to close dropdowns
   useEffect(() => {
@@ -723,14 +936,6 @@ export default function SaveAnalysisModal({
 
   // ── save mutation ──────────────────────────────────────────────────────────
   const saveReportMutation = trpc.technical.saveReport.useMutation({
-    onSuccess: () => {
-      const dest = folder ? `${folder} / ${saveAs}` : saveAs;
-      toast.success(`Saved → "${dest}"`, {
-        description: "View it under Saved Technical Files in the sidebar.",
-        duration: 5000,
-      });
-      onClose();
-    },
     onError: (err) => {
       setIsGenerating(false);
       toast.error(`Save failed: ${err.message}`);
@@ -738,6 +943,14 @@ export default function SaveAnalysisModal({
   });
 
   // ── handle save ────────────────────────────────────────────────────────────
+  //
+  // NEW FOLDER HIERARCHY:
+  //   [folder] / [projectName] / [tabName] / Full Results.pdf   (always)
+  //   [folder] / [projectName] / [tabName] / [individual files or subfolders]
+  //
+  // Subfolders (Graphs/, Tables/, Queries/) only created when >2 items of that type.
+  // Otherwise individual files sit directly in the tab folder.
+  //
   const handleSave = useCallback(async () => {
     if (!saveFormat) {
       setSaveAttempted(true);
@@ -748,118 +961,177 @@ export default function SaveAnalysisModal({
     setIsGenerating(true);
 
     try {
-      const resultsToSave = saveAllProject ? allProjectResults : allResults;
-
-      const indicesToInclude = (() => {
-        if (saveAllProject || saveAllTab) return resultsToSave.map((_, i) => i);
-        const maxCount = Math.max(
-          saveGraph ? graphCount : 0,
-          saveTable ? tableCount : 0,
-          saveAIQuery ? aiQueryCount : 0
-        );
-        return Array.from({ length: Math.min(maxCount, resultsToSave.length) }, (_, i) =>
-          resultsToSave.length - maxCount + i
-        ).filter((i) => i >= 0);
-      })();
-
-      const title = (folder ? `${folder} / ${saveAs}` : saveAs) || derivedTitle;
+      const dateStr = new Date().toLocaleDateString("en-US", {
+        month: "2-digit", day: "2-digit", year: "numeric",
+      });
       const tagMeasurements = selectedTags.map((t) => `tag:${t}`);
-      const selectedResults = indicesToInclude.map((i) => resultsToSave[i]);
-      const activeTable =
-        result.editedTable ?? result.analysisResults?.results_table ?? [];
+      const projFolder = projectName || "Untitled Project";
 
-      // ── Generate export in chosen format ───────────────────────────────────
-      let exportData = "";
-      let isBinary = false;
+      // Build base path: [user-chosen folder] / [project] or just [project]
+      const basePath = folder ? `${folder} / ${projFolder}` : projFolder;
 
-      switch (saveFormat) {
-        case "csv":
-          exportData = buildCSVExport(saveAs, activeTable, result.analysis);
-          isBinary = false;
-          break;
-        case "sas":
-        case "dta":
-          exportData = buildSASExport(saveAs, activeTable, result.analysis);
-          isBinary = false;
-          break;
-        case "xlsx":
-          exportData = buildXLSXExport(title, selectedResults, selectedTags, folder);
-          isBinary = true;
-          break;
-        case "pdf":
-          exportData = buildPDFExport(title, selectedResults);
-          isBinary = true;
-          break;
-        case "json":
-          exportData = buildJSONExport(title, folder, selectedTags, tabName ?? "Unknown", selectedResults);
-          isBinary = false;
-          break;
+      // ── Collect selected items per tab ──────────────────────────────────────
+      type PerTabSelection = {
+        ti: TabItemInfo;
+        graphs: PanelResult[];
+        tables: PanelResult[];
+        queries: PanelResult[];
+        allResults: PanelResult[];
+      };
+
+      const perTab: PerTabSelection[] = [];
+
+      for (const ti of tabItems) {
+        const graphs = ti.graphs.filter((r) =>
+          selectedItems.has(makeKey(ti.tabId, "graph", r.id))
+        );
+        const tables = ti.tables.filter((r) =>
+          selectedItems.has(makeKey(ti.tabId, "table", r.id))
+        );
+        const queries = ti.queries.filter((r) =>
+          selectedItems.has(makeKey(ti.tabId, "query", r.id))
+        );
+
+        // Collect unique results for this tab
+        const seenIds = new Set<string>();
+        const allTabResults: PanelResult[] = [];
+        for (const r of [...graphs, ...tables, ...queries]) {
+          if (!seenIds.has(r.id)) {
+            seenIds.add(r.id);
+            allTabResults.push(r);
+          }
+        }
+
+        if (allTabResults.length > 0) {
+          perTab.push({ ti, graphs, tables, queries, allResults: allTabResults });
+        }
       }
 
-      // ── Trigger immediate browser download ─────────────────────────────────
-      const safeTitle = saveAs.replace(/[\s/\\:*?"<>|]+/g, "_");
-      triggerDownload(
-        `${safeTitle}.${FORMAT_EXT[saveFormat]}`,
-        exportData,
-        isBinary,
-        FORMAT_MIME[saveFormat]
-      );
+      if (perTab.length === 0) {
+        toast.error("No items selected — select at least one graph, table, or query.");
+        setIsGenerating(false);
+        return;
+      }
 
-      // ── Build HTML preview sections (for iframe in Technical Files) ────────
-      const htmlSections = indicesToInclude.map((idx) => {
-        const r = resultsToSave[idx];
-        const tbl = r.editedTable ?? r.analysisResults?.results_table ?? [];
-        return buildHTML(title, tbl, r.analysis);
-      });
-      const htmlPreview = htmlSections.join("\n\n<hr/>\n\n");
-
-      // ── Build storage content ──────────────────────────────────────────────
-      const extras: string[] = [];
-      if (saveTable) {
-        indicesToInclude.forEach((idx) => {
-          const tbl =
-            resultsToSave[idx].editedTable ??
-            resultsToSave[idx].analysisResults?.results_table ??
-            [];
-          if (tbl.length > 0)
-            extras.push(`\n\n<!-- CSV_DATA result_${idx + 1}\n${buildCSV(tbl)}\nEND_CSV_DATA -->`);
+      // ── Helper: save a single file to Technical Files ───────────────────────
+      const saveFile = (filePath: string, content: string, extraMeasurements: string[] = []) => {
+        saveReportMutation.mutate({
+          title: filePath,
+          content,
+          dataFiles: [],
+          measurements: [
+            "foldertype:tab",
+            `format:${saveFormat}`,
+            ...tagMeasurements,
+            ...extraMeasurements,
+          ],
+          generatedAt: new Date().toISOString(),
         });
-      }
-      if (saveAIQuery) {
-        extras.push(
-          `\n\n<!-- AI_SCRIPT\n${buildMeta(title, folder, selectedTags, tabName ?? "Unknown Tab", result)}\nEND_AI_SCRIPT -->`
+      };
+
+      // ── Helper: safe filename ───────────────────────────────────────────────
+      const safe = (s: string) => s.replace(/[\s/\\:*?"<>|]+/g, "_").slice(0, 60);
+
+      // ── Helper: build filename for individual items ─────────────────────────
+      const itemFilename = (tabTitle: string, resultTitle: string, type: string) =>
+        `${safe(tabTitle)} – ${safe(resultTitle)} – ${type} – ${dateStr}.pdf`;
+
+      // Track first download (only trigger browser download for the first combined PDF)
+      let firstDownloadDone = false;
+
+      // ── Process each tab ────────────────────────────────────────────────────
+      for (const { ti, graphs, tables, queries, allResults: tabAllResults } of perTab) {
+        const tabPath = `${basePath} / ${ti.tabTitle}`;
+
+        // 1. ALWAYS: Combined "Full Results" PDF for this tab
+        const fullResultsPDF = buildPDFExport(
+          `${ti.tabTitle} – Full Results`,
+          tabAllResults
         );
-      }
-      if (includeMetadata) {
-        extras.push(
-          `\n\n<!-- METADATA\n${JSON.stringify({
-            analysisType: result.analysisResults?.analysis_type ?? null,
-            rowCount: (result.editedTable ?? result.analysisResults?.results_table ?? []).length,
-            tabName: tabName ?? "Unknown Tab",
-            savedAt: new Date().toISOString(),
-          }, null, 2)}\nEND_METADATA -->`
+        const fullResultsHTML = tabAllResults
+          .map((r) => buildHTML(
+            `${ti.tabTitle} – Full Results`,
+            r.editedTable ?? r.analysisResults?.results_table ?? [],
+            r.analysis
+          ))
+          .join("\n\n<hr/>\n\n");
+
+        const fullResultsContent = buildStorageContent(
+          "pdf", fullResultsPDF, true, fullResultsHTML
         );
+        saveFile(
+          `${tabPath} / ${safe(ti.tabTitle)} – Full Results.pdf`,
+          fullResultsContent,
+          ["filetype:full-results"]
+        );
+
+        // Trigger browser download for the first tab's full results
+        if (!firstDownloadDone) {
+          triggerDownload(
+            `${safe(ti.tabTitle)}_Full_Results.pdf`,
+            fullResultsPDF,
+            true,
+            "application/pdf"
+          );
+          firstDownloadDone = true;
+        }
+
+        // 2. Individual Graph files
+        if (graphs.length > 0) {
+          const useSubfolder = graphs.length > 2;
+          graphs.forEach((r, idx) => {
+            const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Graph ${idx + 1}`;
+            const pdf = buildSingleResultPDF(rTitle, "Graph", r);
+            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
+            const content = buildStorageContent("pdf", pdf, true, html);
+            const fileName = useSubfolder
+              ? `${tabPath} / Graphs / Graph ${idx + 1} – ${safe(rTitle)}.pdf`
+              : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Graph")}`;
+            saveFile(fileName, content, ["filetype:graph"]);
+          });
+        }
+
+        // 3. Individual Table files
+        if (tables.length > 0) {
+          const useSubfolder = tables.length > 2;
+          tables.forEach((r, idx) => {
+            const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Table ${idx + 1}`;
+            const pdf = buildSingleResultPDF(rTitle, "Table", r);
+            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
+            const content = buildStorageContent("pdf", pdf, true, html);
+            const fileName = useSubfolder
+              ? `${tabPath} / Tables / Table ${idx + 1} – ${safe(rTitle)}.pdf`
+              : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Table")}`;
+            saveFile(fileName, content, ["filetype:table"]);
+          });
+        }
+
+        // 4. Individual Query files
+        if (queries.length > 0) {
+          const useSubfolder = queries.length > 2;
+          queries.forEach((r, idx) => {
+            const rTitle = r.query?.slice(0, 40) || `Query ${idx + 1}`;
+            const pdf = buildSingleResultPDF(rTitle, "Query", r);
+            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
+            const content = buildStorageContent("pdf", pdf, true, html);
+            const fileName = useSubfolder
+              ? `${tabPath} / Queries / Query ${idx + 1} – ${safe(rTitle)}.pdf`
+              : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Query")}`;
+            saveFile(fileName, content, ["filetype:query"]);
+          });
+        }
       }
 
-      const storageContent =
-        buildStorageContent(saveFormat, exportData, isBinary, htmlPreview) +
-        extras.join("");
-
-      // ── Store in Technical Files ───────────────────────────────────────────
-      const folderTypeMeasurement = saveAllProject ? "foldertype:project" : "foldertype:tab";
-
-      saveReportMutation.mutate({
-        title,
-        content: storageContent,
-        dataFiles: [],
-        measurements: [
-          folderTypeMeasurement,
-          `format:${saveFormat}`,
-          ...tagMeasurements,
-          ...(result.query ? [result.query.slice(0, 80)] : []),
-        ],
-        generatedAt: new Date().toISOString(),
+      // Summary toast
+      const totalFiles = perTab.reduce(
+        (sum, { graphs, tables, queries }) => sum + 1 + graphs.length + tables.length + queries.length,
+        0
+      );
+      toast.success(`Saved ${totalFiles} files → "${basePath}"`, {
+        description: `${perTab.length} tab(s) saved. View under Saved Technical Files.`,
+        duration: 5000,
       });
+      onClose();
     } catch (err) {
       console.error("Save failed:", err);
       setIsGenerating(false);
@@ -868,23 +1140,16 @@ export default function SaveAnalysisModal({
   }, [
     saveFormat,
     result,
-    allResults,
-    allProjectResults,
+    tabItems,
+    resultsByTab,
+    selectedItems,
     saveAs,
     folder,
     selectedTags,
-    derivedTitle,
-    tabName,
-    saveAllProject,
-    saveAllTab,
-    saveGraph,
-    saveTable,
-    saveAIQuery,
+    projectName,
     includeMetadata,
-    graphCount,
-    tableCount,
-    aiQueryCount,
     saveReportMutation,
+    onClose,
   ]);
 
   if (!open || !result) return null;
@@ -893,50 +1158,45 @@ export default function SaveAnalysisModal({
 
   // ── render ─────────────────────────────────────────────────────────────────
   return (
-    <>
-      {/* Overlay */}
+    <Draggable nodeRef={panelRef} handle=".save-drag-handle" position={dragPos} onDrag={(_, data) => setDragPos({ x: data.x, y: data.y })}>
       <div
-        className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px]"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Modal — wider than before to fit format grid */}
-      <div
+        ref={panelRef}
         role="dialog"
-        aria-modal="true"
         aria-labelledby="sam-title"
-        className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[600px] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        style={{ maxHeight: "90vh" }}
+        className="fixed z-[200] top-16 right-8 bg-white border border-[#e5e7eb] rounded-xl flex flex-col"
+        style={{
+          width: savePanelWidth,
+          height: savePanelHeight ?? "auto",
+          maxHeight: savePanelHeight ? "none" : "85vh",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
+        }}
       >
-        {/* ── Header ────────────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#e2e8f0]">
-          <div className="flex items-start gap-3">
+        {/* ── Header / drag handle ──────────────────────────────────────────── */}
+        <div className="save-drag-handle flex-shrink-0 flex items-center justify-between px-5 py-3 border-b border-[#e5e7eb] bg-[#f8fafc] rounded-t-xl cursor-grab active:cursor-grabbing select-none">
+          <div className="flex items-center gap-2.5">
+            <GripHorizontal className="w-4 h-4 text-[#94a3b8]" />
             <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-              style={{ background: "#f0fdfa" }}
+              className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+              style={{ background: "#EFF6FF" }}
             >
-              <Save className="w-4.5 h-4.5" style={{ color: "#00B8A9", width: 18, height: 18 }} />
+              <Save className="w-4 h-4" style={{ color: "#2563eb" }} />
             </div>
             <div>
               <h2
                 id="sam-title"
-                className="text-lg font-bold"
-                style={{ color: "#343A40" }}
+                className="text-sm font-semibold"
+                style={{ color: "#0f172a" }}
               >
                 Save to Technical Files
               </h2>
-              <p className="text-sm mt-0.5" style={{ color: "#6B7280" }}>
+              <p className="text-[11px]" style={{ color: "#6B7280" }}>
                 Choose what to save from this analysis result
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg transition-colors"
-            style={{ color: "#6B7280" }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#00B8A9")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#6B7280")}
+            className="p-1 rounded text-[#94a3b8] hover:text-[#0f172a] transition-colors"
             aria-label="Close"
           >
             <X className="w-4 h-4" />
@@ -958,7 +1218,7 @@ export default function SaveAnalysisModal({
                 border: "1px solid #DEE2E6",
                 color: "#343A40",
               }}
-              onFocus={(e) => (e.currentTarget.style.borderColor = "#00B8A9")}
+              onFocus={(e) => (e.currentTarget.style.borderColor = "#2563eb")}
               onBlur={(e) => (e.currentTarget.style.borderColor = "#DEE2E6")}
               aria-label="File name"
             />
@@ -989,7 +1249,7 @@ export default function SaveAnalysisModal({
                     ? "0 0 0 3px rgba(253,126,20,0.12)"
                     : "none",
                 }}
-                onFocus={(e) => (e.currentTarget.style.borderColor = "#00B8A9")}
+                onFocus={(e) => (e.currentTarget.style.borderColor = "#2563eb")}
                 onBlur={(e) => (e.currentTarget.style.borderColor = saveAttempted && !saveFormat ? "#FD7E14" : "#DEE2E6")}
                 aria-required="true"
               >
@@ -1038,7 +1298,7 @@ export default function SaveAnalysisModal({
               onClick={() => setTagDropOpen((v) => !v)}
               className="w-full flex items-center justify-between px-3 py-2 text-sm rounded-lg bg-white text-left transition-colors"
               style={{ border: "1px solid #DEE2E6" }}
-              onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#00B8A9")}
+              onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#2563eb")}
               onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#DEE2E6")}
             >
               <span className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
@@ -1144,11 +1404,11 @@ export default function SaveAnalysisModal({
                 onClick={() => setFolderDropOpen((v) => !v)}
                 className="flex-1 flex items-center justify-between px-3 py-2 text-sm rounded-lg bg-white text-left transition-colors"
                 style={{ border: "1px solid #DEE2E6" }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#00B8A9")}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#2563eb")}
                 onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#DEE2E6")}
               >
                 <span className="flex items-center gap-1.5" style={{ color: "#0f172a" }}>
-                  <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#00B8A9" }} />
+                  <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#2563eb" }} />
                   {folder || <span style={{ color: "#94a3b8" }}>Root (no folder)</span>}
                 </span>
                 <ChevronDown
@@ -1188,9 +1448,9 @@ export default function SaveAnalysisModal({
                 {creatingFolder && (
                   <div
                     className="flex items-center gap-2 px-3 py-2"
-                    style={{ borderBottom: "1px solid #e2e8f0", background: "#f0fdfa" }}
+                    style={{ borderBottom: "1px solid #e2e8f0", background: "#EFF6FF" }}
                   >
-                    <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#00B8A9" }} />
+                    <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#2563eb" }} />
                     <input
                       autoFocus
                       type="text"
@@ -1243,114 +1503,238 @@ export default function SaveAnalysisModal({
 
           <Divider />
 
-          {/* ── Master toggles + granular toggles ───────────────────────────── */}
-          {(() => {
-            const masterLocked = saveAllProject || saveAllTab;
-            const counterMax = saveAllProject ? projectTotal || 1 : total || 1;
-            return (
-              <>
-                {/* Master scope toggles */}
-                <div
-                  className="rounded-lg px-3 py-1 space-y-0"
-                  style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}
-                >
-                  <Toggle
-                    id="tgl-all-project"
-                    checked={saveAllProject}
-                    onChange={(v) => { setSaveAllProject(v); if (v) setSaveAllTab(false); }}
-                    label="Save all data in project"
-                    sublabel={`Includes all ${projectTotal} result(s) across the project`}
-                  />
-                  <hr className="border-t border-[#e2e8f0]" />
-                  <Toggle
-                    id="tgl-all-tab"
-                    checked={saveAllTab}
-                    onChange={(v) => { setSaveAllTab(v); if (v) setSaveAllProject(false); }}
-                    label="Save all data in this tab"
-                    sublabel={`Includes all ${total} result(s) in this tab`}
-                  />
-                </div>
+          {/* ── Tabs to Include ────────────────────────────────────────────── */}
+          <div>
+            <FieldLabel>Tabs to Include</FieldLabel>
 
-                <Divider />
+            {/* Include All Tabs button */}
+            <button
+              type="button"
+              onClick={toggleIncludeAll}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors mb-3"
+              style={{
+                background: isAllSelected ? "#2563eb" : "white",
+                color: isAllSelected ? "white" : "#2563eb",
+                border: `1px solid ${isAllSelected ? "#2563eb" : "#2563eb"}`,
+              }}
+            >
+              {isAllSelected && <Check className="w-3.5 h-3.5" />}
+              Include All Tabs
+            </button>
 
-                {/* Granular content toggles */}
-                <div
-                  className="rounded-lg px-3 py-1 space-y-0"
-                  style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}
-                >
-                  <Toggle
-                    id="tgl-graph"
-                    checked={saveGraph}
-                    onChange={setSaveGraph}
-                    disabled={masterLocked}
-                    label="Save graph"
-                    tooltip={masterLocked ? "Controlled by master scope toggle above" : undefined}
-                  />
-                  <hr className="border-t border-[#e2e8f0]" />
-                  <Toggle
-                    id="tgl-table"
-                    checked={saveTable}
-                    onChange={setSaveTable}
-                    disabled={masterLocked}
-                    label="Save table"
-                    tooltip={masterLocked ? "Controlled by master scope toggle above" : undefined}
-                  />
-                  <hr className="border-t border-[#e2e8f0]" />
-                  <Toggle
-                    id="tgl-ai"
-                    checked={saveAIQuery}
-                    onChange={setSaveAIQuery}
-                    disabled={masterLocked}
-                    label="Save AI query"
-                    tooltip={masterLocked ? "Controlled by master scope toggle above" : undefined}
-                  />
-                  <hr className="border-t border-[#e2e8f0]" />
-                  <Toggle
-                    id="tgl-metadata"
-                    checked={includeMetadata}
-                    onChange={setIncludeMetadata}
-                    label="Include metadata"
-                    sublabel="Study context, analysis type, row count"
-                  />
-                </div>
+            {/* Per-tab collapsible rows */}
+            <div
+              className="rounded-lg overflow-hidden"
+              style={{ border: "1px solid #e2e8f0" }}
+            >
+              {tabItems.length === 0 && (
+                <p className="px-3 py-4 text-xs text-center" style={{ color: "#94a3b8" }}>
+                  No tabs in this project yet.
+                </p>
+              )}
+              {tabItems.map((ti, tabIdx) => {
+                const isExpanded = expandedTabs.has(ti.tabId);
+                const tabKeys = [
+                  ...ti.graphs.map((r) => makeKey(ti.tabId, "graph", r.id)),
+                  ...ti.tables.map((r) => makeKey(ti.tabId, "table", r.id)),
+                  ...ti.queries.map((r) => makeKey(ti.tabId, "query", r.id)),
+                ];
+                const tabAllSelected = tabKeys.length > 0 && tabKeys.every((k) => selectedItems.has(k));
+                const tabSomeSelected = tabKeys.some((k) => selectedItems.has(k));
+                const itemTotal = tabKeys.length;
 
-                <Divider />
+                return (
+                  <div key={ti.tabId}>
+                    {tabIdx > 0 && <hr className="border-t border-[#e2e8f0]" />}
 
-                {/* Quantity sliders */}
-                <div>
-                  <p
-                    className="text-xs font-semibold uppercase tracking-wide mb-3"
-                    style={{ color: "#00B8A9" }}
-                  >
-                    How many results to include
-                  </p>
-                  <div className="space-y-4">
-                    <Slider
-                      label="Graphs"
-                      value={graphCount}
-                      max={counterMax}
-                      onChange={setGraphCount}
-                      disabled={!saveGraph || masterLocked}
-                    />
-                    <Slider
-                      label="Tables"
-                      value={tableCount}
-                      max={counterMax}
-                      onChange={setTableCount}
-                      disabled={!saveTable || masterLocked}
-                    />
-                    <Slider
-                      label="AI Queries"
-                      value={aiQueryCount}
-                      max={counterMax}
-                      onChange={setAiQueryCount}
-                      disabled={!saveAIQuery || masterLocked}
-                    />
+                    {/* Tab header row */}
+                    <div
+                      className="flex items-center justify-between px-3 py-2.5 cursor-pointer transition-colors hover:bg-[#f8fafc]"
+                      onClick={() => toggleExpanded(ti.tabId)}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {isExpanded
+                          ? <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#64748b" }} />
+                          : <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#64748b" }} />
+                        }
+                        <span
+                          className="text-sm font-medium truncate"
+                          style={{ color: tabSomeSelected ? "#0f172a" : "#64748b" }}
+                        >
+                          {ti.tabTitle}
+                        </span>
+                        <span
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0"
+                          style={{
+                            background: tabSomeSelected ? "#EFF6FF" : "#f1f5f9",
+                            color: tabSomeSelected ? "#2563eb" : "#94a3b8",
+                          }}
+                        >
+                          {itemTotal}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleTabAll(ti);
+                        }}
+                        className="text-[11px] font-medium transition-colors flex-shrink-0 ml-2"
+                        style={{ color: tabAllSelected ? "#dc2626" : "#2563eb" }}
+                      >
+                        {tabAllSelected ? "Deselect All" : "Select All"}
+                      </button>
+                    </div>
+
+                    {/* Expanded content: Graphs, Tables, Queries */}
+                    {isExpanded && (
+                      <div className="px-3 pb-3 space-y-2.5" style={{ background: "#f8fafc" }}>
+                        {/* Graphs */}
+                        {ti.graphs.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                              <BarChart2 className="w-3 h-3" style={{ color: "#2563eb" }} />
+                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#2563eb" }}>
+                                Graphs ({ti.graphs.length})
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {ti.graphs.map((r) => {
+                                const key = makeKey(ti.tabId, "graph", r.id);
+                                const sel = selectedItems.has(key);
+                                return (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => toggleItem(key)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+                                    style={{
+                                      background: sel ? "#2563eb" : "white",
+                                      color: sel ? "white" : "#334155",
+                                      border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
+                                    }}
+                                    title={r.graphTitle || r.query.slice(0, 60)}
+                                  >
+                                    {sel && <Check className="w-2.5 h-2.5" />}
+                                    {(r.graphTitle || r.query).slice(0, 28)}
+                                    {(r.graphTitle || r.query).length > 28 ? "…" : ""}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Tables */}
+                        {ti.tables.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                              <Table2 className="w-3 h-3" style={{ color: "#2563eb" }} />
+                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#2563eb" }}>
+                                Tables ({ti.tables.length})
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {ti.tables.map((r) => {
+                                const key = makeKey(ti.tabId, "table", r.id);
+                                const sel = selectedItems.has(key);
+                                const rowCount = (r.editedTable ?? r.analysisResults?.results_table ?? []).length;
+                                return (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => toggleItem(key)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+                                    style={{
+                                      background: sel ? "#2563eb" : "white",
+                                      color: sel ? "white" : "#334155",
+                                      border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
+                                    }}
+                                    title={`${r.query.slice(0, 60)} (${rowCount} rows)`}
+                                  >
+                                    {sel && <Check className="w-2.5 h-2.5" />}
+                                    {r.query.slice(0, 24)}{r.query.length > 24 ? "…" : ""} ({rowCount})
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Queries */}
+                        {ti.queries.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-1.5 mb-1.5">
+                              <MessageSquare className="w-3 h-3" style={{ color: "#3b82f6" }} />
+                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#3b82f6" }}>
+                                Queries ({ti.queries.length})
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {ti.queries.map((r) => {
+                                const key = makeKey(ti.tabId, "query", r.id);
+                                const sel = selectedItems.has(key);
+                                return (
+                                  <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => toggleItem(key)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+                                    style={{
+                                      background: sel ? "#2563eb" : "white",
+                                      color: sel ? "white" : "#334155",
+                                      border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
+                                    }}
+                                    title={r.query.slice(0, 80)}
+                                  >
+                                    {sel && <Check className="w-2.5 h-2.5" />}
+                                    {r.query.slice(0, 28)}{r.query.length > 28 ? "…" : ""}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Empty tab */}
+                        {ti.graphs.length === 0 && ti.tables.length === 0 && ti.queries.length === 0 && (
+                          <p className="text-[11px] italic py-1" style={{ color: "#94a3b8" }}>
+                            No results in this tab yet.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
-              </>
-            );
-          })()}
+                );
+              })}
+            </div>
+
+            {/* Live selection summary */}
+            {selectedItems.size > 0 && (
+              <p className="text-[11px] mt-2 pl-0.5" style={{ color: "#64748b" }}>
+                {selectionSummary.graphs} graph{selectionSummary.graphs !== 1 ? "s" : ""},{" "}
+                {selectionSummary.tables} table{selectionSummary.tables !== 1 ? "s" : ""},{" "}
+                {selectionSummary.queries} quer{selectionSummary.queries !== 1 ? "ies" : "y"}{" "}
+                selected across {selectionSummary.tabCount} tab{selectionSummary.tabCount !== 1 ? "s" : ""}
+              </p>
+            )}
+          </div>
+
+          <Divider />
+
+          {/* ── Include metadata toggle ─────────────────────────────────────── */}
+          <div
+            className="rounded-lg px-3 py-1"
+            style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}
+          >
+            <Toggle
+              id="tgl-metadata"
+              checked={includeMetadata}
+              onChange={setIncludeMetadata}
+              label="Include metadata"
+              sublabel="Study context, analysis type, row count"
+            />
+          </div>
         </div>
 
         {/* ── Footer ────────────────────────────────────────────────────────── */}
@@ -1371,9 +1755,9 @@ export default function SaveAnalysisModal({
               color: "#6B7280",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "#00B8A9";
+              e.currentTarget.style.background = "#2563eb";
               e.currentTarget.style.color = "white";
-              e.currentTarget.style.borderColor = "#00B8A9";
+              e.currentTarget.style.borderColor = "#2563eb";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "white";
@@ -1430,7 +1814,18 @@ export default function SaveAnalysisModal({
             )}
           </button>
         </div>
+
+        {/* Invisible resize handles — edges */}
+        <div onMouseDown={(e) => startResize("n", e)} className="absolute -top-[3px] left-3 right-3 h-1.5 cursor-ns-resize" />
+        <div onMouseDown={(e) => startResize("s", e)} className="absolute -bottom-[3px] left-3 right-3 h-1.5 cursor-ns-resize" />
+        <div onMouseDown={(e) => startResize("e", e)} className="absolute top-3 -right-[3px] bottom-3 w-1.5 cursor-ew-resize" />
+        <div onMouseDown={(e) => startResize("w", e)} className="absolute top-3 -left-[3px] bottom-3 w-1.5 cursor-ew-resize" />
+        {/* Invisible resize handles — corners */}
+        <div onMouseDown={(e) => startResize("nw", e)} className="absolute -top-[3px] -left-[3px] w-3 h-3 cursor-nwse-resize" />
+        <div onMouseDown={(e) => startResize("ne", e)} className="absolute -top-[3px] -right-[3px] w-3 h-3 cursor-nesw-resize" />
+        <div onMouseDown={(e) => startResize("sw", e)} className="absolute -bottom-[3px] -left-[3px] w-3 h-3 cursor-nesw-resize" />
+        <div onMouseDown={(e) => startResize("se", e)} className="absolute -bottom-[3px] -right-[3px] w-3 h-3 cursor-nwse-resize" />
       </div>
-    </>
+    </Draggable>
   );
 }

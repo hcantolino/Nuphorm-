@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ArrowLeft,
   Download,
@@ -11,6 +11,12 @@ import {
   ChevronDown,
   MoreVertical,
   X,
+  Share2,
+  Copy,
+  Check,
+  Info,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { trpc } from '@/lib/trpc';
@@ -18,15 +24,15 @@ import { toast } from 'sonner';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
-  teal:        '#00B8A9',
-  tealLight:   '#E6FFFA',
-  tealBorder:  '#99E6DF',
-  blue:        '#0D6EFD',
+  teal:        '#2563eb',
+  tealLight:   '#EFF6FF',
+  tealBorder:  '#BFDBFE',
+  blue:        '#2563eb',
   blueLight:   '#EFF6FF',
   blueBorder:  '#BFDBFE',
-  purple:      '#6F42C1',
-  purpleLight: '#F3E8FF',
-  purpleBorder:'#DDD6FE',
+  purple:      '#3b82f6',
+  purpleLight: '#DBEAFE',
+  purpleBorder:'#93C5FD',
   bg:          '#F8FAFC',
   card:        '#FFFFFF',
   border:      '#E5E7EB',
@@ -140,7 +146,7 @@ const FORMAT_COLOR_MAP: Record<string, { bg: string; color: string }> = {
   pdf:  { bg: '#fef2f2', color: '#dc2626' },
   json: { bg: '#fff7ed', color: '#ea580c' },
   sas:  { bg: '#eff6ff', color: '#2563eb' },
-  dta:  { bg: '#faf5ff', color: '#7c3aed' },
+  dta:  { bg: '#EFF6FF', color: '#3b82f6' },
   html: { bg: '#f8fafc', color: '#64748b' },
 };
 
@@ -446,7 +452,7 @@ export default function SavedTechnicalFiles() {
                 border:`1.5px solid ${searchFocus ? C.teal : '#D1D5DB'}`,
                 borderRadius:10, fontSize:14, color:C.text, background:C.card,
                 outline:'none', transition:'border-color 0.2s, box-shadow 0.2s',
-                boxShadow: searchFocus ? `0 0 0 3px rgba(0,184,169,0.12)` : 'none',
+                boxShadow: searchFocus ? `0 0 0 3px rgba(37,99,235,0.12)` : 'none',
               }}
             />
           </div>
@@ -626,7 +632,7 @@ function FolderCard({
         position: 'relative',
         transform: isActive ? 'translateY(-3px)' : 'translateY(0)',
         boxShadow: isActive
-          ? `0 12px 28px -6px rgba(0,184,169,0.18), 0 4px 8px -2px rgba(0,0,0,0.07)`
+          ? `0 12px 28px -6px rgba(37,99,235,0.18), 0 4px 8px -2px rgba(0,0,0,0.07)`
           : '0 1px 4px rgba(0,0,0,0.06)',
         transition: 'all 0.2s ease',
         userSelect: 'none',
@@ -811,37 +817,442 @@ function IconBtn({ title, onClick, hoverColor, hoverBg, children }: {
   );
 }
 
-// ── PreviewModal ──────────────────────────────────────────────────────────────
+// ── PreviewModal (Box-style document viewer) ─────────────────────────────────
+
+/** Split HTML content into page sections for the thumbnail strip */
+function splitIntoPages(html: string): string[] {
+  // Strip comment tags (FORMAT, EXPORT_DATA blocks) for clean rendering
+  const cleaned = html
+    .replace(/<!-- FORMAT: \w+ -->\n?/g, '')
+    .replace(/<!-- EXPORT_DATA_(?:BINARY|TEXT)_START[\s\S]*?EXPORT_DATA_(?:BINARY|TEXT)_END -->\n?\n?/g, '');
+  // Split on <hr> / <hr/> tags as page breaks
+  const parts = cleaned.split(/<hr\s*\/?>/i).map(s => s.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : [cleaned];
+}
+
+/** Extract CSV data from HTML tables in the content */
+function extractCSVFromHTML(html: string): string {
+  const rows: string[][] = [];
+  // Match all <tr>...</tr> blocks
+  const trMatches = html.match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
+  for (const tr of trMatches) {
+    const cells: string[] = [];
+    const cellMatches = tr.match(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi) ?? [];
+    for (const cell of cellMatches) {
+      const text = cell.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
+      cells.push(`"${text.replace(/"/g, '""')}"`);
+    }
+    if (cells.length > 0) rows.push(cells);
+  }
+  return rows.map(r => r.join(',')).join('\n');
+}
+
+/** Estimate readable size from content length */
+function estimateSize(content: string): string {
+  const bytes = new Blob([content]).size;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void }) {
   const format = extractFormat(file.content);
-  const ext    = FORMAT_EXT_MAP[format] ?? 'html';
+  const ext = FORMAT_EXT_MAP[format] ?? 'html';
+  const pages = useMemo(() => splitIntoPages(file.content), [file.content]);
+
+  const [activePage, setActivePage] = useState(0);
+  const [zoom, setZoom] = useState(100);
+  const [showInfo, setShowInfo] = useState(true);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const exportRef = useRef<HTMLDivElement>(null);
+
+  // Close export dropdown on outside click
+  useEffect(() => {
+    if (!exportOpen) return;
+    const h = (e: MouseEvent) => {
+      if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [exportOpen]);
+
+  // Keyboard: Escape to close, PageUp/PageDown navigation
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'PageDown' || (e.key === 'ArrowDown' && e.altKey)) {
+        e.preventDefault();
+        setActivePage(p => Math.min(p + 1, pages.length - 1));
+      }
+      if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.altKey)) {
+        e.preventDefault();
+        setActivePage(p => Math.max(p - 1, 0));
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose, pages.length]);
+
+  // Scroll to active page when thumbnail is clicked
+  useEffect(() => {
+    const el = pageRefs.current[activePage];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [activePage]);
+
+  // Track scroll position to update active page
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container) return;
+    const h = () => {
+      const scrollTop = container.scrollTop;
+      let current = 0;
+      for (let i = 0; i < pageRefs.current.length; i++) {
+        const el = pageRefs.current[i];
+        if (el && el.offsetTop - container.offsetTop <= scrollTop + 100) current = i;
+      }
+      setActivePage(current);
+    };
+    container.addEventListener('scroll', h, { passive: true });
+    return () => container.removeEventListener('scroll', h);
+  }, [pages.length]);
+
+  // Ctrl+scroll to zoom
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container) return;
+    const h = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      setZoom(z => Math.max(50, Math.min(200, z + (e.deltaY < 0 ? 25 : -25))));
+    };
+    container.addEventListener('wheel', h, { passive: false });
+    return () => container.removeEventListener('wheel', h);
+  }, []);
+
+  const downloadFile = useCallback((fmt: 'pdf' | 'csv' | 'html') => {
+    const safeTitle = file.filename.replace(/\s+/g, '_');
+    if (fmt === 'pdf') {
+      const exportData = extractExportData(file.content);
+      if (exportData) {
+        const binary = atob(exportData);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.pdf` });
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        // Fallback: download HTML
+        const blob = new Blob([file.content], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` });
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } else if (fmt === 'csv') {
+      const csv = extractCSVFromHTML(file.content);
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.csv` });
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } else {
+      const blob = new Blob([file.content], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` });
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    setExportOpen(false);
+    toast.success(`Downloaded as .${fmt}`);
+  }, [file]);
+
+  const copyLink = useCallback(() => {
+    navigator.clipboard.writeText(`${window.location.origin}/saved-technical-files?file=${file.id}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    toast.success('Link copied');
+  }, [file.id]);
+
+  const fileSize = useMemo(() => estimateSize(file.content), [file.content]);
+
+  // Extract query from content metadata if available
+  const queryText = useMemo(() => {
+    const m = file.content.match(/<!--\s*AI_SCRIPT\s*\n([\s\S]*?)\nEND_AI_SCRIPT\s*-->/);
+    if (m) {
+      try { return JSON.parse(m[1]).query ?? null; } catch { return null; }
+    }
+    return null;
+  }, [file.content]);
+
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:50, display:'flex', flexDirection:'column', background:'rgba(17,24,39,0.72)', backdropFilter:'blur(4px)' }}>
-      {/* Header bar */}
-      <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:12, padding:'13px 20px', background:C.card, borderBottom:`1px solid ${C.border}` }}>
-        <div style={{ width:32, height:32, borderRadius:8, background:C.tealLight, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-          <FileText size={15} style={{ color:C.teal }} />
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column', background: '#F9FAFB', fontFamily: FONT }}>
+      {/* ── Top Toolbar ──────────────────────────────────────────────────── */}
+      <div style={{
+        flexShrink: 0, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 16px', background: C.card, borderBottom: `1px solid ${C.border}`,
+      }}>
+        {/* Left: back + breadcrumb */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+          <button
+            onClick={onClose}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: C.textSub, transition: 'all 0.15s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.color = C.text; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSub; }}
+            title="Back to files"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
+            <span style={{ fontSize: 12, color: C.textMuted, whiteSpace: 'nowrap' }}>{file.folder}</span>
+            <ChevronRight size={11} style={{ color: C.textMuted, flexShrink: 0 }} />
+            <span style={{ fontSize: 12, color: C.textMuted, whiteSpace: 'nowrap' }}>{file.tabName}</span>
+            <ChevronRight size={11} style={{ color: C.textMuted, flexShrink: 0 }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.filename}</span>
+            <FormatBadge format={format} />
+            <span style={{ fontSize: 10, fontWeight: 600, color: C.blue, background: C.blueLight, padding: '1px 6px', borderRadius: 4, border: `1px solid ${C.blueBorder}`, flexShrink: 0 }}>v1</span>
+          </div>
         </div>
-        <div style={{ flex:1, minWidth:0, display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:14, fontWeight:600, color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-            {file.folder} / {file.tabName} / {file.filename}.{ext}
+
+        {/* Center: page counter + zoom */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12, color: C.textSub, fontWeight: 500, whiteSpace: 'nowrap' }}>
+            {activePage + 1} of {pages.length}
           </span>
-          <FormatBadge format={format} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 8 }}>
+            <ToolbarBtn title="Zoom out" onClick={() => setZoom(z => Math.max(50, z - 25))} disabled={zoom <= 50}>−</ToolbarBtn>
+            <span style={{ fontSize: 11, color: C.textSub, fontWeight: 500, minWidth: 36, textAlign: 'center' }}>{zoom}%</span>
+            <ToolbarBtn title="Zoom in" onClick={() => setZoom(z => Math.min(200, z + 25))} disabled={zoom >= 200}>+</ToolbarBtn>
+            <ToolbarBtn title="Fit to width" onClick={() => setZoom(100)}>
+              <span style={{ fontSize: 10 }}>FIT</span>
+            </ToolbarBtn>
+          </div>
         </div>
-        <button
-          onClick={onClose}
-          style={{ width:32, height:32, borderRadius:8, border:`1px solid ${C.border}`, background:C.card, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:C.textSub, transition:'all 0.15s', flexShrink:0 }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#F9FAFB'; e.currentTarget.style.color = C.text; }}
-          onMouseLeave={e => { e.currentTarget.style.background = C.card;    e.currentTarget.style.color = C.textSub; }}
-          title="Close"
+
+        {/* Right: actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, justifyContent: 'flex-end' }}>
+          <ActionBtn icon={<Download size={14} />} label="Download" onClick={() => downloadFile('pdf')} />
+
+          {/* Export dropdown */}
+          <div ref={exportRef} style={{ position: 'relative' }}>
+            <ActionBtn icon={<Share2 size={14} />} label="Export" onClick={() => setExportOpen(o => !o)} active={exportOpen} />
+            {exportOpen && (
+              <div style={{
+                position: 'absolute', top: 38, right: 0, zIndex: 200, background: C.card, border: `1px solid ${C.border}`,
+                borderRadius: 10, boxShadow: '0 8px 24px -4px rgba(0,0,0,0.12)', minWidth: 160, overflow: 'hidden', padding: '4px 0',
+              }}>
+                <ExportMenuItem label="PDF" desc="Download as PDF" onClick={() => downloadFile('pdf')} />
+                <ExportMenuItem label="CSV" desc="Extract table data" onClick={() => downloadFile('csv')} />
+                <ExportMenuItem label="HTML" desc="Styled HTML file" onClick={() => downloadFile('html')} />
+              </div>
+            )}
+          </div>
+
+          <ActionBtn
+            icon={copied ? <Check size={14} /> : <Copy size={14} />}
+            label={copied ? 'Copied' : 'Copy Link'}
+            onClick={copyLink}
+          />
+
+          <button
+            onClick={() => setShowInfo(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6,
+              border: `1px solid ${showInfo ? C.blue : C.border}`, background: showInfo ? C.blueLight : 'transparent',
+              cursor: 'pointer', color: showInfo ? C.blue : C.textSub, transition: 'all 0.15s',
+            }}
+            title={showInfo ? 'Hide info panel' : 'Show info panel'}
+          >
+            {showInfo ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+          </button>
+
+          <button
+            onClick={onClose}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6,
+              border: `1px solid ${C.border}`, background: 'transparent', cursor: 'pointer', color: C.textSub, transition: 'all 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#FEF2F2'; e.currentTarget.style.color = '#EF4444'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSub; }}
+            title="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      </div>
+
+      {/* ── Body: Left thumbnails + Center content + Right info ───────── */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+
+        {/* Left: Page thumbnails */}
+        <div style={{
+          width: 160, flexShrink: 0, background: C.card, borderRight: `1px solid ${C.border}`,
+          overflowY: 'auto', padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          {pages.map((pageHtml, i) => (
+            <button
+              key={i}
+              onClick={() => setActivePage(i)}
+              style={{
+                width: '100%', aspectRatio: '8.5/11', borderRadius: 4, overflow: 'hidden', cursor: 'pointer',
+                border: i === activePage ? `2px solid ${C.blue}` : `1px solid ${C.border}`,
+                background: C.card, position: 'relative', transition: 'border-color 0.15s',
+                boxShadow: i === activePage ? `0 0 0 2px ${C.blueBorder}` : 'none',
+              }}
+            >
+              {/* Scaled-down page preview */}
+              <div style={{ transform: 'scale(0.18)', transformOrigin: 'top left', width: '555%', height: '555%', pointerEvents: 'none', overflow: 'hidden' }}>
+                <div dangerouslySetInnerHTML={{ __html: pageHtml }} style={{ padding: 24, fontSize: 14, fontFamily: FONT, color: C.text }} />
+              </div>
+              {/* Page number label */}
+              <div style={{
+                position: 'absolute', bottom: 4, left: '50%', transform: 'translateX(-50%)',
+                fontSize: 10, fontWeight: 600, color: i === activePage ? C.blue : C.textMuted,
+                background: i === activePage ? C.blueLight : 'rgba(255,255,255,0.9)',
+                padding: '1px 6px', borderRadius: 3, border: `1px solid ${i === activePage ? C.blueBorder : C.border}`,
+              }}>
+                {i + 1}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Center: Document content */}
+        <div
+          ref={contentRef}
+          style={{ flex: 1, overflowY: 'auto', background: '#F3F4F6', padding: '24px 32px' }}
         >
-          <X size={15} />
-        </button>
+          {pages.map((pageHtml, i) => (
+            <div
+              key={i}
+              ref={el => { pageRefs.current[i] = el; }}
+              style={{
+                background: C.card, borderRadius: 6, padding: 32, marginBottom: 24,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.08)', border: `1px solid ${C.border}`,
+                maxWidth: 820, margin: '0 auto 24px',
+                transform: `scale(${zoom / 100})`, transformOrigin: 'top center',
+                transition: 'transform 0.15s ease',
+              }}
+            >
+              <div
+                dangerouslySetInnerHTML={{ __html: pageHtml }}
+                style={{ fontFamily: FONT, fontSize: 14, lineHeight: 1.7, color: C.text }}
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* Right: Info/Details panel */}
+        {showInfo && (
+          <div style={{
+            width: 280, flexShrink: 0, background: C.card, borderLeft: `1px solid ${C.border}`,
+            overflowY: 'auto', display: 'flex', flexDirection: 'column',
+          }}>
+            {/* Panel header */}
+            <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Info size={14} style={{ color: C.blue }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Details</span>
+            </div>
+
+            {/* Metadata rows */}
+            <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <MetaRow label="Filename" value={`${file.filename}.${ext}`} />
+              <MetaRow label="Folder" value={file.folder} />
+              <MetaRow label="Tab" value={file.tabName} />
+              <MetaRow label="Format" value={`.${ext.toUpperCase()}`} />
+              <MetaRow label="Generated" value={fmtDate(file.generatedAt)} />
+              <MetaRow label="File Size" value={fileSize} />
+              <MetaRow label="Pages" value={String(pages.length)} />
+              {queryText && <MetaRow label="Query" value={queryText} multiline />}
+
+              {/* Tags */}
+              {file.measurements.filter(m => m.startsWith('tag:')).length > 0 && (
+                <div>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Tags</span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                    {file.measurements.filter(m => m.startsWith('tag:')).map(m => (
+                      <span key={m} style={{ fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 4, background: C.blueLight, color: C.blue, border: `1px solid ${C.blueBorder}` }}>
+                        {m.slice(4)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
-      <div style={{ flex:1, overflow:'hidden', background:C.card }}>
-        <iframe srcDoc={file.content} style={{ width:'100%', height:'100%', border:'none' }} sandbox="allow-scripts allow-same-origin" title={file.filename} />
-      </div>
+    </div>
+  );
+}
+
+function ToolbarBtn({ title, onClick, disabled, children }: { title: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      title={title} onClick={onClick} disabled={disabled}
+      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{
+        width: 26, height: 26, borderRadius: 4, border: `1px solid ${h && !disabled ? C.border : 'transparent'}`,
+        background: h && !disabled ? '#F3F4F6' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: disabled ? 'not-allowed' : 'pointer', color: disabled ? C.textMuted : C.textSub,
+        fontSize: 14, fontWeight: 600, transition: 'all 0.1s', opacity: disabled ? 0.4 : 1,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ActionBtn({ icon, label, onClick, active }: { icon: React.ReactNode; label: string; onClick: () => void; active?: boolean }) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6,
+        border: `1px solid ${active ? C.blue : h ? '#D1D5DB' : C.border}`,
+        background: active ? C.blueLight : h ? '#F9FAFB' : 'transparent',
+        color: active ? C.blue : h ? C.text : C.textMid,
+        fontSize: 12, fontWeight: 500, cursor: 'pointer', transition: 'all 0.15s', whiteSpace: 'nowrap',
+      }}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ExportMenuItem({ label, desc, onClick }: { label: string; desc: string; onClick: () => void }) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{
+        width: '100%', display: 'flex', flexDirection: 'column', gap: 1, padding: '9px 14px', textAlign: 'left',
+        background: h ? '#F9FAFB' : 'transparent', border: 'none', cursor: 'pointer', transition: 'background 0.15s',
+      }}
+    >
+      <span style={{ fontSize: 13, fontWeight: 500, color: C.text }}>{label}</span>
+      <span style={{ fontSize: 11, color: C.textMuted }}>{desc}</span>
+    </button>
+  );
+}
+
+function MetaRow({ label, value, multiline }: { label: string; value: string; multiline?: boolean }) {
+  return (
+    <div>
+      <span style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 3 }}>{label}</span>
+      <span style={{
+        fontSize: 13, color: C.text, fontWeight: 400, wordBreak: 'break-word',
+        ...(multiline ? { display: 'block', lineHeight: 1.5, fontSize: 12, color: C.textSub } : {}),
+      }}>{value}</span>
     </div>
   );
 }

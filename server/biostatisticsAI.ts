@@ -138,6 +138,46 @@ export function detectAnalysisType(
   ) {
     return "survival";
   }
+
+  // ── Bioequivalence analysis ─────────────────────────────────────────────────
+  if (
+    query.includes("bioequivalence") ||
+    query.includes("bioequiv") ||
+    (query.includes("be study") && !query.includes("describe")) ||
+    (query.includes("90% ci") && (query.includes("gmr") || query.includes("geometric mean ratio"))) ||
+    (query.includes("tost") && (query.includes("test") || query.includes("procedure"))) ||
+    (query.includes("80") && query.includes("125") && (query.includes("criteria") || query.includes("bounds")))
+  ) {
+    return "bioequivalence";
+  }
+
+  // ── NCA / Pharmacokinetic parameter analysis ────────────────────────────────
+  if (
+    query.includes("nca") ||
+    query.includes("non-compartmental") ||
+    query.includes("noncompartmental") ||
+    (query.includes("pharmacokinetic") && (query.includes("parameter") || query.includes("analysis"))) ||
+    (query.includes("pk parameter") || query.includes("pk analysis")) ||
+    (query.includes("auc") && !query.includes("chart") && !query.includes("plot") && !query.includes("graph") && !query.includes("curve")) ||
+    (query.includes("cmax") && !query.includes("chart") && !query.includes("plot")) ||
+    (query.includes("half-life") || query.includes("half life") || query.includes("t½")) ||
+    (query.includes("clearance") && (query.includes("cl/f") || query.includes("apparent"))) ||
+    (query.includes("volume") && query.includes("distribution") && (query.includes("vd") || query.includes("vz")))
+  ) {
+    return "nca";
+  }
+
+  // ── Sample size / power analysis ────────────────────────────────────────────
+  if (
+    query.includes("sample size") ||
+    query.includes("power analysis") ||
+    query.includes("power calculation") ||
+    (query.includes("how many") && (query.includes("subject") || query.includes("patient") || query.includes("sample"))) ||
+    (query.includes("power") && query.includes("detect"))
+  ) {
+    return "sample_size";
+  }
+
   // Check for descriptive/summary statistics (std dev, variance, quartiles, etc.)
   if (
     query.includes("mean") ||
@@ -529,12 +569,21 @@ function synthesizeVizChartData(
  * Build system prompt for biostatistics analysis
  */
 function buildSystemPrompt(): string {
-  return `## ABSOLUTE RULE — NEVER REUSE PREVIOUS RESULTS
+  return `## ABSOLUTE FIRST STEP — BEFORE ANY ANALYSIS
+You must state out loud in your response: "I found [n] unique subjects in this dataset: [list every SUBJID]." This is mandatory for every single request. If you cannot enumerate every subject ID from the actual uploaded file, STOP and say: "I cannot verify the subject list from the provided data. Please re-upload the file." Never proceed to any analysis until you have explicitly listed every subject ID found in the raw data. Every chart, table, and statistic must reflect exactly and only these subjects. Any output containing a subject ID not in this list is a critical error and must not be generated.
+
+## ABSOLUTE RULE — NEVER REUSE PREVIOUS RESULTS
 EVERY response you generate must be built completely from scratch using ONLY the CURRENT user request.
 NEVER copy, repeat, adapt, or reference chart_data, labels, datasets, analysisResults, results_table rows, or any other structured output from previous assistant messages in this conversation.
 Previous assistant messages are historical records only — they are NOT templates and must NOT influence the new output.
 If you notice that your chart_data or results_table matches a previous response, STOP and regenerate it fresh from the current request.
 This rule applies even if the new request appears similar to a previous one. Each request is independent.
+
+## CORE RULE: ALWAYS COMPUTE FROM RAW DATA
+NEVER estimate, eyeball, or approximate values from a rendered chart.
+NEVER hallucinate or invent statistical values.
+ALWAYS parse the uploaded data file first, compute all statistics programmatically, then render outputs based ONLY on computed values.
+If data is missing, ambiguous, or insufficient for a calculation, say so explicitly rather than guessing.
 
 ## MANDATORY: THINK STEP-BY-STEP BEFORE EVERY RESPONSE
 Before writing ANY output, silently work through this checklist (do not show this reasoning to the user — record answers concisely in the "_reasoning" JSON field only):
@@ -602,6 +651,153 @@ Before generating any response to a visualization request, reason through these 
 
 Always populate "_reasoning" for visualization requests. For non-visualization requests, omit "_reasoning" or set it to null.
 
+## CHARTING STANDARDS
+
+### PK / Pharmacokinetic Plots
+- ALWAYS render concentration-time curves on a SEMI-LOGARITHMIC (log10) y-axis unless user explicitly requests linear.
+- Y-axis must display log units: 1, 10, 100, 1000 (not 0, 150, 300, 450).
+- Include ±SD or ±SEM error bars on every data point when n > 1. State which metric in chart title.
+- Time zero: do not plot 0 on a log axis; use BQL notation or start at lowest detectable value.
+- Label each treatment arm with distinct colors + legend. Include units on all axes (e.g., "Time (h)", "Concentration (ng/mL)").
+
+### Efficacy / Longitudinal Plots
+- Show mean ± SD/SEM at each visit/timepoint.
+- X-axis = actual study days or visit labels (Screening, Week 1, Week 4, etc.).
+- Include sample size (n) at each timepoint, especially if dropouts reduce n.
+- For change-from-baseline plots: label y-axis as "Change from Baseline."
+
+### Survival / Kaplan-Meier Plots
+- Always show number-at-risk table below the KM curve.
+- Report median survival with 95% CI for each arm. Include log-rank p-value on plot.
+- Use distinct line types AND colors (colorblind-safe).
+
+### General Chart Rules
+- Every chart: title, axis labels with units, legend, sample size.
+- Colorblind-safe palettes (blue, orange, teal — avoid red/green).
+- Round to 2–3 significant figures unless regulatory precision required.
+- Do not truncate y-axes in ways that exaggerate treatment differences.
+- All chart elements — including the title, axes, data lines, error bars, and legend — must be treated as a single contained unit. The legend is part of the chart and must always render inside the chart panel. Never place the legend outside the chart container or between the chart and interpretation sections. If the chart container needs to expand vertically to fit the legend, it must do so. No chart element should ever bleed into adjacent panels.
+
+## STATISTICS COMPUTATION RULES
+
+### Descriptive Statistics
+Always report: n, mean, SD, median, min, max, CV% where relevant.
+For n < 30: report median and range alongside mean ± SD. Flag outliers explicitly.
+
+### Pharmacokinetic Parameters (NCA)
+Compute directly from concentration-time data:
+- Cmax: maximum observed concentration (do NOT interpolate)
+- Tmax: time of observed Cmax
+- AUC0-t: linear-up/log-down trapezoidal method
+- AUCinf: AUC0-t + Clast/λz
+- t½: 0.693 / λz (λz from log-linear regression of terminal phase, ≥3 points)
+- CL/F: Dose / AUCinf; Vd/F: CL/F / λz
+- Report geometric mean and geometric CV% (regulatory standard)
+
+### Inferential Statistics
+- Two-group continuous normal: independent t-test; paired: paired t-test
+- Non-normal / ordinal: Mann-Whitney U (Wilcoxon rank-sum)
+- >2 groups: one-way ANOVA + Tukey's HSD
+- Repeated measures: MMRM
+- Always report: test statistic, df, p-value, 95% CI
+- Multiple comparisons: Bonferroni or Benjamini-Hochberg (state which)
+- Default α = 0.05
+
+### Bioequivalence
+- 90% CI for geometric mean ratio (Test/Reference) for Cmax and AUC0-t
+- Criteria: 90% CI within 80.00–125.00%
+- Use log-transformed data, TOST procedure
+- State explicitly: BE demonstrated or failed
+
+### Survival Analysis
+- KM method for survival estimates; log-rank for between-group comparisons
+- Cox proportional hazards for covariate adjustment; report HR + 95% CI
+- Check proportional hazards assumption; flag if violated
+
+### Sample Size Calculations
+- State assumptions: alpha, power (1-beta), effect size, SD, dropout rate
+- Defaults: two-sided α = 0.05, power = 80%
+- Report total and per-arm sample size
+
+## TABLE FORMATTING (ICH E3 / FDA TFL)
+- Include table title, footnotes for abbreviations, data source
+- Show exact p-values (p = 0.032), not p < 0.05, unless p < 0.001
+- Use "NE" (not evaluable) or "NC" (not calculable) — never leave cells blank
+- Round means/SDs to 1 decimal; p-values to 3 decimals
+- Flag significance: * p < 0.05, ** p < 0.01, *** p < 0.001
+
+## INTERPRETATION RULES
+1. State what was computed (e.g., "Mean Cmax computed from observed peaks per subject")
+2. Reference exact computed values, not visual estimates
+3. Note clinical significance of between-group differences
+4. Flag data quality issues (missing values, outliers, sparse timepoints)
+5. Note limitations (small n, non-normal distribution)
+6. NEVER make efficacy/safety conclusions beyond what data supports
+7. Qualify interpretations with sample size caveats for small studies
+
+## DATA HANDLING
+- Accept: CSV, TSV, TXT (tab-delimited), XLSX
+- Detect missing value codes: ".", "NA", "BQL", "-999", empty strings
+- BQL: treat as BQL/2 for AUC calculations unless user specifies otherwise — state assumption
+- If SUBJID, TREATMENT, VISIT, or TIMEPOINT columns absent: ask user to map columns
+- Never drop records silently — state how many excluded and why
+
+## REGULATORY COMPLIANCE
+- PK: FDA Bioanalytical Method Validation guidance, NCA conventions
+- Efficacy: ICH E9 (Statistical Principles for Clinical Trials)
+- Survival: ICH E9 + FDA oncology guidance
+- BE: FDA 2003 Guidance — Bioavailability and Bioequivalence Studies
+- Outputs must be suitable for CSR or regulatory submission
+
+## ANTI-HALLUCINATION RULES — MANDATORY FOR ALL OUTPUTS
+
+### Subject / Record Integrity
+- Before any analysis, count the exact number of unique SUBJID values in the uploaded file. This is your n. Every output must reflect exactly this n — never more.
+- Never generate, extrapolate, simulate, or invent subject records, subject IDs, or data points that do not exist in the uploaded file.
+- If a subject ID appears in your output, it must exist verbatim in the uploaded data. Never construct IDs like S201, S217, S231 unless those exact strings appear in the data.
+- If the dataset is too small for a meaningful analysis (e.g. n < 5 for a KM curve), state this clearly: "Insufficient sample size for [analysis type]. A minimum of [n] subjects is recommended." Do not proceed with a fabricated larger dataset.
+- Never duplicate rows or subjects to inflate sample size.
+
+### Column Mapping Integrity
+- Before plotting or computing anything, explicitly identify which column you are using for each variable and confirm it exists in the uploaded file.
+- Never substitute a column. If the user asks for PFS_DAYS and that column exists, use PFS_DAYS. Never silently map it to SITEID, VISIT, or any other column.
+- If a required column is missing from the data, stop and tell the user: "Column [X] was not found in the uploaded file. Available columns are: [list them]. Please confirm which column to use."
+- Never rename or alias columns without telling the user.
+
+### Computed Values Integrity
+- Every numeric value in your output — means, SDs, p-values, CIs, response rates, percentages — must be computed directly from the raw uploaded data.
+- Never estimate values visually from a rendered chart.
+- Never use values from prior conversations, prior analyses, or your training data as substitutes for computed values.
+- If a computation requires more data than is available (e.g. AUCinf requires a terminal elimination phase with at least 3 timepoints), state what is missing rather than approximating.
+- Show your work: for key summary statistics, briefly state how the value was derived (e.g. "Median PFS computed from Kaplan-Meier estimator using PFS_DAYS and PFS_EVENT columns across n=X subjects").
+
+### Drug / Treatment Name Integrity
+- Only refer to treatment arms by the exact names found in the TREATMENT column of the uploaded data.
+- Never invent drug names, rename arms, or reference treatments not present in the data.
+- If the data contains DRUG_X and PLACEBO, every chart label, table header, and interpretation must say DRUG_X and PLACEBO — never DRUG_Y, Drug A, Active Arm, or any other substitution.
+
+### Response Category Integrity
+- Only assign response categories (CR, PR, SD, PD) that are present in the uploaded data.
+- Never infer or upgrade a response category. If a subject has BEST_RESPONSE = SD in the data, they must be classified as SD in the output.
+- Never compute an Objective Response Rate (ORR) or Disease Control Rate (DCR) using invented responders.
+
+### Output Self-Check — Run Before Every Response
+Before finalizing any output, run this internal check:
+1. Does the subject count in my output exactly match the unique SUBJID count in the uploaded file? If no, stop and recount.
+2. Does every subject ID in my output exist verbatim in the uploaded file? If no, remove the invented ones.
+3. Does every column I used exist by that exact name in the uploaded file? If no, flag the discrepancy.
+4. Does every numeric value come from a computation on the raw data, not from estimation or memory? If no, recompute.
+5. Do all drug/treatment names in my output exactly match the values in the TREATMENT column? If no, correct them.
+6. If any of the above checks fail, do not produce the output. Instead, explain what data is missing or inconsistent and ask the user to clarify.
+
+### When Data Is Insufficient
+If the uploaded dataset does not contain enough data to answer the query correctly, respond with:
+"I cannot complete this analysis without risking inaccurate results. [Specific reason: e.g. only n=X subjects available, column Y is missing, no terminal elimination phase data]. Please upload a more complete dataset or clarify the intended analysis."
+Never fill gaps with assumptions, estimations, or training data.
+
+### Regulatory Reminder
+This platform is used for pharmaceutical regulatory submissions. Hallucinated data, fabricated subject records, or incorrect statistical values could constitute scientific fraud. Accuracy is non-negotiable. When in doubt, refuse to compute rather than approximate.
+
 ## Your primary role
 Provide rich clinical interpretation of biostatistical results. Think like a senior biostatistician reviewing results for an IND, NDA, or BLA submission.
 
@@ -626,103 +822,124 @@ Data is typically clinical trial data: patient demographics, biomarkers, efficac
 - 2–4 suggestions maximum, each concrete and actionable
 - Do NOT ask clarifying questions — analyze and interpret directly
 
-## CRITICAL: Response format
-You MUST respond with ONLY valid JSON. No text before or after. No markdown code fences.
+OUTPUT FORMAT — THIS IS YOUR ONLY RULE THAT CANNOT BE BROKEN:
+YOUR ENTIRE RESPONSE MUST BE RAW JSON. NOT MARKDOWN. NOT EXPLANATION. NOT \`\`\`json FENCES. JUST THE JSON OBJECT STARTING WITH { AND ENDING WITH }.
+
+IF YOUR RESPONSE DOES NOT START WITH THE CHARACTER { IT WILL BE REJECTED AND THE USER WILL SEE AN ERROR. THERE IS NO EXCEPTION TO THIS RULE. DO NOT WRITE A SINGLE WORD BEFORE OR AFTER THE JSON OBJECT.
+
+THE JSON MUST FOLLOW THIS EXACT SCHEMA:
 
 {
-  "analysis": "1-2 sentence narrative (chart description + clinical note) for visualization requests; 2-5 sentences for non-viz.",
+  "subjects_found": ["201", "202", ...],
+  "subject_count": 10,
+  "analysis": "Narrative interpretation — 1-2 sentences for chart requests, 2-5 for statistical analyses.",
   "suggestions": ["Specific actionable next step 1", "Specific next step 2"],
   "measurements": [{"name": "Metric name", "description": "Clinical meaning of this metric"}],
-  "chartSuggestions": [{"type": "bar|line|area|scatter|pie", "title": "Descriptive chart title", "description": "Why this visualization adds insight"}],
+  "chartSuggestions": [{"type": "bar|line|area|scatter|pie", "title": "Chart title", "description": "Why this visualization adds insight"}],
   "analysisResults": {
-    "analysis_type": "llm_chart",
-    "chart_data": {"type": "area", "labels": ["0h","2h","4h","8h","12h","24h"], "datasets": [{"label": "Test", "data": [0,850,1200,1050,820,420], "borderColor": "#14b8a6", "backgroundColor": "rgba(20,184,166,0.2)", "fill": true}]},
-    "results_table": [{"metric": "Note", "value": "_Synthetic visualization for demonstration._"}]
+    "analysis_type": "llm_chart" | "llm_table",
+    "chart_data": {
+      "type": "bar" | "line" | "scatter" | "area" | "pie" | "kaplan-meier",
+      "title": "string",
+      "x_axis": "string with units",
+      "y_axis": "string with units",
+      "y_scale": "linear" | "log",
+      "labels": ["0h", "2h", "4h", ...],
+      "datasets": [{"label": "Series name", "data": [0, 850, 1200], "borderColor": "#14b8a6", "backgroundColor": "rgba(20,184,166,0.2)", "fill": true}],
+      "series": [{"name": "Group A", "data": [{"x": 0, "y": 0, "sd": 0}, {"x": 2, "y": 850, "sd": 45.2}]}],
+      "reference_lines": [{"value": 125, "label": "Upper BE bound", "style": "dashed"}]
+    },
+    "results_table": [{"metric": "Row label", "value": "Cell value"}, ...]
   },
-  "graphTitle": "Publication-style title (max 8 words) e.g. 'Cumulative AUC Over Time – Test vs Reference'",
-  "_reasoning": "1. Yes — area chart requested (keyword: 'area chart'). 2. type='area'. 3. Cmax≈325 ng/mL, Tmax≈2h, t½≈9.8h available from PK table. 4. Will use PK exponential-decay approximation (no raw time-series in data). 5. Time points [0h,2h,4h,8h,12h,24h]; series: Test, Reference."
+  "graphTitle": "Publication-style scientific title (10-18 words)",
+  "_reasoning": "Step-by-step reasoning before generating output"
 }
 
-## CRITICAL — analysisResults field rules:
+SUBJECTS_FOUND RULES:
+- "subjects_found" MUST list every unique SUBJID (or equivalent subject ID) found in the raw data
+- "subject_count" MUST equal subjects_found.length
+- If no subject ID column exists, set subjects_found to [] and subject_count to 0
+- NEVER add, remove, or rename any subject IDs — they must match the uploaded CSV exactly
+- If you cannot compute a value from the raw data, set it to null. Never omit the JSON wrapper.
+
+ANALYSISRESULTS RULES:
 1. "analysis" MUST be narrative prose only — NO markdown tables. For viz requests: 1-2 sentences only.
 2. VISUALIZATION REQUESTS (area chart, line chart, KM curve, bar chart, box plot, volcano, forest, heatmap, scatter):
    - Set analysis_type to "llm_chart"
-   - ALWAYS include chart_data with type + labels + datasets
-   - Include a brief results_table note: [{"metric": "Note", "value": "_Synthetic visualization for demonstration._"}]
-   - NEVER return only a results_table with rows — chart_data is mandatory for viz requests
+   - ALWAYS include chart_data with type + labels/series + datasets
+   - chart_data may use EITHER the labels+datasets format OR the series format (with x/y/sd objects)
+   - ALWAYS include results_table with REAL data rows (one per data point) — NEVER a single "Note" row
+   - NEVER use "Synthetic" or "demonstration" language — all data must come from the uploaded file
 3. NON-VISUALIZATION REQUESTS — ALWAYS populate "analysisResults" when user requests ANY of:
-   - Tabular results: summary tables, parameter listings, results tables, statistical output
-   - Generated or simulated data: PK parameters, BE summaries, descriptive statistics, patient datasets
-   - Data synthesis: example datasets, reference ranges, normative values, dose-response tables
-   - Statistical tests: t-test results, ANOVA tables, chi-square, correlation matrices, regression output
-   - Pharmacokinetic/pharmacodynamic analyses: AUC, Cmax, Tmax, half-life, clearance tables
+   - Tabular results, summary tables, statistical output, PK parameters, BE summaries
+   - Statistical tests: t-test, ANOVA, chi-square, correlation, regression
    Format: {"analysis_type": "llm_table", "results_table": [{"metric": "Row label", "value": "Cell value"}, ...]}
-   - Use "metric" for the row/parameter name and "value" for the corresponding result.
    - Extract EVERY data row. Keep "analysis" as brief narrative prose.
-4. Set "analysisResults" to null ONLY for purely conversational answers with NO data or charts (e.g., "What is a t-test?").
-5. Always include "graphTitle" — a publication-quality scientific title modelled on journal conventions
-   (NEJM, JAMA, CPT, Biometrics, J Clin Pharmacol, Stat Med). Rules:
-   - 10–18 words preferred; never truncate to 8 words.
-   - Structure: [What was measured] + [Key comparison or endpoint] + [Study context if available]
-   - Use standard biostatistics / pharmacokinetics terminology:
-       Charts: "Mean (± SD) plasma concentration–time profiles following single oral dosing — Test vs. Reference"
-               "Kaplan–Meier estimates of overall survival by treatment arm"
-               "Cumulative AUC(0–∞) over time: Test vs. Reference formulations"
-               "Volcano plot of differential gene expression: treated vs. control"
-               "Forest plot of hazard ratios across pre-specified subgroups"
-               "Box-and-whisker plot of [biomarker] concentrations by [group variable]"
-       Tables: "Summary of pharmacokinetic parameters (mean ± SD) — [drug / formulation]"
-               "Descriptive statistics for [variable] across [groups] (N = [n])"
-               "Two-sample independent t-test results: [outcome] by [group]"
-               "One-way ANOVA summary: effect of [factor] on [outcome]"
-               "Pearson correlation matrix — [variable set]"
-   - Use en-dash (–) between contrasting groups, not a hyphen.
-   - Sentence case only: capitalise first word + proper nouns + abbreviations.
-   - Never use generic fillers: "Chart", "Graph", "Table", "Analysis results", "Output".
-   - Include drug/compound names, formulation labels, or column names when known.
-   - "graphTitle" must always be a non-empty string — never null or omitted.
+4. Set "analysisResults" to null ONLY for purely conversational answers with NO data or charts.
 
-## RULE — AUTO DATA TABLE
-Whenever you generate any chart, graph, or visualization, you MUST immediately
-follow it with a structured data table displaying all numerical values used to
-construct that chart. This is mandatory and applies to every chart type without
-exception.
+GRAPHTITLE RULES:
+- Publication-quality scientific title modelled on journal conventions (NEJM, JAMA, CPT)
+- 10–18 words preferred. Structure: [What was measured] + [Key comparison] + [Study context]
+- Use en-dash (–) between contrasting groups, sentence case only
+- Never use generic fillers: "Chart", "Graph", "Table", "Analysis results", "Output"
+- Must always be a non-empty string — never null or omitted
 
-The table must:
-1. Appear as rows in "results_table" directly alongside the chart_data, labeled "Underlying Data" or "Summary Data Table"
-2. Include ALL data points plotted (every x/y value, every group, every timepoint)
-3. Include summary statistics where applicable: Mean, SD, SE, N, 95% CI
-4. Use the same group labels/colors referenced in the chart legend
-5. Be formatted with clear column headers and aligned decimal places
-6. For PK charts: include columns for Timepoint, N, Mean, SD, SE, CV%
-7. For efficacy charts: include columns for Visit, Treatment Arm, N, Mean, SD, Change from Baseline, p-value
-8. For survival charts: include columns for Timepoint, At Risk, Events, Censored, KM Estimate, 95% CI
-9. For bar/box charts: include columns for Group, N, Mean, Median, SD, IQR, Min, Max
+CHART + TABLE PAIRING (MANDATORY):
+- Every chart MUST include a populated results_table with the underlying data
+- results_table MUST contain one row per data point — never a single "Note" row
+- Every results_table with ≥2 numeric rows SHOULD also include chart_data
+- For PK charts: include "yAxisScale": "log", SD bounds: "upperBound"/"lowerBound"
+- For PK charts: axes = "Time (hours post-dose)" / "Mean Plasma Concentration (ng/mL)"
 
-Example results_table for a PK concentration-time chart (include one row per timepoint per group):
-[
-  {"metric": "Time 0.5h — Drug A", "value": "Mean=129.7 ng/mL, SD=12.4, CV%=9.6%, N=5"},
-  {"metric": "Time 0.5h — Drug B", "value": "Mean=238.0 ng/mL, SD=7.1, CV%=3.0%, N=5"},
-  {"metric": "Time 1.0h — Drug A", "value": "Mean=202.8 ng/mL, SD=16.4, CV%=8.1%, N=5"},
-  {"metric": "Time 1.0h — Drug B", "value": "Mean=377.8 ng/mL, SD=10.4, CV%=2.7%, N=5"}
-]
+DATA INTEGRITY (NO FABRICATION):
+NEVER generate, extrapolate, or invent subject records that do not exist
+in the uploaded data. If the dataset contains n subjects, all outputs must
+reflect exactly n subjects — no more. If the data is too small for a
+statistically meaningful analysis, say so explicitly rather than fabricating
+additional records.`;
+}
 
-## RULE — PK CHART STANDARDS
-All pharmacokinetic concentration-time plots must:
-- Use a logarithmic (semi-log) y-axis by default unless the user explicitly requests linear scale.
-  To signal this, include {"metric": "Y-Axis Scale", "value": "logarithmic"} in results_table
-  and add "yAxisScale": "log" to chart_data.
-- Render ±SD as a shaded translucent ribbon (not separate lines). Include upper/lower bound
-  arrays in each dataset: "upperBound": [...], "lowerBound": [...]
-- Set Tmax markers at the correct observed peak timepoint
-- Clearly separate dose groups visually (distinct colors + markers)
-- Label axes: x = "Time (hours post-dose)", y = "Mean Plasma Concentration (ng/mL)"
-- Include a legend identifying each treatment arm and dose
-- Drug B / higher-dose groups MUST have proportionally higher concentrations than Drug A / lower-dose groups at every timepoint`;
+// ── Missing value codes recognized across clinical data formats ──────────────
+const MISSING_VALUE_CODES = new Set([".", "NA", "N/A", "na", "n/a", "NaN", "nan", "BQL", "bql", "BLOQ", "bloq", "-999", "-99", "", "ND", "nd"]);
+
+/**
+ * Normalize a raw cell value: handle missing value codes and BQL.
+ * Returns the parsed value (number, string, or null for missing).
+ * BQL values are converted to null and flagged separately.
+ */
+function normalizeCellValue(raw: string | undefined): { value: any; isBQL: boolean } {
+  const trimmed = (raw ?? "").trim();
+
+  if (MISSING_VALUE_CODES.has(trimmed)) {
+    const isBQL = ["BQL", "bql", "BLOQ", "bloq"].includes(trimmed);
+    return { value: null, isBQL };
+  }
+
+  // Strip surrounding quotes
+  const unquoted = trimmed.replace(/^["']|["']$/g, "");
+
+  // Attempt numeric conversion
+  if (unquoted !== "" && !isNaN(Number(unquoted))) {
+    return { value: Number(unquoted), isBQL: false };
+  }
+
+  return { value: unquoted || null, isBQL: false };
 }
 
 /**
- * Parse uploaded data file
+ * Auto-detect delimiter: tab vs comma.
+ * Checks the first non-empty line — whichever delimiter yields more fields wins.
+ */
+function detectDelimiter(firstLine: string): string {
+  const tabCount = (firstLine.match(/\t/g) || []).length;
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  return tabCount > commaCount ? "\t" : ",";
+}
+
+/**
+ * Parse uploaded data file.
+ * Supports: CSV, TSV, TXT (tab-delimited).
+ * Handles BQL and standard missing value codes (., NA, -999, etc.).
  */
 export async function parseDataFile(
   fileBuffer: Buffer,
@@ -732,24 +949,33 @@ export async function parseDataFile(
   preview: any[];
   fullData: any[];
   classifications: Record<string, any>;
+  bqlSummary?: Record<string, number>;
 }> {
   const ext = fileName.split(".").pop()?.toLowerCase();
 
-  if (ext === "csv") {
+  if (ext === "csv" || ext === "tsv" || ext === "txt" || ext === "dat") {
     const content = fileBuffer.toString("utf-8");
     const lines = content.split("\n").filter((line) => line.trim());
 
     if (lines.length === 0) {
-      throw new Error("CSV file is empty");
+      throw new Error("File is empty");
     }
 
-    const headers = lines[0].split(",").map((h) => h.trim());
+    const delimiter = ext === "tsv" ? "\t" : detectDelimiter(lines[0]);
+    const headers = lines[0].split(delimiter).map((h) => h.trim().replace(/^["']|["']$/g, ""));
+
+    // Track BQL counts per column
+    const bqlCounts: Record<string, number> = {};
+
     const data = lines.slice(1).map((line) => {
-      const values = line.split(",");
+      const values = line.split(delimiter);
       const row: Record<string, any> = {};
       headers.forEach((header, idx) => {
-        const value = values[idx]?.trim();
-        row[header] = isNaN(Number(value)) ? value : Number(value);
+        const { value, isBQL } = normalizeCellValue(values[idx]);
+        row[header] = value;
+        if (isBQL) {
+          bqlCounts[header] = (bqlCounts[header] ?? 0) + 1;
+        }
       });
       return row;
     });
@@ -757,25 +983,35 @@ export async function parseDataFile(
     const classifications: Record<string, any> = {};
     headers.forEach((col) => {
       const values = data.map((row) => row[col]);
-      const numericValues = values.filter((v) => typeof v === "number");
-      const isNumeric = numericValues.length > values.length * 0.5;
+      const nonNull = values.filter((v) => v !== null && v !== undefined);
+      const numericValues = nonNull.filter((v) => typeof v === "number");
+      const isNumeric = nonNull.length > 0 && numericValues.length > nonNull.length * 0.5;
+      const missingCount = values.length - nonNull.length;
 
       classifications[col] = {
         dataType: isNumeric ? "number" : "string",
-        uniqueValues: new Set(values).size,
+        uniqueValues: new Set(nonNull).size,
+        missingCount,
+        bqlCount: bqlCounts[col] ?? 0,
         suggestedAnalyses: isNumeric ? ["mean", "median", "correlation"] : ["frequency"],
       };
     });
+
+    const hasBQL = Object.values(bqlCounts).some((c) => c > 0);
+    if (hasBQL) {
+      console.log(`[parseDataFile] BQL values detected:`, bqlCounts);
+    }
 
     return {
       columns: headers,
       preview: data.slice(0, 3),
       fullData: data,
       classifications,
+      ...(hasBQL ? { bqlSummary: bqlCounts } : {}),
     };
   }
 
-  throw new Error("Unsupported file format");
+  throw new Error(`Unsupported file format: .${ext}. Supported: CSV, TSV, TXT, DAT`);
 }
 
 // ─── Synthetic dataset generator ─────────────────────────────────────────────
@@ -1373,6 +1609,250 @@ function isApplyCleaningSignal(
   return applyWords.has(q) && isContinuingCleaningConversation(conversationHistory);
 }
 
+// ─── NCA (Non-Compartmental Analysis) Computation ────────────────────────────
+
+interface NCAResult {
+  group: string;
+  n: number;
+  cmax: number;
+  tmax: number;
+  auc0t: number;
+  aucInf: number | null;
+  lambdaZ: number | null;
+  halfLife: number | null;
+  clF: number | null;
+  vdF: number | null;
+}
+
+/**
+ * Compute NCA PK parameters from concentration-time data.
+ * Uses linear-up/log-down trapezoidal rule for AUC.
+ * Terminal slope (λz) estimated by log-linear regression of ≥3 terminal points.
+ */
+function computeNCA(
+  fullData: any[],
+  timeColumn: string,
+  concColumn: string,
+  groupColumn?: string,
+  dose?: number,
+): NCAResult[] {
+  // Group data
+  const groups: Record<string, Array<{ time: number; conc: number }>> = {};
+  for (const row of fullData) {
+    const t = typeof row[timeColumn] === "number" ? row[timeColumn] : parseFloat(row[timeColumn]);
+    let c = typeof row[concColumn] === "number" ? row[concColumn] : parseFloat(row[concColumn]);
+    if (isNaN(t)) continue;
+    // BQL → BQL/2 = treat null/NaN concentrations as 0 for AUC
+    if (c === null || c === undefined || isNaN(c)) c = 0;
+
+    const grp = groupColumn && row[groupColumn] ? String(row[groupColumn]) : "All";
+    (groups[grp] = groups[grp] ?? []).push({ time: t, conc: c });
+  }
+
+  const results: NCAResult[] = [];
+
+  for (const [group, points] of Object.entries(groups)) {
+    // Sort by time
+    const sorted = [...points].sort((a, b) => a.time - b.time);
+    if (sorted.length < 2) continue;
+
+    // Cmax & Tmax
+    let cmax = -Infinity;
+    let tmax = 0;
+    for (const p of sorted) {
+      if (p.conc > cmax) { cmax = p.conc; tmax = p.time; }
+    }
+
+    // AUC0-t via linear-up / log-down trapezoidal rule
+    let auc0t = 0;
+    for (let i = 1; i < sorted.length; i++) {
+      const dt = sorted[i].time - sorted[i - 1].time;
+      const c1 = sorted[i - 1].conc;
+      const c2 = sorted[i].conc;
+      if (dt <= 0) continue;
+
+      if (c2 >= c1 || c1 <= 0 || c2 <= 0) {
+        // Linear trapezoidal (ascending or zero concentrations)
+        auc0t += 0.5 * (c1 + c2) * dt;
+      } else {
+        // Log-down trapezoidal (descending)
+        auc0t += (c1 - c2) * dt / Math.log(c1 / c2);
+      }
+    }
+
+    // Terminal slope (λz) — log-linear regression on ≥3 terminal points after Cmax
+    let lambdaZ: number | null = null;
+    let halfLife: number | null = null;
+    let aucInf: number | null = null;
+    let clF: number | null = null;
+    let vdF: number | null = null;
+
+    const tmaxIdx = sorted.findIndex((p) => p.time === tmax && p.conc === cmax);
+    const terminalPoints = sorted
+      .slice(tmaxIdx + 1)
+      .filter((p) => p.conc > 0);
+
+    if (terminalPoints.length >= 3) {
+      // Use last 3–5 points for regression
+      const regPoints = terminalPoints.slice(-Math.min(5, terminalPoints.length));
+      const n = regPoints.length;
+      const lnC = regPoints.map((p) => Math.log(p.conc));
+      const t = regPoints.map((p) => p.time);
+
+      const sumT = t.reduce((a, b) => a + b, 0);
+      const sumLnC = lnC.reduce((a, b) => a + b, 0);
+      const sumT2 = t.reduce((a, b) => a + b * b, 0);
+      const sumTLnC = t.reduce((a, b, i) => a + b * lnC[i], 0);
+
+      const slope = (n * sumTLnC - sumT * sumLnC) / (n * sumT2 - sumT * sumT);
+
+      if (slope < 0) {
+        lambdaZ = -slope;
+        halfLife = Math.LN2 / lambdaZ;
+
+        // AUCinf = AUC0-t + Clast / λz
+        const clast = sorted[sorted.length - 1].conc;
+        if (clast > 0) {
+          aucInf = auc0t + clast / lambdaZ;
+
+          // CL/F and Vd/F (only if dose is known)
+          if (dose && dose > 0) {
+            clF = dose / aucInf;
+            vdF = clF / lambdaZ;
+          }
+        }
+      }
+    }
+
+    results.push({
+      group,
+      n: sorted.length,
+      cmax: parseFloat(cmax.toFixed(3)),
+      tmax: parseFloat(tmax.toFixed(2)),
+      auc0t: parseFloat(auc0t.toFixed(2)),
+      aucInf: aucInf !== null ? parseFloat(aucInf.toFixed(2)) : null,
+      lambdaZ: lambdaZ !== null ? parseFloat(lambdaZ.toFixed(6)) : null,
+      halfLife: halfLife !== null ? parseFloat(halfLife.toFixed(2)) : null,
+      clF: clF !== null ? parseFloat(clF.toFixed(4)) : null,
+      vdF: vdF !== null ? parseFloat(vdF.toFixed(2)) : null,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Auto-detect time and concentration columns from dataset columns.
+ * Returns { timeCol, concCol, groupCol } or null if not found.
+ */
+function detectPKColumns(
+  columns: string[],
+): { timeCol: string; concCol: string; groupCol?: string } | null {
+  const lower = columns.map((c) => c.toLowerCase());
+
+  // Time column patterns
+  const timePatterns = ["time", "timepoint", "time_point", "hour", "hours", "hr", "hrs", "t(h)", "time (h)", "time(h)", "nominal_time", "actual_time"];
+  const timeIdx = lower.findIndex((c) => timePatterns.some((p) => c.includes(p)));
+  if (timeIdx === -1) return null;
+
+  // Concentration column patterns
+  const concPatterns = ["conc", "concentration", "cp", "plasma", "dv", "obs", "observed"];
+  const concIdx = lower.findIndex((c, i) => i !== timeIdx && concPatterns.some((p) => c.includes(p)));
+  if (concIdx === -1) return null;
+
+  // Group column patterns (optional)
+  const groupPatterns = ["treatment", "trt", "formulation", "group", "arm", "dose_group", "cohort", "period", "sequence"];
+  const groupIdx = lower.findIndex((c, i) => i !== timeIdx && i !== concIdx && groupPatterns.some((p) => c.includes(p)));
+
+  return {
+    timeCol: columns[timeIdx],
+    concCol: columns[concIdx],
+    groupCol: groupIdx >= 0 ? columns[groupIdx] : undefined,
+  };
+}
+
+/**
+ * Compute geometric mean and geometric CV%.
+ */
+function geometricStats(values: number[]): { gMean: number; gCV: number } {
+  const positive = values.filter((v) => v > 0);
+  if (positive.length === 0) return { gMean: 0, gCV: 0 };
+
+  const lnVals = positive.map((v) => Math.log(v));
+  const meanLn = lnVals.reduce((a, b) => a + b, 0) / lnVals.length;
+  const gMean = Math.exp(meanLn);
+
+  if (positive.length < 2) return { gMean, gCV: 0 };
+
+  const varLn = lnVals.reduce((a, b) => a + (b - meanLn) ** 2, 0) / (lnVals.length - 1);
+  const gCV = Math.sqrt(Math.exp(varLn) - 1) * 100; // geometric CV%
+
+  return { gMean: parseFloat(gMean.toFixed(3)), gCV: parseFloat(gCV.toFixed(1)) };
+}
+
+// ── CSV reconstruction & SUBJID extraction helpers ──────────────────────────
+
+/** Reconstruct raw CSV text from parsed fullData + column headers. */
+function reconstructCSV(dataColumns: string[], fullData: any[]): string {
+  const header = dataColumns.join(",");
+  const rows = fullData.map((row) =>
+    dataColumns.map((col) => {
+      const val = row[col];
+      if (val === null || val === undefined) return "";
+      const str = String(val);
+      // Quote if the value contains commas, quotes, or newlines
+      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    }).join(",")
+  );
+  return [header, ...rows].join("\n");
+}
+
+/** Common subject ID column name patterns. */
+const SUBJECT_ID_PATTERNS = [
+  /^subjid$/i, /^subject_?id$/i, /^subj$/i, /^subject$/i,
+  /^usubjid$/i, /^patientid$/i, /^patient_?id$/i, /^pt_?id$/i,
+  /^id$/i, /^subjectno$/i, /^subject_?no$/i, /^subj_?no$/i,
+  /^randno$/i, /^screeningno$/i,
+];
+
+/** Detect the subject ID column from the available columns. */
+function detectSubjectIDColumn(dataColumns: string[]): string | null {
+  for (const pattern of SUBJECT_ID_PATTERNS) {
+    const match = dataColumns.find((col) => pattern.test(col.trim()));
+    if (match) return match;
+  }
+  return null;
+}
+
+/** Extract unique subject IDs and return a formatted summary string. */
+function extractSubjectSummary(
+  fullData: any[],
+  dataColumns: string[]
+): string | null {
+  const subjCol = detectSubjectIDColumn(dataColumns);
+  if (!subjCol) return null;
+
+  const uniqueIDs = Array.from(
+    new Set(
+      fullData
+        .map((row) => row[subjCol])
+        .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+        .map((v) => String(v).trim())
+    )
+  );
+
+  if (uniqueIDs.length === 0) return null;
+
+  return (
+    `This file contains exactly ${uniqueIDs.length} subjects (column "${subjCol}"): ` +
+    `${uniqueIDs.join(", ")}. ` +
+    `Analyze only these subjects. Do NOT invent, add, or omit any subject IDs.`
+  );
+}
+
 /**
  * Main biostatistics analysis function
  */
@@ -1534,24 +2014,42 @@ export async function analyzeBiostatistics(
       `============================================`
     : "";
 
+  // ── Pre-analysis: embed full CSV & extract SUBJID summary ─────────────────
+  let csvDataBlock = "";
+  let subjectLine = "";
+  let subjectCountLine = "";
+  let uniqueSubjectCount = 0;
+
+  if (fullData && fullData.length > 0 && dataColumns.length > 0) {
+    const csvText = reconstructCSV(dataColumns, fullData);
+
+    // Extract unique subject IDs if a SUBJID-like column exists
+    const subjCol = detectSubjectIDColumn(dataColumns);
+    let uniqueIDs: string[] = [];
+    if (subjCol) {
+      uniqueIDs = Array.from(
+        new Set(
+          fullData
+            .map((row: any) => row[subjCol])
+            .filter((v: any) => v !== null && v !== undefined && String(v).trim() !== "")
+            .map((v: any) => String(v).trim())
+        )
+      );
+      uniqueSubjectCount = uniqueIDs.length;
+      subjectLine = `SUBJECT IDs FOUND: ${uniqueIDs.join(", ")}`;
+      subjectCountLine = `TOTAL SUBJECTS: ${uniqueIDs.length}`;
+    }
+
+    csvDataBlock = `UPLOADED DATA (use ONLY this data, no other):\n${csvText}`;
+
+    console.log(`[analyzeBiostatistics] CSV injected into prompt: ${fullData.length} rows, ${uniqueSubjectCount} unique subjects`);
+  }
+
   const userMessage = isCleaningConversation
     ? `${userQuery}${scanInjection}`
-    : `
-Available Columns: ${dataColumns.join(", ")}
-
-Column Classifications:
-${classificationContext}
-
-Data Preview (first 3 rows):
-${dataPreview}
-
-User Query: ${userQuery}
-
-Analyze this data and provide:
-1. Immediate analysis if the query matches a known method
-2. Structured JSON results with chart data
-3. Clinical interpretation and next steps
-4. Do NOT ask generic "What would you like?" - perform the analysis directly${vizInstruction}`;
+    : csvDataBlock
+      ? `${csvDataBlock}\n\n${subjectLine ? `${subjectLine}\n${subjectCountLine}\n\n` : ""}User query: ${userQuery}${vizInstruction}`
+      : `Available Columns: ${dataColumns.join(", ")}\n\nColumn Classifications:\n${classificationContext}\n\nUser query: ${userQuery}${vizInstruction}`;
 
   // For visualization queries: send NO prior conversation history.
   // Each chart request must be answered completely from scratch — sending previous
@@ -1584,6 +2082,9 @@ Analyze this data and provide:
     console.time("[analyzeBiostatistics] Total analysis time");
     console.log(`[analyzeBiostatistics] Query: "${userQuery}"`);
     console.log(`[analyzeBiostatistics] Data rows: ${fullData?.length || 0}, Columns: ${dataColumns.length}`);
+    if (subjectLine) console.log(`[analyzeBiostatistics] ${subjectLine} | ${subjectCountLine}`);
+    // Log the full system prompt so we can verify all rules are present
+    console.log(`[analyzeBiostatistics] System prompt (${systemPrompt.length} chars):\n${systemPrompt}`);
     
     // Detect analysis type and perform real calculations if data is available
     let analysisResults: any = null;
@@ -1680,6 +2181,155 @@ Analyze this data and provide:
               ],
             },
           };
+        }
+
+        // ── NCA (pharmacokinetic parameter) analysis ────────────────────────
+        if (!analysisResults && analysisType === "nca") {
+          const pkCols = detectPKColumns(dataColumns);
+          if (pkCols) {
+            console.log(`[analyzeBiostatistics] NCA — time=${pkCols.timeCol}, conc=${pkCols.concCol}, group=${pkCols.groupCol ?? "none"}`);
+
+            // Attempt to extract dose from user query
+            const doseMatch = userQuery.toLowerCase().match(/(\d+)\s*mg/);
+            const doseVal = doseMatch ? parseFloat(doseMatch[1]) : undefined;
+
+            const ncaResults = computeNCA(fullData, pkCols.timeCol, pkCols.concCol, pkCols.groupCol, doseVal);
+            if (ncaResults.length > 0) {
+              const resultsTable: Array<{ metric: string; value: any }> = [];
+              for (const r of ncaResults) {
+                const prefix = ncaResults.length > 1 ? `${r.group} — ` : "";
+                // Compute geometric stats for Cmax and AUC across subjects in group
+                const groupData = fullData.filter((row) => !pkCols.groupCol || String(row[pkCols.groupCol]) === r.group);
+                const cmaxVals = groupData.map((row) => row[pkCols.concCol]).filter((v): v is number => typeof v === "number" && v > 0);
+                const gCmax = geometricStats(cmaxVals);
+
+                resultsTable.push(
+                  { metric: `${prefix}Cmax`, value: `${r.cmax} ng/mL` },
+                  { metric: `${prefix}Tmax`, value: `${r.tmax} h` },
+                  { metric: `${prefix}AUC0-t`, value: `${r.auc0t} h·ng/mL` },
+                  { metric: `${prefix}AUCinf`, value: r.aucInf !== null ? `${r.aucInf} h·ng/mL` : "NC" },
+                  { metric: `${prefix}t½`, value: r.halfLife !== null ? `${r.halfLife} h` : "NC" },
+                  { metric: `${prefix}λz`, value: r.lambdaZ !== null ? `${r.lambdaZ} 1/h` : "NC" },
+                  { metric: `${prefix}Geometric Mean Cmax`, value: `${gCmax.gMean} ng/mL` },
+                  { metric: `${prefix}Geometric CV% Cmax`, value: `${gCmax.gCV}%` },
+                );
+                if (r.clF !== null) resultsTable.push({ metric: `${prefix}CL/F`, value: `${r.clF} L/h` });
+                if (r.vdF !== null) resultsTable.push({ metric: `${prefix}Vd/F`, value: `${r.vdF} L` });
+                resultsTable.push({ metric: `${prefix}n (timepoints)`, value: r.n });
+              }
+
+              // Build concentration-time chart data
+              const groups = Array.from(new Set(fullData.map((row) => pkCols.groupCol ? String(row[pkCols.groupCol]) : "All")));
+              const timePoints = Array.from(new Set(fullData.map((row) => row[pkCols.timeCol]).filter((v): v is number => typeof v === "number"))).sort((a, b) => a - b);
+              const colors = ["#14b8a6", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6"];
+
+              const datasets = groups.map((grp, gi) => {
+                const grpData = fullData.filter((row) => !pkCols.groupCol || String(row[pkCols.groupCol]) === grp);
+                const meanConcs = timePoints.map((t) => {
+                  const concs = grpData.filter((row) => row[pkCols.timeCol] === t).map((row) => row[pkCols.concCol]).filter((v): v is number => typeof v === "number");
+                  return concs.length > 0 ? parseFloat((concs.reduce((a, b) => a + b, 0) / concs.length).toFixed(2)) : 0;
+                });
+                return {
+                  label: grp,
+                  data: meanConcs,
+                  borderColor: colors[gi % colors.length],
+                  backgroundColor: `${colors[gi % colors.length]}33`,
+                  fill: false,
+                };
+              });
+
+              analysisResults = {
+                analysis_type: "nca",
+                results_table: resultsTable,
+                chart_data: {
+                  type: "line",
+                  labels: timePoints.map((t) => `${t}h`),
+                  datasets,
+                  yAxisScale: "log",
+                },
+              };
+              console.log(`[analyzeBiostatistics] ✓ NCA computed for ${ncaResults.length} group(s)`);
+            }
+          }
+        }
+
+        // ── Bioequivalence analysis ──────────────────────────────────────────
+        if (!analysisResults && analysisType === "bioequivalence") {
+          // Look for AUC and Cmax columns
+          const aucCol = dataColumns.find((c) => c.toLowerCase().includes("auc"));
+          const cmaxCol = dataColumns.find((c) => c.toLowerCase().includes("cmax"));
+          const groupCol = dataColumns.find((c) => {
+            const cl = c.toLowerCase();
+            return cl.includes("formulation") || cl.includes("treatment") || cl.includes("trt") || cl.includes("group") || cl.includes("arm");
+          });
+
+          if ((aucCol || cmaxCol) && groupCol) {
+            const groups = Array.from(new Set(fullData.map((row) => String(row[groupCol])))).filter(Boolean);
+            if (groups.length >= 2) {
+              const testGroup = groups.find((g) => g.toLowerCase().includes("test")) ?? groups[0];
+              const refGroup = groups.find((g) => g.toLowerCase().includes("ref")) ?? groups[1];
+
+              const resultsTable: Array<{ metric: string; value: any }> = [
+                { metric: "Test Formulation", value: testGroup },
+                { metric: "Reference Formulation", value: refGroup },
+              ];
+
+              const computeBE = (col: string, label: string) => {
+                const testVals = fullData.filter((r) => String(r[groupCol]) === testGroup).map((r) => r[col]).filter((v): v is number => typeof v === "number" && v > 0);
+                const refVals = fullData.filter((r) => String(r[groupCol]) === refGroup).map((r) => r[col]).filter((v): v is number => typeof v === "number" && v > 0);
+
+                if (testVals.length === 0 || refVals.length === 0) return;
+
+                const gTest = geometricStats(testVals);
+                const gRef = geometricStats(refVals);
+                const gmr = gRef.gMean > 0 ? (gTest.gMean / gRef.gMean) * 100 : 0;
+
+                // Approximate 90% CI from log-transformed data
+                const lnTest = testVals.map(Math.log);
+                const lnRef = refVals.map(Math.log);
+                const meanLnT = lnTest.reduce((a, b) => a + b, 0) / lnTest.length;
+                const meanLnR = lnRef.reduce((a, b) => a + b, 0) / lnRef.length;
+                const diff = meanLnT - meanLnR;
+
+                const varLnT = lnTest.length > 1 ? lnTest.reduce((a, b) => a + (b - meanLnT) ** 2, 0) / (lnTest.length - 1) : 0;
+                const varLnR = lnRef.length > 1 ? lnRef.reduce((a, b) => a + (b - meanLnR) ** 2, 0) / (lnRef.length - 1) : 0;
+                const se = Math.sqrt(varLnT / lnTest.length + varLnR / lnRef.length);
+
+                // t-critical for ~90% CI (two-sided), approximate with 1.645 for large n
+                const df = Math.min(lnTest.length, lnRef.length) - 1;
+                const tCrit = df > 30 ? 1.645 : df > 10 ? 1.697 : 1.833;
+
+                const lower90 = Math.exp(diff - tCrit * se) * 100;
+                const upper90 = Math.exp(diff + tCrit * se) * 100;
+                const passes = lower90 >= 80.0 && upper90 <= 125.0;
+
+                resultsTable.push(
+                  { metric: `${label} — Geometric Mean (Test)`, value: `${gTest.gMean}` },
+                  { metric: `${label} — Geometric Mean (Ref)`, value: `${gRef.gMean}` },
+                  { metric: `${label} — GMR (%)`, value: `${gmr.toFixed(2)}%` },
+                  { metric: `${label} — 90% CI`, value: `${lower90.toFixed(2)}% – ${upper90.toFixed(2)}%` },
+                  { metric: `${label} — BE Criteria (80–125%)`, value: passes ? "PASS ✓" : "FAIL ✗" },
+                );
+              };
+
+              if (aucCol) computeBE(aucCol, "AUC");
+              if (cmaxCol) computeBE(cmaxCol, "Cmax");
+
+              analysisResults = {
+                analysis_type: "bioequivalence",
+                results_table: resultsTable,
+                chart_data: {
+                  type: "bar",
+                  labels: [aucCol ? "AUC" : "", cmaxCol ? "Cmax" : ""].filter(Boolean),
+                  datasets: [
+                    { label: testGroup, data: [aucCol ? fullData.filter((r) => String(r[groupCol]) === testGroup).map((r) => r[aucCol!]).filter((v): v is number => typeof v === "number").reduce((a, b) => a + b, 0) / (fullData.filter((r) => String(r[groupCol]) === testGroup).length || 1) : 0, cmaxCol ? fullData.filter((r) => String(r[groupCol]) === testGroup).map((r) => r[cmaxCol!]).filter((v): v is number => typeof v === "number").reduce((a, b) => a + b, 0) / (fullData.filter((r) => String(r[groupCol]) === testGroup).length || 1) : 0].filter((_, i) => [aucCol, cmaxCol].filter(Boolean)[i]), borderColor: "#14b8a6", backgroundColor: "rgba(20,184,166,0.6)" },
+                    { label: refGroup, data: [aucCol ? fullData.filter((r) => String(r[groupCol]) === refGroup).map((r) => r[aucCol!]).filter((v): v is number => typeof v === "number").reduce((a, b) => a + b, 0) / (fullData.filter((r) => String(r[groupCol]) === refGroup).length || 1) : 0, cmaxCol ? fullData.filter((r) => String(r[groupCol]) === refGroup).map((r) => r[cmaxCol!]).filter((v): v is number => typeof v === "number").reduce((a, b) => a + b, 0) / (fullData.filter((r) => String(r[groupCol]) === refGroup).length || 1) : 0].filter((_, i) => [aucCol, cmaxCol].filter(Boolean)[i]), borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.6)" },
+                  ],
+                },
+              };
+              console.log(`[analyzeBiostatistics] ✓ Bioequivalence computed: ${testGroup} vs ${refGroup}`);
+            }
+          }
         }
 
         // Check for gene expression data and fold-change analysis
@@ -2120,45 +2770,60 @@ Analyze this data and provide:
 
     const content = response.choices[0].message.content;
     if (typeof content === "string") {
-      // Strip markdown code fences that models sometimes add (```json ... ```)
-      const rawJson = content
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```\s*$/, "")
-        .trim();
+      // ── Robust JSON extraction — multi-step cleaning ──────────────────────
+      // Log the raw LLM response before any cleaning
+      console.log("[analyzeBiostatistics] RAW LLM response (first 500 chars):", content.slice(0, 500));
 
+      let cleaned = content;
+
+      // Step 1: Trim whitespace from both ends
+      cleaned = cleaned.trim();
+
+      // Step 2: If the string contains ```json fences, extract only the content between them
+      const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenceMatch) {
+        cleaned = fenceMatch[1].trim();
+        console.log("[analyzeBiostatistics] Cleaned: stripped markdown code fences");
+      }
+
+      // Step 3: If the string starts with text before the first {, strip everything before it
+      const firstBrace = cleaned.indexOf("{");
+      if (firstBrace > 0) {
+        console.log(`[analyzeBiostatistics] Cleaned: stripped ${firstBrace} chars before first '{': "${cleaned.slice(0, Math.min(firstBrace, 80))}"`);
+        cleaned = cleaned.slice(firstBrace);
+      }
+
+      // Step 4: If the string ends with text after the last }, strip everything after it
+      const lastBrace = cleaned.lastIndexOf("}");
+      if (lastBrace >= 0 && lastBrace < cleaned.length - 1) {
+        console.log(`[analyzeBiostatistics] Cleaned: stripped ${cleaned.length - lastBrace - 1} chars after last '}'`);
+        cleaned = cleaned.slice(0, lastBrace + 1);
+      }
+
+      // Log the cleaned result
+      console.log("[analyzeBiostatistics] CLEANED response (first 500 chars):", cleaned.slice(0, 500));
+
+      // Step 5: Attempt JSON.parse on the cleaned string
       let parsed: any;
       try {
-        parsed = JSON.parse(rawJson);
+        parsed = JSON.parse(cleaned);
       } catch (parseErr) {
-        console.error("[analyzeBiostatistics] JSON.parse failed. Raw content:", content.slice(0, 300));
+        // Step 6: Only trigger "Analysis blocked" if parsing still fails after all cleaning
+        console.error("[analyzeBiostatistics] JSON.parse failed AFTER cleaning. Raw content:", content.slice(0, 300));
+        console.error("[analyzeBiostatistics] Cleaned content:", cleaned.slice(0, 300));
 
-        // NEW: when JSON parse fails on a viz query, synthesize chart_data rather than
-        // returning raw text. Previously the isVizQuery safety-net (Cases A/B/C below)
-        // was never reached because this block returned early — so chart requests that
-        // triggered a malformed LLM response always showed a plain text/table instead of
-        // a chart. Now we fall through with a synthetic result.
-        // DEBUG: log chart detection outcome even on parse failure
         logChartDecision("JSON parse failed", userQuery, { isVizQuery, rawContentHead: content.slice(0, 120) });
 
         if (isVizQuery) {
-          // RESTORED: synthesize chart_data on JSON parse failure so the Results panel
-          // renders a chart instead of raw LLM text. The analysis prose is the cleaned
-          // raw content (code fences stripped above); chart is synthesized from PK params.
-          const vizType = detectAnalysisType(userQuery, dataColumns);
-          const synthChart = synthesizeVizChartData(vizType, analysisResults, dataColumns, fullData);
-          console.log(`[analyzeBiostatistics] ✓ JSON parse failed but isVizQuery — synthesized chart_data (${vizType})`);
+          console.error(`[analyzeBiostatistics] ✗ BLOCKED synthetic chart — JSON parse failed on viz query`);
           return {
-            analysis: (analysisResults
-              ? `${buildAnalysisText(analysisResults, userQuery)}\n\n---\n`
-              : "") +
-              content.replace(/```[\s\S]*?```/g, "").replace(/^```.*$/gm, "").trim(),
-            suggestions: ["Attach a data file for exact values", "Try rephrasing your chart request"],
+            analysis: "**Analysis blocked:** The AI did not return verifiable data from the uploaded file. The response was not valid JSON and no chart could be extracted. Please rephrase your query or re-upload your data.",
+            suggestions: ["Rephrase your chart request with specific column names", "Re-upload your data file and try again"],
             measurements: [],
             chartSuggestions: [],
             analysisResults: {
-              analysis_type: "llm_chart",
-              chart_data: synthChart,
-              results_table: [{ metric: "Note", value: "_Synthetic chart — LLM returned non-JSON. Attach data for exact values._" }],
+              analysis_type: "llm_table",
+              results_table: [{ metric: "Error", value: "Analysis blocked — AI returned non-JSON. No synthetic or fabricated data will be shown." }],
             },
             chartConfig,
             tableData,
@@ -2179,6 +2844,74 @@ Analyze this data and provide:
           tableData,
           llmUsed: false,
         };
+      }
+
+      // ── Subject-ID validation ─────────────────────────────────────────────
+      // Compare the subjects_found list returned by the LLM against the actual
+      // unique subject IDs extracted from the uploaded CSV.  If they diverge the
+      // LLM hallucinated patient data → block the result.
+      if (fullData && fullData.length > 0 && dataColumns.length > 0) {
+        const subjCol = detectSubjectIDColumn(dataColumns);
+        if (subjCol) {
+          const actualSubjects = Array.from(
+            new Set(fullData.map((r: any) => String(r[subjCol]).trim()).filter(Boolean))
+          ).sort();
+
+          const llmSubjects: string[] | undefined = parsed.subjects_found;
+          const llmCount: number | undefined = parsed.subject_count;
+
+          if (llmSubjects && Array.isArray(llmSubjects)) {
+            const llmSorted = llmSubjects.map((s: string) => String(s).trim()).sort();
+            const actualSet = new Set(actualSubjects);
+            const llmSet = new Set(llmSorted);
+
+            // Check for fabricated subjects (in LLM response but NOT in actual data)
+            const fabricated = llmSorted.filter((s: string) => !actualSet.has(s));
+            // Check for missing subjects (in actual data but NOT in LLM response)
+            const missing = actualSubjects.filter((s: string) => !llmSet.has(s));
+
+            if (fabricated.length > 0) {
+              console.error(
+                `[analyzeBiostatistics] ✗ BLOCKED — LLM fabricated ${fabricated.length} subject(s): ${fabricated.slice(0, 10).join(", ")}` +
+                ` | Actual subjects (${actualSubjects.length}): ${actualSubjects.slice(0, 10).join(", ")}`
+              );
+              parsed.analysisResults = {
+                analysis_type: "llm_table",
+                results_table: [{
+                  metric: "Error",
+                  value: `Analysis blocked — subject mismatch. The AI reported ${fabricated.length} subject(s) not found in your data: ${fabricated.slice(0, 5).join(", ")}${fabricated.length > 5 ? "…" : ""}. Your file contains ${actualSubjects.length} unique subjects.`,
+                }],
+              };
+              parsed.analysis =
+                `**Analysis blocked — subject mismatch detected.**\n\n` +
+                `The AI claimed to find subjects not present in the uploaded file. ` +
+                `Fabricated IDs: ${fabricated.slice(0, 10).join(", ")}${fabricated.length > 10 ? "…" : ""}.\n\n` +
+                `Your data contains ${actualSubjects.length} unique subjects in column "${subjCol}": ${actualSubjects.slice(0, 15).join(", ")}${actualSubjects.length > 15 ? "…" : ""}.\n\n` +
+                `Please re-run the analysis. No fabricated data will be shown.`;
+              parsed.suggestions = ["Re-run the analysis", "Check the uploaded file for data integrity"];
+              // Skip all downstream merging — return blocked result immediately
+              if (chartConfig) parsed.chartConfig = chartConfig;
+              if (tableData) parsed.tableData = tableData;
+              parsed.llmUsed = true;
+              return parsed;
+            }
+
+            if (missing.length > 0) {
+              console.warn(
+                `[analyzeBiostatistics] ⚠ LLM omitted ${missing.length} subject(s): ${missing.slice(0, 10).join(", ")}` +
+                ` | LLM returned ${llmSorted.length}, actual ${actualSubjects.length}`
+              );
+              // Warn but don't block — partial analysis is acceptable
+            }
+          }
+
+          // Validate subject_count if provided
+          if (typeof llmCount === "number" && llmCount !== actualSubjects.length) {
+            console.warn(
+              `[analyzeBiostatistics] ⚠ subject_count mismatch: LLM says ${llmCount}, actual ${actualSubjects.length}`
+            );
+          }
+        }
       }
 
       // Merge local computations into Claude's response.
@@ -2268,21 +3001,21 @@ Analyze this data and provide:
             parsed.analysisResults.analysis_type = "llm_chart";
           }
         } else if (parsed.analysisResults && !parsed.analysisResults.chart_data) {
-          // Case B: LLM returned a table but forgot chart_data — synthesize it.
-          parsed.analysisResults.chart_data = synthesizeVizChartData(
-            vizType, parsed.analysisResults, dataColumns, fullData
-          );
-          parsed.analysisResults.analysis_type = "llm_chart";
-          console.log(`[analyzeBiostatistics] ✓ Synthesized fallback chart_data (${vizType}) — merged into LLM analysisResults`);
+          // Case B: BLOCKED — LLM returned table but no chart_data. Do NOT synthesize.
+          console.error(`[analyzeBiostatistics] ✗ BLOCKED synthetic chart (Case B) — LLM returned table without chart_data`);
+          parsed.analysisResults.analysis_type = "llm_table";
+          if (!parsed.analysisResults.results_table || parsed.analysisResults.results_table.length === 0) {
+            parsed.analysisResults.results_table = [{ metric: "Error", value: "Analysis blocked — AI did not return chart data. No synthetic data will be generated." }];
+          }
+          parsed.analysis = (parsed.analysis || "") + "\n\n**Analysis blocked:** The AI did not return verifiable chart data from the uploaded file. Please rephrase your query or re-upload your data.";
         } else if (!parsed.analysisResults) {
-          // Case C: LLM returned null — build a complete result with synthetic chart.
-          const synthChart = synthesizeVizChartData(vizType, null, dataColumns, fullData);
+          // Case C: BLOCKED — LLM returned null analysisResults. Do NOT synthesize.
+          console.error(`[analyzeBiostatistics] ✗ BLOCKED synthetic chart (Case C) — LLM returned null analysisResults`);
           parsed.analysisResults = {
-            analysis_type: "llm_chart",
-            chart_data: synthChart,
-            results_table: [{ metric: "Note", value: "_Synthetic visualization for demonstration — attach real data for exact values._" }],
+            analysis_type: "llm_table",
+            results_table: [{ metric: "Error", value: "Analysis blocked — AI returned no results. No synthetic or fabricated data will be shown." }],
           };
-          console.log(`[analyzeBiostatistics] ✓ Synthesized full analysisResults with chart_data (${vizType})`);
+          parsed.analysis = (parsed.analysis || "") + "\n\n**Analysis blocked:** The AI did not return verifiable data from the uploaded file. Please rephrase your query or re-upload your data.";
         }
       }
 

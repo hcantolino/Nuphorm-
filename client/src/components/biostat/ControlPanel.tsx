@@ -228,7 +228,7 @@ const ChartSection: React.FC<{
     <div>
       {/* Chart Type */}
       <SectionLabel>Chart Type</SectionLabel>
-      <div className="grid grid-cols-5 gap-1.5 mb-0">
+      <div className="flex flex-wrap gap-1.5 mb-0">
         {CHART_TYPES.map(({ type: t, label, Icon }) => (
           <button
             key={t}
@@ -748,27 +748,45 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const nodeRef = useRef<HTMLDivElement>(null);
   const [panelWidth, setPanelWidth] = useState(360);
   const [panelHeight, setPanelHeight] = useState<number | null>(null);
+  const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
+
+  type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
   const resizeState = useRef<{
-    type: "right" | "bottom" | "corner";
+    dir: ResizeDir;
     startX: number;
     startY: number;
     startW: number;
     startH: number;
+    startPosX: number;
+    startPosY: number;
   } | null>(null);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!resizeState.current) return;
-      const { type, startX, startY, startW, startH } = resizeState.current;
-      if (type === "right" || type === "corner") {
-        const newW = Math.max(320, Math.min(700, startW + (e.clientX - startX)));
-        setPanelWidth(newW);
-      }
-      if (type === "bottom" || type === "corner") {
-        const maxH = window.innerHeight * 0.92;
-        const newH = Math.max(280, Math.min(maxH, startH + (e.clientY - startY)));
-        setPanelHeight(newH);
-      }
+      const { dir, startX, startY, startW, startH, startPosX, startPosY } = resizeState.current;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const maxH = window.innerHeight * 0.92;
+
+      const goesN = dir === "n" || dir === "ne" || dir === "nw";
+      const goesS = dir === "s" || dir === "se" || dir === "sw";
+      const goesE = dir === "e" || dir === "ne" || dir === "se";
+      const goesW = dir === "w" || dir === "nw" || dir === "sw";
+
+      let newW = startW;
+      let newH = startH;
+      let newX = startPosX;
+      let newY = startPosY;
+
+      if (goesE) newW = Math.max(280, Math.min(700, startW + dx));
+      if (goesW) { newW = Math.max(280, Math.min(700, startW - dx)); newX = startPosX + (startW - newW); }
+      if (goesS) newH = Math.max(300, Math.min(maxH, startH + dy));
+      if (goesN) { newH = Math.max(300, Math.min(maxH, startH - dy)); newY = startPosY + (startH - newH); }
+
+      setPanelWidth(newW);
+      setPanelHeight(newH);
+      if (goesW || goesN) setDragPos({ x: newX, y: newY });
     };
     const onUp = () => { resizeState.current = null; };
     document.addEventListener("mousemove", onMove);
@@ -780,18 +798,20 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   }, []);
 
   const startResize = useCallback(
-    (type: "right" | "bottom" | "corner", e: React.MouseEvent) => {
+    (dir: ResizeDir, e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       resizeState.current = {
-        type,
+        dir,
         startX: e.clientX,
         startY: e.clientY,
         startW: panelWidth,
-        startH: nodeRef.current?.offsetHeight ?? 400,
+        startH: panelHeight ?? nodeRef.current?.offsetHeight ?? 400,
+        startPosX: dragPos.x,
+        startPosY: dragPos.y,
       };
     },
-    [panelWidth]
+    [panelWidth, panelHeight, dragPos]
   );
 
   // Suppress unused warning — hasChartData available for future scatter-specific logic
@@ -812,15 +832,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
       {/* Draggable floating panel — rendered in place, z-indexed above everything */}
       {open && (
-        <Draggable nodeRef={nodeRef} handle=".drag-handle">
+        <Draggable nodeRef={nodeRef} handle=".drag-handle" position={dragPos} onDrag={(_, data) => setDragPos({ x: data.x, y: data.y })}>
           <div
             ref={nodeRef}
-            className="fixed top-20 right-4 bg-white border border-[#e2e8f0] rounded-xl z-[200] flex flex-col"
+            className="fixed top-20 right-4 bg-white border border-[#e5e7eb] rounded-xl z-[200] flex flex-col"
             style={{
               width: panelWidth,
               height: panelHeight ?? "auto",
               maxHeight: panelHeight ? "none" : "85vh",
-              boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
             }}
           >
             {/* Drag handle / header */}
@@ -889,60 +909,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               </div>
             </div>
 
-            {/* Right edge — drag to resize width */}
-            <div
-              onMouseDown={(e) => startResize("right", e)}
-              title="Drag to resize width"
-              style={{
-                position: "absolute",
-                top: 0,
-                right: -3,
-                bottom: 10,
-                width: 6,
-                cursor: "col-resize",
-                borderRadius: "0 4px 4px 0",
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(0,184,169,0.35)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-            />
-
-            {/* Bottom edge — drag to resize height */}
-            <div
-              onMouseDown={(e) => startResize("bottom", e)}
-              title="Drag to resize height"
-              style={{
-                position: "absolute",
-                bottom: -3,
-                left: 10,
-                right: 10,
-                height: 6,
-                cursor: "row-resize",
-                borderRadius: "0 0 4px 4px",
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(0,184,169,0.35)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-            />
-
-            {/* Bottom-right corner — drag to resize both */}
-            <div
-              onMouseDown={(e) => startResize("corner", e)}
-              title="Drag to resize"
-              style={{
-                position: "absolute",
-                bottom: 0,
-                right: 0,
-                width: 14,
-                height: 14,
-                cursor: "nwse-resize",
-                background: "#DEE2E6",
-                borderRadius: "0 0 10px 0",
-                transition: "background 0.15s",
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#00B8A9"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#DEE2E6"; }}
-            />
+            {/* Invisible resize handles — edges */}
+            <div onMouseDown={(e) => startResize("n", e)} className="absolute -top-[3px] left-3 right-3 h-1.5 cursor-ns-resize" />
+            <div onMouseDown={(e) => startResize("s", e)} className="absolute -bottom-[3px] left-3 right-3 h-1.5 cursor-ns-resize" />
+            <div onMouseDown={(e) => startResize("e", e)} className="absolute top-3 -right-[3px] bottom-3 w-1.5 cursor-ew-resize" />
+            <div onMouseDown={(e) => startResize("w", e)} className="absolute top-3 -left-[3px] bottom-3 w-1.5 cursor-ew-resize" />
+            {/* Invisible resize handles — corners */}
+            <div onMouseDown={(e) => startResize("nw", e)} className="absolute -top-[3px] -left-[3px] w-3 h-3 cursor-nwse-resize" />
+            <div onMouseDown={(e) => startResize("ne", e)} className="absolute -top-[3px] -right-[3px] w-3 h-3 cursor-nesw-resize" />
+            <div onMouseDown={(e) => startResize("sw", e)} className="absolute -bottom-[3px] -left-[3px] w-3 h-3 cursor-nesw-resize" />
+            <div onMouseDown={(e) => startResize("se", e)} className="absolute -bottom-[3px] -right-[3px] w-3 h-3 cursor-nwse-resize" />
           </div>
         </Draggable>
       )}
