@@ -19,11 +19,13 @@ import {
   getTechnicalFiles,
   getTechnicalFileById,
   deleteTechnicalFile,
+  updateTechnicalFile,
   deleteUploadedFile,
   submitFeedback,
   getUserFeedback,
   getAllFeedback,
   updateFeedbackStatus,
+  updateUploadedFile,
 } from "./db";
 import { stripe, createStripeCustomer, createCheckoutSession, cancelSubscription } from "./stripe";
 import { TRPCError } from "@trpc/server";
@@ -48,6 +50,40 @@ function getFileFormat(fileName: string): string {
     return ext;
   }
   return "CSV";
+}
+
+function getContentType(fileName: string, mimeType?: string): string {
+  if (mimeType) return mimeType;
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    csv: "text/csv", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    xls: "application/vnd.ms-excel", json: "application/json", txt: "text/plain",
+    tsv: "text/tab-separated-values", pdf: "application/pdf",
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml",
+  };
+  return map[ext] || "application/octet-stream";
+}
+
+/** Detect if CSV content has numeric series suitable for charting */
+function detectHasGraphs(content: string, fileName: string): boolean {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  if (ext !== "csv" && ext !== "tsv" && ext !== "txt") return false;
+  try {
+    const lines = content.split("\n").filter(l => l.trim());
+    if (lines.length < 3) return false;
+    const sep = (lines[0].match(/\t/g) ?? []).length > (lines[0].match(/,/g) ?? []).length ? "\t" : ",";
+    const headers = lines[0].split(sep);
+    // Check how many columns are mostly numeric
+    let numericCount = 0;
+    for (let ci = 0; ci < headers.length; ci++) {
+      const vals = lines.slice(1, Math.min(11, lines.length)).map(l => l.split(sep)[ci]?.trim()).filter(Boolean);
+      const numRatio = vals.filter(v => !isNaN(parseFloat(v))).length / Math.max(vals.length, 1);
+      if (numRatio >= 0.8) numericCount++;
+    }
+    return numericCount >= 2;
+  } catch {
+    return false;
+  }
 }
 
 export const appRouter = router({
@@ -216,6 +252,26 @@ export const appRouter = router({
         const success = await deleteTechnicalFile(input.fileId, userId);
         return { success };
       }),
+
+    updateFile: publicProcedure
+      .input(z.object({ fileId: z.number(), title: z.string().optional(), measurements: z.array(z.string()).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const userId = ctx.user?.id || 1;
+        const success = await updateTechnicalFile(input.fileId, userId, { title: input.title, measurements: input.measurements });
+        return { success };
+      }),
+
+    createFolder: publicProcedure
+      .input(z.object({ folderName: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const userId = ctx.user?.id || 1;
+        await saveTechnicalFile(userId, {
+          title: `${input.folderName} / .folder-placeholder`,
+          content: '<!-- FOLDER_PLACEHOLDER -->',
+          measurements: JSON.stringify(['foldertype:general']),
+        });
+        return { success: true };
+      }),
   }),
 
   feedback: router({
@@ -284,6 +340,7 @@ export const appRouter = router({
             size: formatFileSize(file.fileSizeBytes || 0),
             fileSizeBytes: file.fileSizeBytes || 0,
             format: getFileFormat(file.fileName),
+            contentType: getContentType(file.fileName, file.mimeType),
             fileKey: file.fileKey,
             fileUrl: file.fileUrl,
             mimeType: file.mimeType,
@@ -369,46 +426,81 @@ export const appRouter = router({
         fileId: z.number(),
       }))
       .query(async ({ ctx, input }) => {
+        const userId = ctx.user?.id || 1;
+        let file: any;
         try {
-          const userId = ctx.user?.id || 1;
           const files = await getUserUploadedFiles(userId);
-          const file = files.find((f: any) => f.id === input.fileId);
+          file = files.find((f: any) => f.id === input.fileId);
+        } catch (error) {
+          console.error('[Get File Content] DB lookup error:', { fileId: input.fileId, userId, error });
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Database error looking up file' });
+        }
 
-          if (!file) {
-            throw new TRPCError({
-              code: 'NOT_FOUND',
-              message: 'File not found',
-            });
-          }
+        if (!file) {
+          console.warn('[Get File Content] File not found:', { fileId: input.fileId, userId });
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'File not found' });
+        }
 
-          // Read directly from disk — avoids HTTP-to-self round-trip and works
-          // even when Express is not serving /uploads/ as static files.
+        const contentType = getContentType(file.fileName, file.mimeType);
+        const isBinary = contentType.startsWith("image/") || contentType === "application/pdf";
+
+        // For binary files (images, PDFs), return URL only — no text content
+        if (isBinary) {
+          console.log('[Get File Content] Binary file, returning URL only:', { fileId: input.fileId, fileName: file.fileName, contentType });
+          return {
+            success: true,
+            content: null,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            contentType,
+            hasGraphs: false,
+            fileUrl: file.fileUrl,
+          };
+        }
+
+        // Text-based files: read content
+        let content: string;
+        try {
           const normalizedKey = file.fileKey.replace(/^\/+/, '');
           const fullPath = path.join(UPLOADS_DIR, normalizedKey);
-          let content: string;
+          content = await fs.promises.readFile(fullPath, 'utf-8');
+        } catch {
           try {
-            content = await fs.promises.readFile(fullPath, 'utf-8');
-          } catch {
-            // Fallback: try fetching via the stored URL
             const { url } = await storageGet(file.fileKey);
             const response = await fetch(url);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             content = await response.text();
+          } catch (fetchErr) {
+            console.error('[Get File Content] Failed to read file:', {
+              fileId: input.fileId, fileName: file.fileName, userId,
+              error: fetchErr instanceof Error ? fetchErr.message : 'Unknown',
+            });
+            return {
+              success: false,
+              content: null,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              contentType,
+              hasGraphs: false,
+              fileUrl: file.fileUrl,
+              error: 'Content not available',
+              reason: fetchErr instanceof Error ? fetchErr.message : 'Parse error',
+            };
           }
-
-          return {
-            success: true,
-            content,
-            fileName: file.fileName,
-            mimeType: file.mimeType,
-          };
-        } catch (error) {
-          console.error('[Get File Content Error]', error);
-          throw new TRPCError({
-            code: 'INTERNAL_SERVER_ERROR',
-            message: `Failed to fetch file content: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          });
         }
+
+        const hasGraphs = detectHasGraphs(content, file.fileName);
+        console.log('[Get File Content] Success:', { fileId: input.fileId, fileName: file.fileName, contentType, hasGraphs, contentLength: content.length });
+
+        return {
+          success: true,
+          content,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          contentType,
+          hasGraphs,
+          fileUrl: file.fileUrl,
+        };
       }),
 
     getFiles: protectedProcedure.query(async ({ ctx }) => {
@@ -453,6 +545,38 @@ export const appRouter = router({
             message: `Failed to fetch file: ${error instanceof Error ? error.message : 'Unknown error'}`,
           });
         }
+      }),
+
+    update: publicProcedure
+      .input(z.object({
+        fileId: z.number(),
+        fileName: z.string().optional(),
+        folderId: z.string().nullable().optional(),
+        tags: z.array(z.string()).optional(),
+        description: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const userId = ctx.user?.id || 1;
+        const { fileId, ...data } = input;
+        const success = await updateUploadedFile(fileId, userId, data);
+        if (!success) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'File not found or update failed' });
+        }
+        return { success: true, message: 'File updated successfully' };
+      }),
+
+    bulkMove: publicProcedure
+      .input(z.object({
+        fileIds: z.array(z.number()),
+        folderId: z.string().nullable(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const userId = ctx.user?.id || 1;
+        const results = await Promise.all(
+          input.fileIds.map(id => updateUploadedFile(id, userId, { folderId: input.folderId }))
+        );
+        const successCount = results.filter(Boolean).length;
+        return { success: true, moved: successCount };
       }),
 
     delete: protectedProcedure
@@ -831,79 +955,81 @@ export const appRouter = router({
       }),
 
     // AI document generation from uploaded sources
-    generateRegulatoryDoc: protectedProcedure
+    generateRegulatoryDoc: publicProcedure
       .input(
         z.object({
           message: z.string(),
           documentType: z.string().optional(),
           attachedFileNames: z.array(z.string()).default([]),
+          sourceExcerpts: z.array(z.object({
+            name: z.string(),
+            type: z.string(),
+            excerpt: z.string(),
+          })).default([]),
         })
       )
-      .mutation(async ({ ctx, input }) => {
+      .mutation(async ({ input }) => {
         try {
           const { invokeLLM } = await import("./_core/llm");
 
-          const fileContext =
-            input.attachedFileNames.length > 0
-              ? `\n\nAvailable source documents: ${input.attachedFileNames.join(", ")}`
-              : "";
+          // Build rich source context with actual excerpts
+          let fileContext = "";
+          if (input.sourceExcerpts.length > 0) {
+            fileContext = "\n\n=== SOURCE DOCUMENTS ===\n" +
+              input.sourceExcerpts.map((s, i) =>
+                `Source ${i + 1}: ${s.name} (${s.type})\n${s.excerpt}`
+              ).join("\n\n");
+          } else if (input.attachedFileNames.length > 0) {
+            fileContext = `\n\nAvailable source documents: ${input.attachedFileNames.join(", ")}`;
+          }
+
+          const jsonSchema = `
+You MUST respond with ONLY valid JSON (no markdown fences, no extra text). The JSON object must have these exact keys:
+{
+  "content": "Full regulatory document as plain text. Use \\n for paragraph breaks. No HTML or markdown.",
+  "annotations": [
+    {
+      "sentenceIndex": 0,
+      "text": "The exact sentence text being annotated",
+      "sourceName": "FileName.ext",
+      "color": "yellow"
+    }
+  ],
+  "usedFileNames": ["FileName1.ext", "FileName2.ext"],
+  "references": [
+    {
+      "sourceName": "FileName.ext",
+      "sourceType": "CSV",
+      "excerpt": "Key excerpt from this source (50-150 words)",
+      "annotation": "Tooltip explaining how this source supports the document",
+      "citationKey": "ClinicalTrial:Table3",
+      "color": "yellow"
+    }
+  ]
+}
+
+Rules for annotations:
+- sentenceIndex is the 0-based index of the sentence when content is split by sentence boundaries
+- color cycles per source: yellow for 1st source, blue for 2nd, green for 3rd, purple for 4th, orange for 5th
+- Include at least 6-10 annotations spread across the document
+
+Rules for references:
+- One entry per source document used
+- citationKey format: "ShortName:Section" (e.g. "ClinicalTrial:Table3")
+- color must match the same source's annotation color`;
 
           const result = await invokeLLM({
             messages: [
               {
                 role: "system",
-                content: `You are an expert regulatory document writer for medical devices and pharmaceuticals. Generate professional, complete regulatory documents that fully comply with FDA 21 CFR and EU MDR/IVDR standards. Write in formal regulatory language with numbered sections and clear headings. When referencing source documents, explicitly note which sentences derive from each source. Return ONLY valid JSON — no markdown fences, no extra text.`,
+                content: `You are an expert regulatory document writer for medical devices and pharmaceuticals. Generate professional, complete regulatory documents that fully comply with FDA 21 CFR and EU MDR/IVDR standards. Write in formal regulatory language with numbered sections and clear headings.\n\n${jsonSchema}`,
               },
               {
                 role: "user",
-                content: `${input.message}${fileContext}\nDocument type: ${input.documentType || "General Regulatory Document"}\n\nGenerate a complete, detailed regulatory document (at least 8-10 paragraphs with numbered sections). For each key sentence or claim derived from a source document, include an annotation entry. Cycle annotation colors: yellow for first source, blue for second, green for third, purple for fourth, orange for fifth.`,
+                content: `${input.message}${fileContext}\nDocument type: ${input.documentType || "General Regulatory Document"}\n\nGenerate a complete, detailed regulatory document (at least 8-10 paragraphs with numbered sections). Insert inline citations in the format [SourceName:Section] throughout the document text where claims are sourced. For each key sentence or claim derived from a source document, include an annotation entry. Also produce a references array listing each source used with an excerpt and annotation tooltip. Remember: respond with ONLY valid JSON matching the schema above.`,
               },
             ],
-            outputSchema: {
-              name: "regulatory_document_response",
-              schema: {
-                type: "object",
-                properties: {
-                  content: {
-                    type: "string",
-                    description:
-                      "Full regulatory document as plain text. Use \\n for line breaks between paragraphs. No HTML tags or markdown.",
-                  },
-                  annotations: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        sentenceIndex: {
-                          type: "integer",
-                          description:
-                            "0-based index of the sentence in the content when split by '. ' boundaries",
-                        },
-                        text: {
-                          type: "string",
-                          description: "The exact sentence text being annotated",
-                        },
-                        sourceName: {
-                          type: "string",
-                          description: "Name of the source file referenced",
-                        },
-                        color: {
-                          type: "string",
-                          enum: ["yellow", "blue", "green", "purple", "orange"],
-                        },
-                      },
-                      required: ["sentenceIndex", "text", "sourceName", "color"],
-                    },
-                  },
-                  usedFileNames: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "File names actually referenced in the document",
-                  },
-                },
-                required: ["content", "annotations", "usedFileNames"],
-              },
-            },
+            maxTokens: 16000,
           });
 
           const raw = result.choices[0]?.message?.content;
@@ -928,6 +1054,17 @@ export const appRouter = router({
               })
             ),
             usedFileNames: (parsed.usedFileNames as string[]) || [],
+            references: ((parsed.references as any[]) || []).map(
+              (ref: any, idx: number) => ({
+                id: `ref-${Date.now()}-${idx}`,
+                sourceName: String(ref.sourceName ?? "Unknown"),
+                sourceType: String(ref.sourceType ?? "FILE"),
+                excerpt: String(ref.excerpt ?? ""),
+                annotation: String(ref.annotation ?? ""),
+                citationKey: String(ref.citationKey ?? `Source${idx + 1}`),
+                color: String(ref.color ?? "yellow"),
+              })
+            ),
           };
         } catch (error) {
           throw new TRPCError({

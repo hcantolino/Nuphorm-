@@ -17,10 +17,33 @@ import {
   Info,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
+  Link2,
+  Eye,
+  AlertTriangle,
+  Plus,
+  Upload,
+  Clock,
+  Tag,
+  GripVertical,
+  FolderPlus,
+  Users,
+  Shield,
+  MessageSquare,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { trpc } from '@/lib/trpc';
 import { toast } from 'sonner';
+import { DragDropContext, Droppable, Draggable, type DropResult } from 'react-beautiful-dnd';
+import { useDropzone } from 'react-dropzone';
+import {
+  ViewToolbar, GroupHeader,
+  type ViewMode, type GroupByOption,
+  loadViewMode, saveViewMode, loadGroupBy, saveGroupBy,
+  groupTechnicalFiles,
+} from '@/components/ViewToolbar';
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -44,6 +67,11 @@ const C = {
   danger:      '#EF4444',
   dangerLight: '#FEF2F2',
   dangerBorder:'#FCA5A5',
+  success:     '#28A745',
+  successLight:'#f0fdf4',
+  successBorder:'#86efac',
+  dropZone:    '#E8F0FE',
+  dropZoneBorder:'#007BFF',
 } as const;
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
@@ -57,10 +85,10 @@ interface RawFile {
   id: number;
   title: string;
   content: string;
-  generatedAt: string | Date;
+  createdAt: string | Date;
+  generatedAt?: string | Date;
   measurements: string[];
   dataFiles: string[];
-  // Derived
   folder: string;
   tabName: string;
   filename: string;
@@ -69,6 +97,22 @@ interface RawFile {
 
 interface TabNode   { name: string; files: RawFile[] }
 interface FolderNode { name: string; tabs: Map<string, TabNode>; folderType: FolderType; latestDate: Date }
+
+interface CtxMenuItem {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  separator?: false;
+}
+interface CtxSeparator { separator: true }
+type CtxItem = CtxMenuItem | CtxSeparator;
+
+interface CtxMenuState {
+  x: number;
+  y: number;
+  items: CtxItem[];
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -106,11 +150,12 @@ function matchesViewFilter(raw: any, vf: ViewFilter): boolean {
   return isTab || (!isProj && !isTab);
 }
 
-function fmtDate(d: Date | string): string {
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+function fmtDate(d: Date | string | undefined): string {
+  if (!d) return '\u2014';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '\u2014';
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
-
-// ── Format extraction helpers ─────────────────────────────────────────────────
 
 function extractFormat(content: string): string {
   const m = content.match(/<!-- FORMAT: (\w+) -->/);
@@ -150,6 +195,13 @@ const FORMAT_COLOR_MAP: Record<string, { bg: string; color: string }> = {
   html: { bg: '#f8fafc', color: '#64748b' },
 };
 
+function estimateSize(content: string): string {
+  const bytes = new Blob([content]).size;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function buildTree(rawFiles: any[], search: string, vf: ViewFilter): Map<string, FolderNode> {
   const tree = new Map<string, FolderNode>();
   const q = search.toLowerCase().trim();
@@ -168,13 +220,14 @@ function buildTree(rawFiles: any[], search: string, vf: ViewFilter): Map<string,
       !file.tabName.toLowerCase().includes(q)
     ) continue;
 
+    const dateVal = raw.createdAt || raw.generatedAt || '';
     if (!tree.has(folder)) {
-      tree.set(folder, { name: folder, tabs: new Map(), folderType, latestDate: new Date(raw.generatedAt) });
+      tree.set(folder, { name: folder, tabs: new Map(), folderType, latestDate: new Date(dateVal) });
     }
     const fn = tree.get(folder)!;
     if (folderType === 'project') fn.folderType = 'project';
     else if (folderType === 'tab' && fn.folderType === 'general') fn.folderType = 'tab';
-    const d = new Date(raw.generatedAt);
+    const d = new Date(dateVal);
     if (d > fn.latestDate) fn.latestDate = d;
     if (!fn.tabs.has(tabName)) fn.tabs.set(tabName, { name: tabName, files: [] });
     fn.tabs.get(tabName)!.files.push(file);
@@ -183,7 +236,7 @@ function buildTree(rawFiles: any[], search: string, vf: ViewFilter): Map<string,
   Array.from(tree.values()).forEach(fn =>
     Array.from(fn.tabs.values()).forEach(tab =>
       tab.files.sort((a: RawFile, b: RawFile) =>
-        new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime()
+        new Date(b.createdAt || b.generatedAt || '').getTime() - new Date(a.createdAt || a.generatedAt || '').getTime()
       )
     )
   );
@@ -197,19 +250,38 @@ export default function SavedTechnicalFiles() {
   const [, setLocation]     = useLocation();
   const [search, setSearch] = useState('');
   const [viewFilter, setVF] = useState<ViewFilter>('all');
-  const [openFolder, setOpenFolder]   = useState<string | null>(null); // drill-down
+  const [techViewMode, setTechViewMode] = useState<ViewMode>(() => loadViewMode('technical-files', 'grid'));
+  const [techGroupBy, setTechGroupBy] = useState<GroupByOption>(() => loadGroupBy('technical-files'));
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [openFolder, setOpenFolder]   = useState<string | null>(null);
   const [expandedTabs, setExpandedTabs] = useState<Set<string>>(new Set());
   const [menuKey, setMenuKey]   = useState<string | null>(null);
   const [preview, setPreview]   = useState<RawFile | null>(null);
   const [searchFocus, setSearchFocus] = useState(false);
 
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; fileCount: number; onConfirm: () => void } | null>(null);
+  const [infoModal, setInfoModal] = useState<{ type: 'folder' | 'file'; name: string; createdDate: string; fileCount?: number; totalSize: string; format?: string; folderName?: string; tabName?: string } | null>(null);
+  const [moveModal, setMoveModal] = useState<{ file: RawFile } | null>(null);
+  const [renameFileModal, setRenameFileModal] = useState<{ file: RawFile } | null>(null);
+
+  // ── New Box.com-style state ──
+  const [newFolderModal, setNewFolderModal] = useState(false);
+  const [shareModal, setShareModal] = useState<{ name: string; type: 'folder' | 'file' } | null>(null);
+  const [historyModal, setHistoryModal] = useState<{ file: RawFile } | null>(null);
+  const [tagModal, setTagModal] = useState<{ file: RawFile } | null>(null);
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+  const [uploadingFiles, setUploadingFiles] = useState<{ name: string; progress: number; status: 'uploading' | 'done' | 'error' }[]>([]);
+
   const { data: rawFiles = [], isLoading, refetch } = trpc.technical.getFiles.useQuery();
   const deleteMutation = trpc.technical.deleteFile.useMutation();
+  const updateMutation = trpc.technical.updateFile.useMutation();
+  const createFolderMutation = trpc.technical.createFolder.useMutation();
+  const saveMutation = trpc.technical.saveReport.useMutation();
 
   const tree       = useMemo(() => buildTree(rawFiles, search, viewFilter), [rawFiles, search, viewFilter]);
   const folderKeys = useMemo(() => Array.from(tree.keys()).sort(), [tree]);
 
-  // Close three-dot menu on outside click
   useEffect(() => {
     if (!menuKey) return;
     const h = (e: MouseEvent) => {
@@ -218,6 +290,20 @@ export default function SavedTechnicalFiles() {
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [menuKey]);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [ctxMenu]);
 
   // ── Actions ──────────────────────────────────────────────────────────────────
 
@@ -238,7 +324,6 @@ export default function SavedTechnicalFiles() {
     } else if (!isBinary && exportData) {
       blob = new Blob([exportData], { type: mime });
     } else {
-      // Legacy / HTML fallback
       blob = new Blob([file.content], { type: 'text/html' });
     }
 
@@ -272,13 +357,59 @@ export default function SavedTechnicalFiles() {
     const fn = tree.get(name);
     if (!fn) return;
     const files = Array.from(fn.tabs.values()).flatMap(t => t.files);
-    if (!confirm(`Delete all ${files.length} file(s) in "${name}"?`)) return;
     try {
       for (const f of files) await deleteMutation.mutateAsync({ fileId: f.id });
       toast.success(`Folder "${name}" deleted`);
       if (openFolder === name) setOpenFolder(null);
       refetch();
     } catch { toast.error('Some files failed to delete'); }
+  };
+
+  const renameFolder = async (oldName: string, newName: string) => {
+    const fn = tree.get(oldName);
+    if (!fn) return;
+    const files = Array.from(fn.tabs.values()).flatMap(t => t.files);
+    try {
+      for (const f of files) {
+        const { filename } = parseTitleParts(f.title);
+        const newTitle = `${newName} / ${filename}`;
+        await updateMutation.mutateAsync({ fileId: f.id, title: newTitle });
+      }
+      toast.success(`Renamed to "${newName}"`);
+      if (openFolder === oldName) setOpenFolder(newName);
+      refetch();
+    } catch { toast.error('Rename failed'); }
+  };
+
+  const duplicateFolder = async (_name: string) => {
+    toast('Folder duplication requires server-side copy support');
+  };
+
+  const renameFile = async (file: RawFile, newFilename: string) => {
+    try {
+      const newTitle = `${file.folder} / ${newFilename}`;
+      await updateMutation.mutateAsync({ fileId: file.id, title: newTitle });
+      toast.success(`Renamed to "${newFilename}"`);
+      refetch();
+    } catch { toast.error('Rename failed'); }
+  };
+
+  const moveFileToFolder = async (file: RawFile, targetFolder: string) => {
+    try {
+      const newTitle = targetFolder === 'General' ? file.filename : `${targetFolder} / ${file.filename}`;
+      await updateMutation.mutateAsync({ fileId: file.id, title: newTitle });
+      toast.success(`Moved "${file.filename}" to ${targetFolder}`);
+      refetch();
+    } catch { toast.error('Move failed'); }
+  };
+
+  const duplicateFile = async (_file: RawFile) => {
+    toast('File duplication requires server-side copy support');
+  };
+
+  const copyFileLink = (file: RawFile) => {
+    navigator.clipboard.writeText(`${window.location.origin}/saved-technical-files?file=${file.id}`);
+    toast.success('Link copied to clipboard');
   };
 
   const toggleTab = (key: string) => {
@@ -289,19 +420,209 @@ export default function SavedTechnicalFiles() {
     });
   };
 
+  // ── New Folder ──
+  const createNewFolder = async (name: string) => {
+    try {
+      await createFolderMutation.mutateAsync({ folderName: name });
+      toast.success(`Folder "${name}" created`, { style: { background: C.successLight, borderColor: C.successBorder, color: '#166534' } });
+      refetch();
+      setNewFolderModal(false);
+    } catch { toast.error('Failed to create folder'); }
+  };
+
+  // ── Drag & Drop handler ──
+  const onDragEnd = async (result: DropResult) => {
+    setDragOverFolder(null);
+    if (!result.destination) return;
+    const { draggableId, source, destination } = result;
+
+    // Same position — no change
+    if (source.droppableId === destination.droppableId && source.index === destination.index) return;
+
+    const fileId = parseInt(draggableId.replace('file-', ''), 10);
+    const file = rawFiles.find((f: any) => f.id === fileId);
+    if (!file) return;
+
+    // Parse target: "folder-X__tab-Y" or "folder-X"
+    let targetFolder: string;
+    if (destination.droppableId.startsWith('folder-') && destination.droppableId.includes('__tab-')) {
+      targetFolder = destination.droppableId.replace(/^folder-/, '').replace(/__tab-.*$/, '');
+    } else {
+      targetFolder = destination.droppableId.replace('folder-', '');
+    }
+
+    const { folder: currentFolder } = parseTitleParts(file.title ?? '');
+    if (currentFolder === targetFolder && source.droppableId === destination.droppableId) {
+      // Same tab, just reorder — no server call needed for now
+      return;
+    }
+
+    if (currentFolder !== targetFolder) {
+      const parsed = parseTitleParts(file.title ?? '');
+      await moveFileToFolder({ ...file, folder: parsed.folder, filename: parsed.filename, tabName: '', folderType: 'general' as FolderType } as RawFile, targetFolder);
+      toast.success(`Moved to "${targetFolder}"`, { style: { background: C.successLight, borderColor: C.successBorder, color: '#166534' } });
+    }
+  };
+
+  // ── File Upload handler ──
+  const onUploadDrop = useCallback(async (acceptedFiles: File[]) => {
+    if (!openFolder) { toast.error('Open a folder first to upload files'); return; }
+    const uploads = acceptedFiles.map(f => ({ name: f.name, progress: 0, status: 'uploading' as const }));
+    setUploadingFiles(uploads);
+
+    for (let i = 0; i < acceptedFiles.length; i++) {
+      const file = acceptedFiles[i];
+      try {
+        const text = await file.text();
+        await saveMutation.mutateAsync({
+          title: `${openFolder} / ${file.name}`,
+          content: text,
+          generatedAt: new Date().toISOString(),
+          measurements: ['foldertype:general'],
+        });
+        setUploadingFiles(prev => prev.map((u, idx) => idx === i ? { ...u, progress: 100, status: 'done' } : u));
+      } catch {
+        setUploadingFiles(prev => prev.map((u, idx) => idx === i ? { ...u, status: 'error' } : u));
+      }
+    }
+    refetch();
+    setTimeout(() => setUploadingFiles([]), 3000);
+  }, [openFolder, saveMutation, refetch]);
+
+  const { getRootProps: getUploadRootProps, getInputProps: getUploadInputProps, isDragActive: isUploadDragActive } = useDropzone({
+    onDrop: onUploadDrop,
+    noClick: true,
+    noKeyboard: true,
+  });
+
+  // ── Tag management ──
+  const addTag = async (file: RawFile, tag: string) => {
+    const currentMeasurements: string[] = Array.isArray(file.measurements) ? file.measurements : [];
+    if (currentMeasurements.includes(`tag:${tag}`)) return;
+    const updated = [...currentMeasurements, `tag:${tag}`];
+    try {
+      await updateMutation.mutateAsync({ fileId: file.id, measurements: updated });
+      toast.success(`Tag "${tag}" added`);
+      refetch();
+    } catch { toast.error('Failed to add tag'); }
+  };
+
+  const removeTag = async (file: RawFile, tag: string) => {
+    const currentMeasurements: string[] = Array.isArray(file.measurements) ? file.measurements : [];
+    const updated = currentMeasurements.filter(m => m !== `tag:${tag}`);
+    try {
+      await updateMutation.mutateAsync({ fileId: file.id, measurements: updated });
+      toast.success(`Tag removed`);
+      refetch();
+    } catch { toast.error('Failed to remove tag'); }
+  };
+
+  // ── Context menu builders ────────────────────────────────────────────────────
+
+  const buildFolderCtxItems = (name: string, fn: FolderNode): CtxItem[] => {
+    const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
+    const allFiles = Array.from(fn.tabs.values()).flatMap(t => t.files);
+    const totalSize = allFiles.reduce((s, f) => s + new Blob([f.content]).size, 0);
+    const sizeStr = totalSize < 1024 ? `${totalSize} B`
+      : totalSize < 1024 * 1024 ? `${(totalSize / 1024).toFixed(1)} KB`
+      : `${(totalSize / (1024 * 1024)).toFixed(1)} MB`;
+    const earliest = allFiles.length > 0
+      ? allFiles.reduce((min, f) => {
+          const d = new Date(f.createdAt || f.generatedAt || '');
+          return d < min ? d : min;
+        }, new Date())
+      : new Date();
+
+    return [
+      { icon: <Pencil size={13} />, label: 'Rename', onClick: () => {
+        setCtxMenu(null);
+        const newName = prompt('Rename folder:', name);
+        if (newName && newName.trim() && newName.trim() !== name) renameFolder(name, newName.trim());
+      }},
+      { icon: <Share2 size={13} />, label: 'Share\u2026', onClick: () => { setCtxMenu(null); setShareModal({ name, type: 'folder' }); }},
+      { icon: <Copy size={13} />, label: 'Duplicate', onClick: () => { setCtxMenu(null); duplicateFolder(name); }},
+      { icon: <FolderOpen size={13} />, label: 'Move to\u2026', onClick: () => { setCtxMenu(null); toast('Folder-level move is not supported'); }},
+      { icon: <Download size={13} />, label: 'Download All', onClick: () => { setCtxMenu(null); dlFolder(name); }},
+      { icon: <Trash2 size={13} />, label: 'Delete Folder', danger: true, onClick: () => {
+        setCtxMenu(null);
+        setDeleteConfirm({ name, fileCount: total, onConfirm: () => delFolder(name) });
+      }},
+      { separator: true },
+      { icon: <Info size={13} />, label: 'Get Info', onClick: () => {
+        setCtxMenu(null);
+        setInfoModal({ type: 'folder', name, createdDate: fmtDate(earliest), fileCount: total, totalSize: sizeStr });
+      }},
+    ];
+  };
+
+  const buildFileCtxItems = (file: RawFile): CtxItem[] => {
+    const format = extractFormat(file.content);
+    const size = estimateSize(file.content);
+    return [
+      { icon: <Eye size={13} />, label: 'Open', onClick: () => { setCtxMenu(null); setPreview(file); }},
+      { icon: <Pencil size={13} />, label: 'Rename', onClick: () => { setCtxMenu(null); setRenameFileModal({ file }); }},
+      { icon: <FolderOpen size={13} />, label: 'Move to Folder\u2026', onClick: () => { setCtxMenu(null); setMoveModal({ file }); }},
+      { icon: <Share2 size={13} />, label: 'Share\u2026', onClick: () => { setCtxMenu(null); setShareModal({ name: file.filename, type: 'file' }); }},
+      { icon: <Clock size={13} />, label: 'Version History', onClick: () => { setCtxMenu(null); setHistoryModal({ file }); }},
+      { icon: <Tag size={13} />, label: 'Manage Tags\u2026', onClick: () => { setCtxMenu(null); setTagModal({ file }); }},
+      { icon: <Download size={13} />, label: 'Download', onClick: () => { setCtxMenu(null); dlFile(file); }},
+      { icon: <Copy size={13} />, label: 'Duplicate', onClick: () => { setCtxMenu(null); duplicateFile(file); }},
+      { icon: <Trash2 size={13} />, label: 'Delete File', danger: true, onClick: () => { setCtxMenu(null); delFile(file); }},
+      { separator: true },
+      { icon: <Link2 size={13} />, label: 'Copy Link', onClick: () => { setCtxMenu(null); copyFileLink(file); }},
+      { icon: <Info size={13} />, label: 'Get Info', onClick: () => {
+        setCtxMenu(null);
+        setInfoModal({
+          type: 'file', name: file.filename,
+          createdDate: fmtDate(file.createdAt || file.generatedAt),
+          totalSize: size, format: `.${FORMAT_EXT_MAP[format] ?? format}`,
+          folderName: file.folder, tabName: file.tabName,
+        });
+      }},
+    ];
+  };
+
+  const openCtxMenu = (e: React.MouseEvent, items: CtxItem[]) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const x = Math.min(e.clientX, window.innerWidth - 210);
+    const y = Math.min(e.clientY, window.innerHeight - 320);
+    setCtxMenu({ x, y, items });
+    setMenuKey(null);
+  };
+
+  const openCtxMenuFromButton = (btn: HTMLElement, items: CtxItem[]) => {
+    const rect = btn.getBoundingClientRect();
+    const x = Math.min(rect.right, window.innerWidth - 210);
+    const y = Math.min(rect.bottom + 4, window.innerHeight - 320);
+    setCtxMenu({ x, y, items });
+  };
+
+  const renderModals = () => (
+    <>
+      {ctxMenu && <ContextMenu {...ctxMenu} />}
+      {deleteConfirm && <DeleteConfirmDialog {...deleteConfirm} onCancel={() => setDeleteConfirm(null)} />}
+      {infoModal && <InfoDialog {...infoModal} onClose={() => setInfoModal(null)} />}
+      {moveModal && <MoveToFolderDialog file={moveModal.file} folders={folderKeys} onMove={(target) => { moveFileToFolder(moveModal.file, target); setMoveModal(null); }} onCancel={() => setMoveModal(null)} />}
+      {renameFileModal && <RenameFileDialog file={renameFileModal.file} onRename={(newName) => { renameFile(renameFileModal.file, newName); setRenameFileModal(null); }} onCancel={() => setRenameFileModal(null)} />}
+      {newFolderModal && <NewFolderDialog onCreate={createNewFolder} onCancel={() => setNewFolderModal(false)} />}
+      {shareModal && <ShareDialog name={shareModal.name} type={shareModal.type} onClose={() => setShareModal(null)} />}
+      {historyModal && <VersionHistoryDialog file={historyModal.file} onClose={() => setHistoryModal(null)} onDownload={dlFile} />}
+      {tagModal && <TagDialog file={tagModal.file} onAddTag={(tag) => addTag(tagModal.file, tag)} onRemoveTag={(tag) => removeTag(tagModal.file, tag)} onClose={() => { setTagModal(null); }} />}
+    </>
+  );
+
   // ── Folder drill-down view ────────────────────────────────────────────────────
 
   if (openFolder !== null) {
     const fn = tree.get(openFolder);
     if (!fn) { setOpenFolder(null); return null; }
-    const tabKeys       = Array.from(fn.tabs.keys()).sort();
+    const tabKeys = Array.from(fn.tabs.keys()).sort();
     const totalFolderFiles = tabKeys.reduce((s, k) => s + fn.tabs.get(k)!.files.length, 0);
 
     return (
       <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT }}>
-        {/* Header */}
         <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: '22px 40px 24px' }}>
-          {/* Breadcrumb */}
           <nav style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 20 }}>
             <button
               onClick={() => setOpenFolder(null)}
@@ -314,7 +635,6 @@ export default function SavedTechnicalFiles() {
             <ChevronRight size={13} style={{ color: C.textMuted }} />
             <span style={{ fontSize:14, color:C.text, fontWeight:600 }}>{openFolder}</span>
           </nav>
-
           <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', gap:24 }}>
             <div>
               <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:6 }}>
@@ -326,59 +646,106 @@ export default function SavedTechnicalFiles() {
               </div>
               <p style={{ fontSize:14, color:C.textSub, margin:0 }}>
                 {totalFolderFiles} file{totalFolderFiles !== 1 ? 's' : ''} across {tabKeys.length} tab{tabKeys.length !== 1 ? 's' : ''}
-                {' · '}Last modified {fmtDate(fn.latestDate)}
+                {' \u00B7 '}Last modified {fmtDate(fn.latestDate)}
               </p>
             </div>
-            <div style={{ display:'flex', gap:10 }}>
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+              <PrimaryBtn icon={<Upload size={14} />} label="Upload Files" onClick={() => { const input = document.createElement('input'); input.type = 'file'; input.multiple = true; input.onchange = (e) => { const files = (e.target as HTMLInputElement).files; if (files) onUploadDrop(Array.from(files)); }; input.click(); }} />
+              <GhostBtn icon={<Share2 size={14} />} label="Share" onClick={() => setShareModal({ name: openFolder, type: 'folder' })} />
               <GhostBtn icon={<Download size={14} />} label="Download All" onClick={() => dlFolder(openFolder)} />
-              <DangerBtn icon={<Trash2 size={14} />}  label="Delete All"   onClick={() => delFolder(openFolder)} />
+              <DangerBtn icon={<Trash2 size={14} />} label="Delete All" onClick={() => {
+                setDeleteConfirm({ name: openFolder, fileCount: totalFolderFiles, onConfirm: () => delFolder(openFolder) });
+              }} />
             </div>
           </div>
         </div>
 
-        {/* File tree */}
+        {/* Upload drop zone overlay */}
+        <div {...getUploadRootProps()} style={{ position: 'relative' }}>
+          <input {...getUploadInputProps()} />
+          {isUploadDragActive && (
+            <div style={{ position:'absolute', inset:0, zIndex:50, background:'rgba(0,123,255,0.08)', border:`3px dashed ${C.dropZoneBorder}`, borderRadius:16, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none' }}>
+              <div style={{ textAlign:'center' }}>
+                <Upload size={48} style={{ color: C.dropZoneBorder, marginBottom:12 }} />
+                <p style={{ fontSize:18, fontWeight:600, color: C.dropZoneBorder, margin:0 }}>Drop files here to upload</p>
+                <p style={{ fontSize:13, color: C.textSub, margin:'6px 0 0' }}>Files will be added to "{openFolder}"</p>
+              </div>
+            </div>
+          )}
+
+          {/* Upload progress indicators */}
+          {uploadingFiles.length > 0 && (
+            <div style={{ padding:'0 40px', maxWidth:1100, margin:'0 auto' }}>
+              {uploadingFiles.map((uf, i) => (
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 16px', background: C.card, border:`1px solid ${C.border}`, borderRadius:8, marginBottom:8 }}>
+                  <div style={{ width:20, height:20 }}>
+                    {uf.status === 'uploading' ? (
+                      <div style={{ width:16, height:16, border:`2px solid ${C.blue}`, borderTopColor:'transparent', borderRadius:'50%', animation:'spin 1s linear infinite' }} />
+                    ) : uf.status === 'done' ? (
+                      <Check size={16} style={{ color: C.success }} />
+                    ) : (
+                      <X size={16} style={{ color: C.danger }} />
+                    )}
+                  </div>
+                  <span style={{ fontSize:13, color: C.text, flex:1 }}>{uf.name}</span>
+                  <div style={{ width:120, height:4, background:C.borderLight, borderRadius:2, overflow:'hidden' }}>
+                    <div style={{ width:`${uf.progress}%`, height:'100%', background: uf.status === 'error' ? C.danger : C.success, borderRadius:2, transition:'width 0.3s' }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+        <DragDropContext onDragEnd={onDragEnd}>
         <div style={{ padding:'32px 40px', maxWidth:1100, margin:'0 auto' }}>
           {tabKeys.map((tabName, ti) => {
-            const tab    = fn.tabs.get(tabName)!;
+            const tab = fn.tabs.get(tabName)!;
             const tabKey = `${openFolder}::${tabName}`;
             const isOpen = expandedTabs.has(tabKey);
             const isLast = ti === tabKeys.length - 1;
+            const droppableId = `folder-${openFolder}__tab-${tabName}`;
             return (
               <div key={tabKey} style={{ marginBottom: isLast ? 0 : 16 }}>
-                {/* Tab header */}
+                <Droppable droppableId={droppableId}>
+                  {(droppableProvided, snapshot) => (
+                    <div ref={droppableProvided.innerRef} {...droppableProvided.droppableProps}>
                 <div
                   onClick={() => toggleTab(tabKey)}
                   style={{
                     display:'flex', alignItems:'center', gap:10, padding:'13px 20px',
-                    background: C.card, border:`1px solid ${C.border}`,
+                    background: snapshot.isDraggingOver ? '#E3F2FD' : C.card,
+                    border: snapshot.isDraggingOver ? `2px solid #007BFF` : `1px solid ${C.border}`,
                     borderRadius: isOpen ? '12px 12px 0 0' : 12,
-                    cursor:'pointer', userSelect:'none', transition:'background 0.15s',
+                    cursor:'pointer', userSelect:'none', transition:'background 0.15s, border-color 0.15s',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.background = C.bg)}
-                  onMouseLeave={e => (e.currentTarget.style.background = C.card)}
+                  onMouseEnter={e => { if (!snapshot.isDraggingOver) e.currentTarget.style.background = C.bg; }}
+                  onMouseLeave={e => { if (!snapshot.isDraggingOver) e.currentTarget.style.background = C.card; }}
                 >
-                  {isOpen
-                    ? <ChevronDown  size={15} style={{ color:C.textMuted, flexShrink:0 }} />
-                    : <ChevronRight size={15} style={{ color:C.textMuted, flexShrink:0 }} />}
-                  {isOpen
-                    ? <FolderOpen size={17} style={{ color:C.blue, flexShrink:0 }} />
-                    : <Folder     size={17} style={{ color:C.blue, flexShrink:0 }} />}
+                  {isOpen ? <ChevronDown size={15} style={{ color:C.textMuted, flexShrink:0 }} /> : <ChevronRight size={15} style={{ color:C.textMuted, flexShrink:0 }} />}
+                  {isOpen ? <FolderOpen size={17} style={{ color:C.blue, flexShrink:0 }} /> : <Folder size={17} style={{ color:C.blue, flexShrink:0 }} />}
                   <span style={{ fontSize:15, fontWeight:600, color:C.text, flex:1 }}>{tabName}</span>
                   <span style={{ fontSize:12, color:C.textSub, background:C.borderLight, padding:'2px 10px', borderRadius:20 }}>
                     {tab.files.length} file{tab.files.length !== 1 ? 's' : ''}
                   </span>
                 </div>
-
-                {/* Files */}
                 {isOpen && (
                   <div style={{ background:C.card, border:`1px solid ${C.border}`, borderTop:'none', borderRadius:'0 0 12px 12px', overflow:'hidden' }}>
-                    {/* Column headers */}
                     <div style={{ display:'flex', alignItems:'center', padding:'8px 20px', background:'#F9FAFB', borderBottom:`1px solid ${C.border}` }}>
                       <ColHead style={{ flex:1 }}>Name</ColHead>
                       <ColHead style={{ width:140, textAlign:'right' }}>Date Modified</ColHead>
-                      <ColHead style={{ width:88, textAlign:'right' }}>Actions</ColHead>
+                      <ColHead style={{ width:140, textAlign:'right' }}>Actions</ColHead>
                     </div>
                     {tab.files.map((file, fIdx) => (
+                      <Draggable key={file.id} draggableId={`file-${file.id}`} index={fIdx}>
+                        {(dragProvided, dragSnapshot) => (
+                          <div
+                            ref={dragProvided.innerRef}
+                            {...dragProvided.draggableProps}
+                            style={{
+                              ...dragProvided.draggableProps.style,
+                              ...(dragSnapshot.isDragging ? { boxShadow: '0 8px 24px rgba(0,0,0,0.12)', borderRadius: 8, background: C.card } : {}),
+                            }}
+                          >
                       <FileRow
                         key={file.id}
                         file={file}
@@ -386,16 +753,32 @@ export default function SavedTechnicalFiles() {
                         onOpen={() => setPreview(file)}
                         onDownload={() => dlFile(file)}
                         onDelete={e => delFile(file, e)}
+                        onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                        onOverflowClick={btn => openCtxMenuFromButton(btn, buildFileCtxItems(file))}
+                        onHistory={() => setHistoryModal({ file })}
+                        onShare={() => setShareModal({ name: file.filename, type: 'file' })}
+                        onTag={() => setTagModal({ file })}
+                        dragHandleProps={dragProvided.dragHandleProps}
                       />
+                          </div>
+                        )}
+                      </Draggable>
                     ))}
+                    {droppableProvided.placeholder}
                   </div>
                 )}
+                {!isOpen && droppableProvided.placeholder}
+                    </div>
+                  )}
+                </Droppable>
               </div>
             );
           })}
         </div>
-
+        </DragDropContext>
+        </div>{/* close upload drop zone wrapper */}
         {preview && <PreviewModal file={preview} onClose={() => setPreview(null)} />}
+        {renderModals()}
       </div>
     );
   }
@@ -404,9 +787,7 @@ export default function SavedTechnicalFiles() {
 
   return (
     <div style={{ minHeight:'100vh', background:C.bg, fontFamily:FONT }}>
-      {/* ── Header ── */}
       <div style={{ background:C.card, borderBottom:`1px solid ${C.border}`, padding:'22px 40px 0' }}>
-        {/* Back link */}
         <div style={{ marginBottom:18 }}>
           <button
             onClick={() => setLocation('/')}
@@ -417,72 +798,55 @@ export default function SavedTechnicalFiles() {
             <ArrowLeft size={14} /> Back
           </button>
         </div>
-
-        {/* Title + search */}
-        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:24, marginBottom:22 }}>
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:24, marginBottom:22, flexWrap:'wrap' }}>
           <div>
-            <h1 style={{ fontSize:30, fontWeight:700, color:C.text, margin:'0 0 6px', lineHeight:1.2 }}>
-              Technical Files
-            </h1>
+            <h1 style={{ fontSize:30, fontWeight:700, color:C.text, margin:'0 0 6px', lineHeight:1.2 }}>Technical Files</h1>
             <p style={{ fontSize:15, color:C.textSub, margin:0 }}>
               {rawFiles.length} file{rawFiles.length !== 1 ? 's' : ''} across {folderKeys.length} folder{folderKeys.length !== 1 ? 's' : ''}
             </p>
           </div>
-
-          {/* Search */}
-          <div style={{ position:'relative', width:380 }}>
-            <Search
-              size={15}
-              style={{
-                position:'absolute', left:13, top:'50%', transform:'translateY(-50%)',
-                color: searchFocus ? C.teal : C.textMuted,
-                pointerEvents:'none', transition:'color 0.2s', flexShrink:0,
-              }}
-            />
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <div style={{ position:'relative', width:280 }}>
+            <Search size={15} style={{ position:'absolute', left:13, top:'50%', transform:'translateY(-50%)', color: searchFocus ? C.teal : C.textMuted, pointerEvents:'none', transition:'color 0.2s', flexShrink:0 }} />
             <input
-              type="text"
-              placeholder="Search files, folders, or tabs…"
-              value={search}
+              type="text" placeholder="Search files, folders, or tabs\u2026" value={search}
               onChange={e => setSearch(e.target.value)}
-              onFocus={() => setSearchFocus(true)}
-              onBlur={() => setSearchFocus(false)}
+              onFocus={() => setSearchFocus(true)} onBlur={() => setSearchFocus(false)}
               style={{
-                width:'100%', boxSizing:'border-box',
-                paddingLeft:40, paddingRight:16, paddingTop:10, paddingBottom:10,
-                border:`1.5px solid ${searchFocus ? C.teal : '#D1D5DB'}`,
-                borderRadius:10, fontSize:14, color:C.text, background:C.card,
+                width:'100%', boxSizing:'border-box', paddingLeft:40, paddingRight:16, paddingTop:10, paddingBottom:10,
+                border:`1.5px solid ${searchFocus ? C.teal : '#D1D5DB'}`, borderRadius:10, fontSize:14, color:C.text, background:C.card,
                 outline:'none', transition:'border-color 0.2s, box-shadow 0.2s',
-                boxShadow: searchFocus ? `0 0 0 3px rgba(37,99,235,0.12)` : 'none',
+                boxShadow: searchFocus ? '0 0 0 3px rgba(37,99,235,0.12)' : 'none',
               }}
             />
+            </div>
+            <ViewToolbar
+              viewMode={techViewMode}
+              onViewModeChange={(mode) => { setTechViewMode(mode); saveViewMode('technical-files', mode); }}
+              groupBy={techGroupBy}
+              onGroupByChange={(group) => { setTechGroupBy(group); saveGroupBy('technical-files', group); setCollapsedGroups(new Set()); }}
+              availableViews={['grid', 'list', 'columns']}
+            />
+            <PrimaryBtn icon={<FolderPlus size={14} />} label="New Folder" onClick={() => setNewFolderModal(true)} />
           </div>
         </div>
-
-        {/* View tabs */}
         <div style={{ display:'flex', alignItems:'center', borderTop:`1px solid ${C.borderLight}` }}>
           {([
-            { key:'all'      as ViewFilter, label:'All Files' },
-            { key:'projects' as ViewFilter, label:'Projects'  },
-            { key:'tabs'     as ViewFilter, label:'Tabs'      },
+            { key:'all' as ViewFilter, label:'All Files' },
+            { key:'projects' as ViewFilter, label:'Projects' },
+            { key:'tabs' as ViewFilter, label:'Tabs' },
           ]).map(({ key, label }) => {
             const active = viewFilter === key;
             return (
-              <button
-                key={key}
-                onClick={() => setVF(key)}
-                style={{
-                  padding:'14px 22px', fontSize:14,
-                  fontWeight: active ? 600 : 400,
-                  color: active ? C.text : C.textSub,
-                  background:'none', border:'none',
-                  borderBottom: active ? `2.5px solid ${C.teal}` : '2.5px solid transparent',
-                  cursor:'pointer', marginBottom:-1, transition:'all 0.2s',
-                }}
+              <button key={key} onClick={() => setVF(key)} style={{
+                padding:'14px 22px', fontSize:14, fontWeight: active ? 600 : 400,
+                color: active ? C.text : C.textSub, background:'none', border:'none',
+                borderBottom: active ? `2.5px solid ${C.teal}` : '2.5px solid transparent',
+                cursor:'pointer', marginBottom:-1, transition:'all 0.2s',
+              }}
                 onMouseEnter={e => { if (!active) { e.currentTarget.style.color = C.text; e.currentTarget.style.background = '#F9FAFB'; } }}
                 onMouseLeave={e => { if (!active) { e.currentTarget.style.color = C.textSub; e.currentTarget.style.background = 'none'; } }}
-              >
-                {label}
-              </button>
+              >{label}</button>
             );
           })}
           <div style={{ flex:1 }} />
@@ -492,348 +856,534 @@ export default function SavedTechnicalFiles() {
         </div>
       </div>
 
-      {/* ── Content ── */}
       <div style={{ padding:'36px 40px', maxWidth:1360, margin:'0 auto' }}>
-        {isLoading ? (
-          <LoadingState />
-        ) : rawFiles.length === 0 ? (
-          <EmptyState />
-        ) : folderKeys.length === 0 ? (
-          <FilteredEmpty viewFilter={viewFilter} search={search} />
-        ) : (
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(360px, 1fr))', gap:24 }}>
-            {folderKeys.map(name => {
-              const fn = tree.get(name)!;
-              return (
-                <FolderCard
-                  key={name}
-                  fn={fn}
-                  menuOpen={menuKey === name}
-                  onOpen={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
-                  onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
-                  onDownloadAll={() => { setMenuKey(null); dlFolder(name); }}
-                  onDeleteAll={() => { setMenuKey(null); delFolder(name); }}
-                />
-              );
-            })}
-          </div>
+        {isLoading ? <LoadingState /> : rawFiles.length === 0 ? <EmptyState /> : folderKeys.length === 0 ? <FilteredEmpty viewFilter={viewFilter} search={search} /> : (
+          <>
+            {/* Grid view (default) */}
+            {techViewMode === 'grid' && (
+              <DragDropContext onDragEnd={onDragEnd}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(360px, 1fr))', gap:24 }}>
+                {folderKeys.map(name => {
+                  const fn = tree.get(name)!;
+                  return (
+                    <Droppable key={name} droppableId={`folder-${name}`}>
+                      {(dropProv, dropSnap) => (
+                        <div ref={dropProv.innerRef} {...dropProv.droppableProps}>
+                    <FolderCard
+                      fn={fn} menuOpen={menuKey === name}
+                      onOpen={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                      onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
+                      onRename={newName => renameFolder(name, newName)}
+                      onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
+                      onOverflowClick={btn => { setMenuKey(null); openCtxMenuFromButton(btn, buildFolderCtxItems(name, fn)); }}
+                      isDragOver={dropSnap.isDraggingOver}
+                    />
+                    {dropProv.placeholder}
+                        </div>
+                      )}
+                    </Droppable>
+                  );
+                })}
+              </div>
+              </DragDropContext>
+            )}
+            {/* List view */}
+            {techViewMode === 'list' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {folderKeys.map(name => {
+                  const fn = tree.get(name)!;
+                  const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
+                  return (
+                    <div
+                      key={name}
+                      onClick={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                      onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
+                      style={{
+                        display:'flex', alignItems:'center', gap:14, padding:'14px 20px',
+                        background:C.card, border:`2px solid ${C.border}`, borderRadius:10,
+                        cursor:'pointer', transition:'all 0.2s ease',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = '#007BFF'; e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.05)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = 'none'; }}
+                    >
+                      <div style={{ width:40, height:40, borderRadius:10, background:'#E3F2FD', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                        <Folder size={20} style={{ color:'#007BFF' }} />
+                      </div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <span style={{ fontSize:15, fontWeight:600, color:'#007BFF' }}>{fn.name}</span>
+                        <span style={{ fontSize:12, color:C.textSub, marginLeft:10 }}>{total} file{total !== 1 ? 's' : ''}</span>
+                      </div>
+                      <span style={{ fontSize:12, color:C.textMuted, flexShrink:0 }}>{fmtDate(fn.latestDate)}</span>
+                      <TypeBadge type={fn.folderType} />
+                      <button
+                        onClick={e => { e.stopPropagation(); openCtxMenuFromButton(e.currentTarget, buildFolderCtxItems(name, fn)); }}
+                        style={{ width:28, height:28, borderRadius:6, border:'none', background:'transparent', cursor:'pointer', color:C.textMuted, display:'flex', alignItems:'center', justifyContent:'center' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.color = C.text; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted; }}
+                      ><MoreVertical size={14} /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {/* Columns view */}
+            {techViewMode === 'columns' && (
+              <div style={{ display:'flex', gap:16, minHeight:400 }}>
+                {/* Folders column */}
+                <div style={{ width:240, flexShrink:0, background:C.card, border:`1px solid ${C.border}`, borderRadius:10, overflowY:'auto' }}>
+                  <div style={{ padding:'12px 14px', borderBottom:`1px solid ${C.border}` }}>
+                    <span style={{ fontSize:11, fontWeight:700, color:C.textMuted, textTransform:'uppercase', letterSpacing:1 }}>Folders</span>
+                  </div>
+                  {folderKeys.map(name => {
+                    const fn = tree.get(name)!;
+                    const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
+                    const isOpen = openFolder === name;
+                    return (
+                      <button
+                        key={name}
+                        onClick={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                        style={{
+                          width:'100%', textAlign:'left', display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
+                          background: isOpen ? '#E3F2FD' : 'transparent', color: isOpen ? '#007BFF' : C.textMid,
+                          border:'none', cursor:'pointer', fontSize:13, fontWeight: isOpen ? 600 : 400, transition:'all 0.15s',
+                        }}
+                        onMouseEnter={e => { if (!isOpen) e.currentTarget.style.background = '#F9FAFB'; }}
+                        onMouseLeave={e => { if (!isOpen) e.currentTarget.style.background = 'transparent'; }}
+                      >
+                        <Folder size={15} />
+                        <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{fn.name}</span>
+                        <span style={{ fontSize:11, color:C.textMuted }}>{total}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Content column */}
+                <div style={{ flex:1, minWidth:0 }}>
+                  {openFolder && tree.get(openFolder) ? (
+                    <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:16 }}>
+                      <p style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:12 }}>{openFolder}</p>
+                      {Array.from(tree.get(openFolder)!.tabs.values()).flatMap(t => t.files).map(file => (
+                        <div key={file.id} onClick={() => setPreview(file)} onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                          style={{
+                            display:'flex', alignItems:'center', gap:10, padding:'8px 12px', borderBottom:`1px solid ${C.borderLight}`,
+                            cursor:'pointer', transition:'all 0.2s',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.background = '#F9FAFB'; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          <FileText size={14} style={{ color:'#007BFF', flexShrink:0 }} />
+                          <span style={{ fontSize:13, color:C.text, fontWeight:500, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{file.filename}</span>
+                          <span style={{ fontSize:11, color:C.textMuted }}>{fmtDate(file.createdAt || file.generatedAt)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:C.textMuted, fontSize:14 }}>
+                      Select a folder to view its contents
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* Gallery view (larger cards) */}
+            {techViewMode === 'gallery' && (
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))', gap:24 }}>
+                {folderKeys.map(name => {
+                  const fn = tree.get(name)!;
+                  return (
+                    <FolderCard
+                      key={name} fn={fn} menuOpen={menuKey === name}
+                      onOpen={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                      onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
+                      onRename={newName => renameFolder(name, newName)}
+                      onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
+                      onOverflowClick={btn => { setMenuKey(null); openCtxMenuFromButton(btn, buildFolderCtxItems(name, fn)); }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
-
       {preview && <PreviewModal file={preview} onClose={() => setPreview(null)} />}
+      {renderModals()}
     </div>
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// SUB-COMPONENTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+function ContextMenu({ x, y, items }: CtxMenuState) {
+  return (
+    <div data-menu onMouseDown={e => e.stopPropagation()} style={{
+      position: 'fixed', top: y, left: x, zIndex: 9999,
+      background: C.card, border: `1px solid ${C.border}`,
+      borderRadius: 11, boxShadow: '0 12px 30px -5px rgba(0,0,0,0.14)',
+      minWidth: 190, overflow: 'hidden', padding: '4px 0',
+    }}>
+      {items.map((item, i) =>
+        'separator' in item && item.separator
+          ? <div key={`sep-${i}`} style={{ height: 1, background: C.borderLight, margin: '4px 8px' }} />
+          : <MenuBtn key={i} icon={(item as CtxMenuItem).icon} label={(item as CtxMenuItem).label} onClick={(item as CtxMenuItem).onClick} danger={(item as CtxMenuItem).danger} />
+      )}
+    </div>
+  );
+}
+
+function DeleteConfirmDialog({ name, fileCount, onConfirm, onCancel }: { name: string; fileCount: number; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.4)', fontFamily: FONT }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: '28px 32px', boxShadow: '0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth: 420, width: '90%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: C.dangerLight, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <AlertTriangle size={20} style={{ color: C.danger }} />
+          </div>
+          <h3 style={{ fontSize: 17, fontWeight: 700, color: C.text, margin: 0 }}>Delete {name}?</h3>
+        </div>
+        <p style={{ fontSize: 14, color: C.textSub, margin: '0 0 24px', lineHeight: 1.6 }}>
+          This will permanently delete all {fileCount} file{fileCount !== 1 ? 's' : ''} inside.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onCancel} style={{ padding: '9px 20px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.textMid, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => { onConfirm(); onCancel(); }} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: C.danger, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Delete Forever</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoDialog({ type, name, createdDate, fileCount, totalSize, format, folderName, tabName, onClose }: {
+  type: 'folder' | 'file'; name: string; createdDate: string; fileCount?: number; totalSize: string; format?: string; folderName?: string; tabName?: string; onClose: () => void;
+}) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.4)', fontFamily: FONT }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: '28px 32px', boxShadow: '0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth: 400, width: '90%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 9, background: C.tealLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {type === 'folder' ? <Folder size={18} style={{ color: C.teal }} /> : <FileText size={18} style={{ color: C.teal }} />}
+            </div>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: 0 }}>{type === 'folder' ? 'Folder Info' : 'File Info'}</h3>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 4 }}><X size={16} /></button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <InfoRow label="Name" value={name} />
+          {type === 'file' && format && <InfoRow label="Format" value={format} />}
+          {type === 'file' && folderName && <InfoRow label="Folder" value={folderName} />}
+          {type === 'file' && tabName && <InfoRow label="Tab" value={tabName} />}
+          <InfoRow label="Created" value={createdDate} />
+          {type === 'folder' && fileCount != null && <InfoRow label="File Count" value={`${fileCount} file${fileCount !== 1 ? 's' : ''}`} />}
+          <InfoRow label="Total Size" value={totalSize} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+      <span style={{ fontSize: 13, color: C.textSub, fontWeight: 500, flexShrink: 0 }}>{label}</span>
+      <span style={{ fontSize: 13, color: C.text, fontWeight: 500, textAlign: 'right', wordBreak: 'break-word' }}>{value}</span>
+    </div>
+  );
+}
+
+function MoveToFolderDialog({ file, folders, onMove, onCancel }: { file: RawFile; folders: string[]; onMove: (target: string) => void; onCancel: () => void }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [showNew, setShowNew] = useState(false);
+  const available = folders.filter(f => f !== file.folder);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.4)', fontFamily: FONT }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: '28px 32px', boxShadow: '0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth: 400, width: '90%' }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: '0 0 6px' }}>Move "{file.filename}"</h3>
+        <p style={{ fontSize: 13, color: C.textSub, margin: '0 0 16px' }}>Currently in: {file.folder}</p>
+        <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: 16, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden' }}>
+          {available.map(f => (
+            <button key={f} onClick={() => { setSelected(f); setNewFolderName(''); }} style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+              background: selected === f ? C.tealLight : 'transparent', border: 'none', borderBottom: `1px solid ${C.borderLight}`,
+              cursor: 'pointer', textAlign: 'left', transition: 'background 0.15s',
+            }}>
+              <Folder size={15} style={{ color: selected === f ? C.teal : C.textMuted, flexShrink: 0 }} />
+              <span style={{ fontSize: 13, fontWeight: selected === f ? 600 : 400, color: selected === f ? C.teal : C.text }}>{f}</span>
+              {selected === f && <Check size={14} style={{ color: C.teal, marginLeft: 'auto' }} />}
+            </button>
+          ))}
+          {available.length === 0 && !showNew && <div style={{ padding: 16, textAlign: 'center', color: C.textMuted, fontSize: 13 }}>No other folders available</div>}
+        </div>
+        {!showNew ? (
+          <button onClick={() => setShowNew(true)} style={{ fontSize: 13, color: C.teal, fontWeight: 500, background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: 16 }}>+ New folder</button>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            <input autoFocus placeholder="New folder name" value={newFolderName}
+              onChange={e => { setNewFolderName(e.target.value); setSelected(null); }}
+              onKeyDown={e => { if (e.key === 'Enter' && newFolderName.trim()) onMove(newFolderName.trim()); }}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 12px', border: `1.5px solid ${C.teal}`, borderRadius: 8, fontSize: 13, outline: 'none', color: C.text }}
+            />
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onCancel} style={{ padding: '9px 20px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.textMid, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>Cancel</button>
+          <button
+            onClick={() => { const target = newFolderName.trim() || selected; if (target) onMove(target); }}
+            disabled={!selected && !newFolderName.trim()}
+            style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: (selected || newFolderName.trim()) ? C.teal : C.border, color: '#fff', fontSize: 14, fontWeight: 600, cursor: (selected || newFolderName.trim()) ? 'pointer' : 'default', opacity: (selected || newFolderName.trim()) ? 1 : 0.5 }}
+          >Move</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RenameFileDialog({ file, onRename, onCancel }: { file: RawFile; onRename: (newName: string) => void; onCancel: () => void }) {
+  const [val, setVal] = useState(file.filename);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { setTimeout(() => inputRef.current?.select(), 0); }, []);
+  const submit = () => { const t = val.trim(); if (t && t !== file.filename) onRename(t); else onCancel(); };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.4)', fontFamily: FONT }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: '28px 32px', boxShadow: '0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth: 400, width: '90%' }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: '0 0 16px' }}>Rename File</h3>
+        <input ref={inputRef} autoFocus value={val} onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }}
+          style={{ width: '100%', boxSizing: 'border-box', padding: '10px 14px', border: `1.5px solid ${C.teal}`, borderRadius: 8, fontSize: 14, outline: 'none', color: C.text, marginBottom: 20 }}
+        />
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onCancel} style={{ padding: '9px 20px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.textMid, fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={submit} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: C.teal, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Rename</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Shared small components ──────────────────────────────────────────────────
 
 function ColHead({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <span style={{ fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase', letterSpacing:'0.05em', ...style }}>
-      {children}
-    </span>
-  );
+  return <span style={{ fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase', letterSpacing:'0.05em', ...style }}>{children}</span>;
 }
 
 function TypeBadge({ type }: { type: FolderType }) {
   const cfg: Record<FolderType, { label: string; bg: string; color: string; border: string }> = {
-    project: { label:'Project', bg:C.blueLight,   color:C.blue,   border:C.blueBorder   },
-    tab:     { label:'Tab',     bg:C.purpleLight,  color:C.purple, border:C.purpleBorder },
-    general: { label:'General', bg:C.borderLight,  color:C.textSub,border:C.border       },
+    project: { label:'Project', bg:C.blueLight, color:C.blue, border:C.blueBorder },
+    tab:     { label:'Tab', bg:C.purpleLight, color:C.purple, border:C.purpleBorder },
+    general: { label:'General', bg:C.borderLight, color:C.textSub, border:C.border },
   };
   const { label, bg, color, border } = cfg[type];
-  return (
-    <span style={{ padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600, letterSpacing:'0.03em', background:bg, color, border:`1px solid ${border}` }}>
-      {label}
-    </span>
-  );
+  return <span style={{ padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600, letterSpacing:'0.03em', background:bg, color, border:`1px solid ${border}` }}>{label}</span>;
 }
 
 function FormatBadge({ format }: { format: string }) {
   const { bg, color } = FORMAT_COLOR_MAP[format] ?? FORMAT_COLOR_MAP.html;
   const ext = FORMAT_EXT_MAP[format] ?? format;
+  return <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 5, background: bg, color, border: `1px solid ${color}22`, flexShrink: 0, userSelect: 'none' }}>.{ext}</span>;
+}
+
+function PrimaryBtn({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
+  const [h, setH] = useState(false);
   return (
-    <span style={{
-      fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
-      padding: '2px 7px', borderRadius: 5,
-      background: bg, color,
-      border: `1px solid ${color}22`,
-      flexShrink: 0, userSelect: 'none',
-    }}>
-      .{ext}
-    </span>
+    <button onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      display:'flex', alignItems:'center', gap:6, padding:'9px 16px', borderRadius:8,
+      border:'none', background: h ? '#0069d9' : '#007BFF',
+      color: '#fff', fontSize:14, fontWeight:600, cursor:'pointer', transition:'all 0.2s',
+      boxShadow: h ? '0 4px 12px rgba(0,123,255,0.3)' : '0 1px 3px rgba(0,0,0,0.1)',
+    }}>{icon}{label}</button>
   );
 }
 
 function GhostBtn({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        display:'flex', alignItems:'center', gap:6, padding:'9px 16px', borderRadius:8,
-        border:`1px solid ${h ? '#D1D5DB' : C.border}`, background: h ? '#F9FAFB' : C.card,
-        color: C.textMid, fontSize:14, fontWeight:500, cursor:'pointer', transition:'all 0.2s',
-      }}
-    >
-      {icon}{label}
-    </button>
+    <button onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      display:'flex', alignItems:'center', gap:6, padding:'9px 16px', borderRadius:8,
+      border:`1px solid ${h ? '#D1D5DB' : C.border}`, background: h ? '#F9FAFB' : C.card,
+      color: C.textMid, fontSize:14, fontWeight:500, cursor:'pointer', transition:'all 0.2s',
+    }}>{icon}{label}</button>
   );
 }
 
 function DangerBtn({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        display:'flex', alignItems:'center', gap:6, padding:'9px 16px', borderRadius:8,
-        border:`1px solid ${h ? C.dangerBorder : C.dangerBorder}`, background: h ? C.dangerLight : C.card,
-        color: C.danger, fontSize:14, fontWeight:500, cursor:'pointer', transition:'all 0.2s',
-      }}
-    >
-      {icon}{label}
-    </button>
+    <button onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      display:'flex', alignItems:'center', gap:6, padding:'9px 16px', borderRadius:8,
+      border:`1px solid ${C.dangerBorder}`, background: h ? C.dangerLight : C.card,
+      color: C.danger, fontSize:14, fontWeight:500, cursor:'pointer', transition:'all 0.2s',
+    }}>{icon}{label}</button>
   );
 }
 
-// ── FolderCard ────────────────────────────────────────────────────────────────
-
-function FolderCard({
-  fn, menuOpen,
-  onOpen, onMenuToggle, onDownloadAll, onDeleteAll,
-}: {
-  fn: FolderNode;
-  menuOpen: boolean;
-  onOpen: () => void;
-  onMenuToggle: (e: React.MouseEvent) => void;
-  onDownloadAll: () => void;
-  onDeleteAll: () => void;
+function FolderCard({ fn, menuOpen, onOpen, onMenuToggle, onRename, onContextMenu, onOverflowClick, isDragOver }: {
+  fn: FolderNode; menuOpen: boolean; onOpen: () => void; onMenuToggle: (e: React.MouseEvent) => void;
+  onRename: (newName: string) => void; onContextMenu: (e: React.MouseEvent) => void; onOverflowClick: (btn: HTMLElement) => void;
+  isDragOver?: boolean;
 }) {
   const [hov, setHov] = useState(false);
-  const tabKeys  = Array.from(fn.tabs.keys());
-  const total    = tabKeys.reduce((s, k) => s + fn.tabs.get(k)!.files.length, 0);
-  const isActive = hov || menuOpen;
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState(fn.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tabKeys = Array.from(fn.tabs.keys());
+  const total = tabKeys.reduce((s, k) => s + fn.tabs.get(k)!.files.length, 0);
+  const isActive = hov || menuOpen || isDragOver;
+
+  const startEditing = (e: React.MouseEvent) => { e.stopPropagation(); setEditVal(fn.name); setEditing(true); setTimeout(() => inputRef.current?.select(), 0); };
+  const confirmEdit = () => { const t = editVal.trim(); if (!t || t === fn.name) { setEditing(false); return; } if (t.length > 80) { toast.error('Title must be 80 characters or less'); return; } onRename(t); setEditing(false); };
+  const cancelEdit = () => { setEditVal(fn.name); setEditing(false); };
 
   return (
     <div
-      onClick={onOpen}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
+      onClick={editing ? undefined : onOpen}
+      onContextMenu={editing ? undefined : onContextMenu}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
       style={{
-        background: C.card,
-        border: `1px solid ${isActive ? C.teal : C.border}`,
-        borderLeft: `4px solid ${isActive ? C.teal : C.border}`,
-        borderRadius: 14,
-        padding: '24px 22px 20px',
-        cursor: 'pointer',
-        position: 'relative',
-        transform: isActive ? 'translateY(-3px)' : 'translateY(0)',
-        boxShadow: isActive
-          ? `0 12px 28px -6px rgba(37,99,235,0.18), 0 4px 8px -2px rgba(0,0,0,0.07)`
-          : '0 1px 4px rgba(0,0,0,0.06)',
-        transition: 'all 0.2s ease',
-        userSelect: 'none',
+        background: isDragOver ? '#E3F2FD' : C.card, border: `2px solid ${isActive ? '#007BFF' : C.border}`,
+        borderLeft: `4px solid ${isActive ? '#007BFF' : C.border}`, borderRadius: 14,
+        padding: '24px 22px 20px', cursor: editing ? 'default' : 'pointer', position: 'relative',
+        boxShadow: isDragOver ? '0 4px 12px rgba(0,123,255,0.15)' : '0 2px 4px rgba(0,0,0,0.05)',
+        transition: 'all 0.2s ease', userSelect: 'none',
       }}
     >
-      {/* Top: icon + menu */}
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:18 }}>
-        <div style={{
-          width:50, height:50, borderRadius:13,
-          background: isActive ? C.tealLight : C.borderLight,
-          display:'flex', alignItems:'center', justifyContent:'center',
-          transition:'background 0.2s', flexShrink:0,
-        }}>
+        <div style={{ width:50, height:50, borderRadius:13, background: isActive ? C.tealLight : C.borderLight, display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.2s', flexShrink:0 }}>
           <Folder size={24} style={{ color: isActive ? C.teal : C.textSub, transition:'color 0.2s' }} />
         </div>
-
-        {/* Three-dot menu */}
-        <div data-menu style={{ position:'relative' }} onClick={e => e.stopPropagation()}>
+        <div onClick={e => e.stopPropagation()}>
           <button
-            onClick={onMenuToggle}
-            data-menu
-            style={{
-              width:32, height:32, borderRadius:8, border:`1px solid ${menuOpen ? C.border : 'transparent'}`,
-              background: menuOpen ? '#F9FAFB' : 'transparent',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              cursor:'pointer', color:C.textMuted,
-              opacity: isActive ? 1 : 0, transition:'opacity 0.15s, background 0.15s',
-            }}
+            onClick={e => { e.stopPropagation(); onOverflowClick(e.currentTarget); }}
+            style={{ width:32, height:32, borderRadius:8, border:'1px solid transparent', background:'transparent', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:C.textMuted, opacity: isActive ? 1 : 0, transition:'opacity 0.15s, background 0.15s' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.borderColor = C.border; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}
             title="More options"
-          >
-            <MoreVertical size={16} />
-          </button>
-
-          {menuOpen && (
-            <div
-              data-menu
-              style={{
-                position:'absolute', top:36, right:0, zIndex:200,
-                background:C.card, border:`1px solid ${C.border}`,
-                borderRadius:11, boxShadow:'0 12px 30px -5px rgba(0,0,0,0.14)',
-                minWidth:170, overflow:'hidden', padding:'4px 0',
-              }}
-            >
-              <MenuBtn icon={<FolderOpen size={13} />} label="Open"         onClick={onOpen}        />
-              <MenuBtn icon={<Download   size={13} />} label="Download All" onClick={onDownloadAll} />
-              <div style={{ height:1, background:C.borderLight, margin:'4px 8px' }} />
-              <MenuBtn icon={<Trash2     size={13} />} label="Delete All"   onClick={onDeleteAll} danger />
-            </div>
-          )}
+          ><MoreVertical size={16} /></button>
         </div>
       </div>
-
-      {/* Name */}
-      <h3 style={{ fontSize:17, fontWeight:700, color:C.text, margin:'0 0 5px', lineHeight:1.3, wordBreak:'break-word' }}>
-        {fn.name}
-      </h3>
-
-      {/* Sub-info */}
+      {editing ? (
+        <div style={{ margin:'0 0 5px' }} onClick={e => e.stopPropagation()}>
+          <input ref={inputRef} autoFocus type="text" value={editVal} maxLength={80}
+            onChange={e => setEditVal(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') confirmEdit(); else if (e.key === 'Escape') cancelEdit(); }}
+            onBlur={confirmEdit}
+            style={{ fontSize:17, fontWeight:700, color:C.text, lineHeight:1.3, width:'100%', background:'transparent', border:'none', borderBottom:`2px solid ${C.teal}`, outline:'none', padding:'0 0 2px', margin:0, fontFamily:'inherit' }}
+          />
+        </div>
+      ) : (
+        <div style={{ display:'flex', alignItems:'center', gap:6, margin:'0 0 5px' }}>
+          <h3 style={{ fontSize:17, fontWeight:700, color:C.text, margin:0, lineHeight:1.3, wordBreak:'break-word' }}>{fn.name}</h3>
+          <button onClick={startEditing} style={{ background:'transparent', border:'none', cursor:'pointer', padding:2, borderRadius:4, display:'flex', alignItems:'center', color:'#9ca3af', opacity: hov ? 1 : 0, transition:'opacity 0.15s' }} title="Rename folder"><Pencil size={14} /></button>
+        </div>
+      )}
       <p style={{ fontSize:13, color:C.textSub, margin:'0 0 10px', lineHeight:1.5 }}>
-        {total} file{total !== 1 ? 's' : ''} · {tabKeys.length} tab{tabKeys.length !== 1 ? 's' : ''}
+        {total} file{total !== 1 ? 's' : ''} \u00B7 {tabKeys.length} tab{tabKeys.length !== 1 ? 's' : ''}
       </p>
-
-      {/* Format breakdown badges */}
       {(() => {
         const allFiles = tabKeys.flatMap(k => fn.tabs.get(k)!.files);
-        const counts = allFiles.reduce<Record<string, number>>((acc, f) => {
-          const fmt = extractFormat(f.content);
-          acc[fmt] = (acc[fmt] ?? 0) + 1;
-          return acc;
-        }, {});
+        const counts = allFiles.reduce<Record<string, number>>((acc, f) => { const fmt = extractFormat(f.content); acc[fmt] = (acc[fmt] ?? 0) + 1; return acc; }, {});
         const fmts = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 4);
         if (fmts.length === 0) return null;
         return (
           <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:14 }}>
             {fmts.map(([fmt, count]) => (
-              <span key={fmt} style={{
-                fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:5,
-                background: (FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).bg,
-                color:      (FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).color,
-                border:     `1px solid ${(FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).color}22`,
-              }}>
-                .{FORMAT_EXT_MAP[fmt] ?? fmt} ×{count}
+              <span key={fmt} style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:5, background: (FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).bg, color: (FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).color, border: `1px solid ${(FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).color}22` }}>
+                .{FORMAT_EXT_MAP[fmt] ?? fmt} x{count}
               </span>
             ))}
           </div>
         );
       })()}
-
-      {/* Footer: badge + date */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
         <TypeBadge type={fn.folderType} />
-        <span style={{ fontSize:12, color:C.textMuted }}>
-          {fmtDate(fn.latestDate)}
-        </span>
+        <span style={{ fontSize:12, color:C.textMuted }}>{fmtDate(fn.latestDate)}</span>
       </div>
     </div>
   );
 }
 
-function MenuBtn({ icon, label, onClick, danger = false }: {
-  icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean;
-}) {
+function MenuBtn({ icon, label, onClick, danger = false }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      data-menu
-      onClick={onClick}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        width:'100%', display:'flex', alignItems:'center', gap:8, padding:'9px 14px',
-        background: h ? (danger ? C.dangerLight : '#F9FAFB') : 'transparent',
-        color: danger ? C.danger : (h ? C.text : C.textMid),
-        fontSize:13, fontWeight:500, border:'none', cursor:'pointer',
-        textAlign:'left', transition:'background 0.15s, color 0.15s',
-      }}
-    >
-      {icon}{label}
-    </button>
+    <button data-menu onClick={onClick} onMouseDown={e => e.stopPropagation()} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      width:'100%', display:'flex', alignItems:'center', gap:8, padding:'9px 14px',
+      background: h ? (danger ? C.dangerLight : '#F9FAFB') : 'transparent',
+      color: danger ? C.danger : (h ? C.text : C.textMid),
+      fontSize:13, fontWeight:500, border:'none', cursor:'pointer', textAlign:'left', transition:'background 0.15s, color 0.15s',
+    }}>{icon}{label}</button>
   );
 }
 
-// ── FileRow ───────────────────────────────────────────────────────────────────
-
-function FileRow({ file, isLast, onOpen, onDownload, onDelete }: {
-  file: RawFile; isLast: boolean;
-  onOpen: () => void; onDownload: () => void; onDelete: (e: React.MouseEvent) => void;
+function FileRow({ file, isLast, onOpen, onDownload, onDelete, onContextMenu, onOverflowClick, onHistory, onShare, onTag, dragHandleProps }: {
+  file: RawFile; isLast: boolean; onOpen: () => void; onDownload: () => void; onDelete: (e: React.MouseEvent) => void;
+  onContextMenu: (e: React.MouseEvent) => void; onOverflowClick: (btn: HTMLElement) => void;
+  onHistory?: () => void; onShare?: () => void; onTag?: () => void;
+  dragHandleProps?: any;
 }) {
   const [hov, setHov] = useState(false);
   const format = extractFormat(file.content);
+  const fileTags = (Array.isArray(file.measurements) ? file.measurements : []).filter((m: string) => m.startsWith('tag:')).map((m: string) => m.slice(4));
   return (
-    <div
-      onClick={onOpen}
-      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      style={{
-        display:'flex', alignItems:'center', padding:'11px 20px',
-        borderBottom: isLast ? 'none' : `1px solid ${C.borderLight}`,
-        background: hov ? '#F9FAFB' : C.card,
-        cursor:'pointer', transition:'background 0.15s',
-      }}
-      title="Click to preview"
+    <div onClick={onOpen} onContextMenu={onContextMenu} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{ display:'flex', alignItems:'center', padding:'11px 20px', borderBottom: isLast ? 'none' : `1px solid ${C.borderLight}`, background: hov ? '#F9FAFB' : C.card, cursor:'pointer', transition:'all 0.2s ease', border: hov ? '2px solid #007BFF' : '2px solid transparent', borderRadius: hov ? 6 : 0, boxShadow: hov ? '0 2px 4px rgba(0,0,0,0.05)' : 'none', margin: hov ? '-1px 0' : '0' }}
+      title="Click to preview \u00B7 Right-click for options"
     >
       <div style={{ display:'flex', alignItems:'center', gap:10, flex:1, minWidth:0 }}>
+        {dragHandleProps && (
+          <div {...dragHandleProps} onClick={e => e.stopPropagation()} style={{ color: C.textMuted, cursor:'grab', opacity: hov ? 1 : 0, transition:'opacity 0.15s', flexShrink:0 }}>
+            <GripVertical size={14} />
+          </div>
+        )}
         <FileText size={15} style={{ color: hov ? C.teal : C.textMuted, flexShrink:0, transition:'color 0.15s' }} />
-        <span style={{ fontSize:14, color:C.text, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginRight:8 }}>
-          {file.filename}
-        </span>
+        <span style={{ fontSize:14, color:C.text, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginRight:8 }}>{file.filename}</span>
         <FormatBadge format={format} />
+        {fileTags.slice(0, 2).map(tag => {
+          const tc = TAG_COLORS.find(t => t.name === tag);
+          return <span key={tag} style={{ fontSize:10, fontWeight:600, padding:'1px 6px', borderRadius:4, background: tc?.bg || '#f3f4f6', color: tc?.color || C.textSub, border:`1px solid ${tc?.color || C.border}22`, flexShrink:0 }}>{tag}</span>;
+        })}
+        {fileTags.length > 2 && <span style={{ fontSize:10, color:C.textMuted }}>+{fileTags.length - 2}</span>}
       </div>
-      <span style={{ width:140, textAlign:'right', fontSize:13, color:C.textMuted, flexShrink:0 }}>
-        {fmtDate(file.generatedAt)}
-      </span>
-      <div style={{ width:88, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:4, flexShrink:0, opacity: hov ? 1 : 0, transition:'opacity 0.15s' }}>
-        <IconBtn title="Download" onClick={e => { e.stopPropagation(); onDownload(); }} hoverColor={C.teal} hoverBg={C.tealLight}>
-          <Download size={13} />
-        </IconBtn>
-        <IconBtn title="Delete"   onClick={e => { e.stopPropagation(); onDelete(e);   }} hoverColor={C.danger} hoverBg={C.dangerLight}>
-          <Trash2 size={13} />
-        </IconBtn>
+      <span style={{ width:140, textAlign:'right', fontSize:13, color:C.textMuted, flexShrink:0 }}>{fmtDate(file.createdAt || file.generatedAt)}</span>
+      <div style={{ width:140, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:2, flexShrink:0, opacity: hov ? 1 : 0, transition:'opacity 0.15s' }}>
+        {onHistory && <IconBtn title="Version History" onClick={e => { e.stopPropagation(); onHistory(); }} hoverColor="#007BFF" hoverBg="#EFF6FF"><Clock size={13} /></IconBtn>}
+        {onShare && <IconBtn title="Share" onClick={e => { e.stopPropagation(); onShare(); }} hoverColor="#007BFF" hoverBg="#EFF6FF"><Share2 size={13} /></IconBtn>}
+        {onTag && <IconBtn title="Tags" onClick={e => { e.stopPropagation(); onTag(); }} hoverColor="#007BFF" hoverBg="#EFF6FF"><Tag size={13} /></IconBtn>}
+        <IconBtn title="Download" onClick={e => { e.stopPropagation(); onDownload(); }} hoverColor={C.teal} hoverBg={C.tealLight}><Download size={13} /></IconBtn>
+        <IconBtn title="Delete" onClick={e => { e.stopPropagation(); onDelete(e); }} hoverColor={C.danger} hoverBg={C.dangerLight}><Trash2 size={13} /></IconBtn>
+        <button title="More options" onClick={e => { e.stopPropagation(); onOverflowClick(e.currentTarget); }} onMouseDown={e => e.stopPropagation()}
+          style={{ width: 28, height: 28, borderRadius: 6, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: C.textMuted, background: 'transparent', transition: 'all 0.15s' }}
+          onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.color = C.text; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted; }}
+        ><MoreVertical size={14} /></button>
       </div>
     </div>
   );
 }
 
-function IconBtn({ title, onClick, hoverColor, hoverBg, children }: {
-  title: string; onClick: (e: React.MouseEvent) => void;
-  hoverColor: string; hoverBg: string; children: React.ReactNode;
-}) {
+function IconBtn({ title, onClick, hoverColor, hoverBg, children }: { title: string; onClick: (e: React.MouseEvent) => void; hoverColor: string; hoverBg: string; children: React.ReactNode }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      title={title} onClick={onClick}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        width:28, height:28, borderRadius:6, border:'none',
-        display:'flex', alignItems:'center', justifyContent:'center',
-        cursor:'pointer', color: h ? hoverColor : C.textMuted,
-        background: h ? hoverBg : 'transparent', transition:'all 0.15s',
-      }}
-    >
-      {children}
-    </button>
+    <button title={title} onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      width:28, height:28, borderRadius:6, border:'none', display:'flex', alignItems:'center', justifyContent:'center',
+      cursor:'pointer', color: h ? hoverColor : C.textMuted, background: h ? hoverBg : 'transparent', transition:'all 0.15s',
+    }}>{children}</button>
   );
 }
 
-// ── PreviewModal (Box-style document viewer) ─────────────────────────────────
+// ── PreviewModal ─────────────────────────────────────────────────────────────
 
-/** Split HTML content into page sections for the thumbnail strip */
 function splitIntoPages(html: string): string[] {
-  // Strip comment tags (FORMAT, EXPORT_DATA blocks) for clean rendering
-  const cleaned = html
-    .replace(/<!-- FORMAT: \w+ -->\n?/g, '')
-    .replace(/<!-- EXPORT_DATA_(?:BINARY|TEXT)_START[\s\S]*?EXPORT_DATA_(?:BINARY|TEXT)_END -->\n?\n?/g, '');
-  // Split on <hr> / <hr/> tags as page breaks
+  const cleaned = html.replace(/<!-- FORMAT: \w+ -->\n?/g, '').replace(/<!-- EXPORT_DATA_(?:BINARY|TEXT)_START[\s\S]*?EXPORT_DATA_(?:BINARY|TEXT)_END -->\n?\n?/g, '');
   const parts = cleaned.split(/<hr\s*\/?>/i).map(s => s.trim()).filter(Boolean);
   return parts.length > 0 ? parts : [cleaned];
 }
 
-/** Extract CSV data from HTML tables in the content */
 function extractCSVFromHTML(html: string): string {
   const rows: string[][] = [];
-  // Match all <tr>...</tr> blocks
   const trMatches = html.match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
   for (const tr of trMatches) {
     const cells: string[] = [];
@@ -847,19 +1397,10 @@ function extractCSVFromHTML(html: string): string {
   return rows.map(r => r.join(',')).join('\n');
 }
 
-/** Estimate readable size from content length */
-function estimateSize(content: string): string {
-  const bytes = new Blob([content]).size;
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void }) {
   const format = extractFormat(file.content);
   const ext = FORMAT_EXT_MAP[format] ?? 'html';
   const pages = useMemo(() => splitIntoPages(file.content), [file.content]);
-
   const [activePage, setActivePage] = useState(0);
   const [zoom, setZoom] = useState(100);
   const [showInfo, setShowInfo] = useState(true);
@@ -869,144 +1410,35 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const exportRef = useRef<HTMLDivElement>(null);
 
-  // Close export dropdown on outside click
-  useEffect(() => {
-    if (!exportOpen) return;
-    const h = (e: MouseEvent) => {
-      if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false);
-    };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, [exportOpen]);
-
-  // Keyboard: Escape to close, PageUp/PageDown navigation
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'PageDown' || (e.key === 'ArrowDown' && e.altKey)) {
-        e.preventDefault();
-        setActivePage(p => Math.min(p + 1, pages.length - 1));
-      }
-      if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.altKey)) {
-        e.preventDefault();
-        setActivePage(p => Math.max(p - 1, 0));
-      }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [onClose, pages.length]);
-
-  // Scroll to active page when thumbnail is clicked
-  useEffect(() => {
-    const el = pageRefs.current[activePage];
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [activePage]);
-
-  // Track scroll position to update active page
-  useEffect(() => {
-    const container = contentRef.current;
-    if (!container) return;
-    const h = () => {
-      const scrollTop = container.scrollTop;
-      let current = 0;
-      for (let i = 0; i < pageRefs.current.length; i++) {
-        const el = pageRefs.current[i];
-        if (el && el.offsetTop - container.offsetTop <= scrollTop + 100) current = i;
-      }
-      setActivePage(current);
-    };
-    container.addEventListener('scroll', h, { passive: true });
-    return () => container.removeEventListener('scroll', h);
-  }, [pages.length]);
-
-  // Ctrl+scroll to zoom
-  useEffect(() => {
-    const container = contentRef.current;
-    if (!container) return;
-    const h = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      e.preventDefault();
-      setZoom(z => Math.max(50, Math.min(200, z + (e.deltaY < 0 ? 25 : -25))));
-    };
-    container.addEventListener('wheel', h, { passive: false });
-    return () => container.removeEventListener('wheel', h);
-  }, []);
+  useEffect(() => { if (!exportOpen) return; const h = (e: MouseEvent) => { if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, [exportOpen]);
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); if (e.key === 'PageDown' || (e.key === 'ArrowDown' && e.altKey)) { e.preventDefault(); setActivePage(p => Math.min(p + 1, pages.length - 1)); } if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.altKey)) { e.preventDefault(); setActivePage(p => Math.max(p - 1, 0)); } }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose, pages.length]);
+  useEffect(() => { const el = pageRefs.current[activePage]; if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [activePage]);
+  useEffect(() => { const container = contentRef.current; if (!container) return; const h = () => { const scrollTop = container.scrollTop; let current = 0; for (let i = 0; i < pageRefs.current.length; i++) { const el = pageRefs.current[i]; if (el && el.offsetTop - container.offsetTop <= scrollTop + 100) current = i; } setActivePage(current); }; container.addEventListener('scroll', h, { passive: true }); return () => container.removeEventListener('scroll', h); }, [pages.length]);
+  useEffect(() => { const container = contentRef.current; if (!container) return; const h = (e: WheelEvent) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); setZoom(z => Math.max(50, Math.min(200, z + (e.deltaY < 0 ? 25 : -25)))); }; container.addEventListener('wheel', h, { passive: false }); return () => container.removeEventListener('wheel', h); }, []);
 
   const downloadFile = useCallback((fmt: 'pdf' | 'csv' | 'html') => {
     const safeTitle = file.filename.replace(/\s+/g, '_');
     if (fmt === 'pdf') {
       const exportData = extractExportData(file.content);
-      if (exportData) {
-        const binary = atob(exportData);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.pdf` });
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      } else {
-        // Fallback: download HTML
-        const blob = new Blob([file.content], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` });
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }
-    } else if (fmt === 'csv') {
-      const csv = extractCSVFromHTML(file.content);
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.csv` });
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } else {
-      const blob = new Blob([file.content], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` });
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
-    setExportOpen(false);
-    toast.success(`Downloaded as .${fmt}`);
+      if (exportData) { const binary = atob(exportData); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); const blob = new Blob([bytes], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.pdf` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
+      else { const blob = new Blob([file.content], { type: 'text/html' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
+    } else if (fmt === 'csv') { const csv = extractCSVFromHTML(file.content); const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.csv` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
+    else { const blob = new Blob([file.content], { type: 'text/html' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
+    setExportOpen(false); toast.success(`Downloaded as .${fmt}`);
   }, [file]);
 
-  const copyLink = useCallback(() => {
-    navigator.clipboard.writeText(`${window.location.origin}/saved-technical-files?file=${file.id}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    toast.success('Link copied');
-  }, [file.id]);
-
+  const copyLink = useCallback(() => { navigator.clipboard.writeText(`${window.location.origin}/saved-technical-files?file=${file.id}`); setCopied(true); setTimeout(() => setCopied(false), 2000); toast.success('Link copied'); }, [file.id]);
   const fileSize = useMemo(() => estimateSize(file.content), [file.content]);
-
-  // Extract query from content metadata if available
-  const queryText = useMemo(() => {
-    const m = file.content.match(/<!--\s*AI_SCRIPT\s*\n([\s\S]*?)\nEND_AI_SCRIPT\s*-->/);
-    if (m) {
-      try { return JSON.parse(m[1]).query ?? null; } catch { return null; }
-    }
-    return null;
-  }, [file.content]);
+  const queryText = useMemo(() => { const m = file.content.match(/<!--\s*AI_SCRIPT\s*\n([\s\S]*?)\nEND_AI_SCRIPT\s*-->/); if (m) { try { return JSON.parse(m[1]).query ?? null; } catch { return null; } } return null; }, [file.content]);
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column', background: '#F9FAFB', fontFamily: FONT }}>
-      {/* ── Top Toolbar ──────────────────────────────────────────────────── */}
-      <div style={{
-        flexShrink: 0, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 16px', background: C.card, borderBottom: `1px solid ${C.border}`,
-      }}>
-        {/* Left: back + breadcrumb */}
+      <div style={{ flexShrink: 0, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px', background: C.card, borderBottom: `1px solid ${C.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
-          <button
-            onClick={onClose}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: C.textSub, transition: 'all 0.15s' }}
+          <button onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: C.textSub, transition: 'all 0.15s' }}
             onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.color = C.text; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSub; }}
-            title="Back to files"
-          >
-            <ArrowLeft size={16} />
-          </button>
+            title="Back to files"><ArrowLeft size={16} /></button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
             <span style={{ fontSize: 12, color: C.textMuted, whiteSpace: 'nowrap' }}>{file.folder}</span>
             <ChevronRight size={11} style={{ color: C.textMuted, flexShrink: 0 }} />
@@ -1017,167 +1449,76 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
             <span style={{ fontSize: 10, fontWeight: 600, color: C.blue, background: C.blueLight, padding: '1px 6px', borderRadius: 4, border: `1px solid ${C.blueBorder}`, flexShrink: 0 }}>v1</span>
           </div>
         </div>
-
-        {/* Center: page counter + zoom */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 12, color: C.textSub, fontWeight: 500, whiteSpace: 'nowrap' }}>
-            {activePage + 1} of {pages.length}
-          </span>
+          <span style={{ fontSize: 12, color: C.textSub, fontWeight: 500, whiteSpace: 'nowrap' }}>{activePage + 1} of {pages.length}</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 8 }}>
-            <ToolbarBtn title="Zoom out" onClick={() => setZoom(z => Math.max(50, z - 25))} disabled={zoom <= 50}>−</ToolbarBtn>
+            <ToolbarBtn title="Zoom out" onClick={() => setZoom(z => Math.max(50, z - 25))} disabled={zoom <= 50}>{'\u2212'}</ToolbarBtn>
             <span style={{ fontSize: 11, color: C.textSub, fontWeight: 500, minWidth: 36, textAlign: 'center' }}>{zoom}%</span>
             <ToolbarBtn title="Zoom in" onClick={() => setZoom(z => Math.min(200, z + 25))} disabled={zoom >= 200}>+</ToolbarBtn>
-            <ToolbarBtn title="Fit to width" onClick={() => setZoom(100)}>
-              <span style={{ fontSize: 10 }}>FIT</span>
-            </ToolbarBtn>
+            <ToolbarBtn title="Fit to width" onClick={() => setZoom(100)}><span style={{ fontSize: 10 }}>FIT</span></ToolbarBtn>
           </div>
         </div>
-
-        {/* Right: actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, justifyContent: 'flex-end' }}>
           <ActionBtn icon={<Download size={14} />} label="Download" onClick={() => downloadFile('pdf')} />
-
-          {/* Export dropdown */}
           <div ref={exportRef} style={{ position: 'relative' }}>
             <ActionBtn icon={<Share2 size={14} />} label="Export" onClick={() => setExportOpen(o => !o)} active={exportOpen} />
             {exportOpen && (
-              <div style={{
-                position: 'absolute', top: 38, right: 0, zIndex: 200, background: C.card, border: `1px solid ${C.border}`,
-                borderRadius: 10, boxShadow: '0 8px 24px -4px rgba(0,0,0,0.12)', minWidth: 160, overflow: 'hidden', padding: '4px 0',
-              }}>
+              <div style={{ position: 'absolute', top: 38, right: 0, zIndex: 200, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 8px 24px -4px rgba(0,0,0,0.12)', minWidth: 160, overflow: 'hidden', padding: '4px 0' }}>
                 <ExportMenuItem label="PDF" desc="Download as PDF" onClick={() => downloadFile('pdf')} />
                 <ExportMenuItem label="CSV" desc="Extract table data" onClick={() => downloadFile('csv')} />
                 <ExportMenuItem label="HTML" desc="Styled HTML file" onClick={() => downloadFile('html')} />
               </div>
             )}
           </div>
-
-          <ActionBtn
-            icon={copied ? <Check size={14} /> : <Copy size={14} />}
-            label={copied ? 'Copied' : 'Copy Link'}
-            onClick={copyLink}
-          />
-
-          <button
-            onClick={() => setShowInfo(v => !v)}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6,
-              border: `1px solid ${showInfo ? C.blue : C.border}`, background: showInfo ? C.blueLight : 'transparent',
-              cursor: 'pointer', color: showInfo ? C.blue : C.textSub, transition: 'all 0.15s',
-            }}
-            title={showInfo ? 'Hide info panel' : 'Show info panel'}
-          >
+          <ActionBtn icon={copied ? <Check size={14} /> : <Copy size={14} />} label={copied ? 'Copied' : 'Copy Link'} onClick={copyLink} />
+          <button onClick={() => setShowInfo(v => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: `1px solid ${showInfo ? C.blue : C.border}`, background: showInfo ? C.blueLight : 'transparent', cursor: 'pointer', color: showInfo ? C.blue : C.textSub, transition: 'all 0.15s' }} title={showInfo ? 'Hide info panel' : 'Show info panel'}>
             {showInfo ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
           </button>
-
-          <button
-            onClick={onClose}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6,
-              border: `1px solid ${C.border}`, background: 'transparent', cursor: 'pointer', color: C.textSub, transition: 'all 0.15s',
-            }}
+          <button onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: `1px solid ${C.border}`, background: 'transparent', cursor: 'pointer', color: C.textSub, transition: 'all 0.15s' }}
             onMouseEnter={e => { e.currentTarget.style.background = '#FEF2F2'; e.currentTarget.style.color = '#EF4444'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSub; }}
-            title="Close"
-          >
-            <X size={15} />
-          </button>
+            title="Close"><X size={15} /></button>
         </div>
       </div>
-
-      {/* ── Body: Left thumbnails + Center content + Right info ───────── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-
-        {/* Left: Page thumbnails */}
-        <div style={{
-          width: 160, flexShrink: 0, background: C.card, borderRight: `1px solid ${C.border}`,
-          overflowY: 'auto', padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 8,
-        }}>
+        <div style={{ width: 160, flexShrink: 0, background: C.card, borderRight: `1px solid ${C.border}`, overflowY: 'auto', padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {pages.map((pageHtml, i) => (
-            <button
-              key={i}
-              onClick={() => setActivePage(i)}
-              style={{
-                width: '100%', aspectRatio: '8.5/11', borderRadius: 4, overflow: 'hidden', cursor: 'pointer',
-                border: i === activePage ? `2px solid ${C.blue}` : `1px solid ${C.border}`,
-                background: C.card, position: 'relative', transition: 'border-color 0.15s',
-                boxShadow: i === activePage ? `0 0 0 2px ${C.blueBorder}` : 'none',
-              }}
-            >
-              {/* Scaled-down page preview */}
+            <button key={i} onClick={() => setActivePage(i)} style={{ width: '100%', aspectRatio: '8.5/11', borderRadius: 4, overflow: 'hidden', cursor: 'pointer', border: i === activePage ? `2px solid ${C.blue}` : `1px solid ${C.border}`, background: C.card, position: 'relative', transition: 'border-color 0.15s', boxShadow: i === activePage ? `0 0 0 2px ${C.blueBorder}` : 'none' }}>
               <div style={{ transform: 'scale(0.18)', transformOrigin: 'top left', width: '555%', height: '555%', pointerEvents: 'none', overflow: 'hidden' }}>
                 <div dangerouslySetInnerHTML={{ __html: pageHtml }} style={{ padding: 24, fontSize: 14, fontFamily: FONT, color: C.text }} />
               </div>
-              {/* Page number label */}
-              <div style={{
-                position: 'absolute', bottom: 4, left: '50%', transform: 'translateX(-50%)',
-                fontSize: 10, fontWeight: 600, color: i === activePage ? C.blue : C.textMuted,
-                background: i === activePage ? C.blueLight : 'rgba(255,255,255,0.9)',
-                padding: '1px 6px', borderRadius: 3, border: `1px solid ${i === activePage ? C.blueBorder : C.border}`,
-              }}>
-                {i + 1}
-              </div>
+              <div style={{ position: 'absolute', bottom: 4, left: '50%', transform: 'translateX(-50%)', fontSize: 10, fontWeight: 600, color: i === activePage ? C.blue : C.textMuted, background: i === activePage ? C.blueLight : 'rgba(255,255,255,0.9)', padding: '1px 6px', borderRadius: 3, border: `1px solid ${i === activePage ? C.blueBorder : C.border}` }}>{i + 1}</div>
             </button>
           ))}
         </div>
-
-        {/* Center: Document content */}
-        <div
-          ref={contentRef}
-          style={{ flex: 1, overflowY: 'auto', background: '#F3F4F6', padding: '24px 32px' }}
-        >
+        <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', background: '#F3F4F6', padding: '24px 32px' }}>
           {pages.map((pageHtml, i) => (
-            <div
-              key={i}
-              ref={el => { pageRefs.current[i] = el; }}
-              style={{
-                background: C.card, borderRadius: 6, padding: 32, marginBottom: 24,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.08)', border: `1px solid ${C.border}`,
-                maxWidth: 820, margin: '0 auto 24px',
-                transform: `scale(${zoom / 100})`, transformOrigin: 'top center',
-                transition: 'transform 0.15s ease',
-              }}
-            >
-              <div
-                dangerouslySetInnerHTML={{ __html: pageHtml }}
-                style={{ fontFamily: FONT, fontSize: 14, lineHeight: 1.7, color: C.text }}
-              />
+            <div key={i} ref={el => { pageRefs.current[i] = el; }} style={{ background: C.card, borderRadius: 6, padding: 32, marginBottom: 24, boxShadow: '0 2px 8px rgba(0,0,0,0.08)', border: `1px solid ${C.border}`, maxWidth: 820, margin: '0 auto 24px', transform: `scale(${zoom / 100})`, transformOrigin: 'top center', transition: 'transform 0.15s ease' }}>
+              <div dangerouslySetInnerHTML={{ __html: pageHtml }} style={{ fontFamily: FONT, fontSize: 14, lineHeight: 1.7, color: C.text }} />
             </div>
           ))}
         </div>
-
-        {/* Right: Info/Details panel */}
         {showInfo && (
-          <div style={{
-            width: 280, flexShrink: 0, background: C.card, borderLeft: `1px solid ${C.border}`,
-            overflowY: 'auto', display: 'flex', flexDirection: 'column',
-          }}>
-            {/* Panel header */}
+          <div style={{ width: 280, flexShrink: 0, background: C.card, borderLeft: `1px solid ${C.border}`, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
             <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 8 }}>
               <Info size={14} style={{ color: C.blue }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Details</span>
             </div>
-
-            {/* Metadata rows */}
             <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 14 }}>
               <MetaRow label="Filename" value={`${file.filename}.${ext}`} />
               <MetaRow label="Folder" value={file.folder} />
               <MetaRow label="Tab" value={file.tabName} />
               <MetaRow label="Format" value={`.${ext.toUpperCase()}`} />
-              <MetaRow label="Generated" value={fmtDate(file.generatedAt)} />
+              <MetaRow label="Generated" value={fmtDate(file.createdAt || file.generatedAt)} />
               <MetaRow label="File Size" value={fileSize} />
               <MetaRow label="Pages" value={String(pages.length)} />
               {queryText && <MetaRow label="Query" value={queryText} multiline />}
-
-              {/* Tags */}
               {file.measurements.filter(m => m.startsWith('tag:')).length > 0 && (
                 <div>
                   <span style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Tags</span>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
                     {file.measurements.filter(m => m.startsWith('tag:')).map(m => (
-                      <span key={m} style={{ fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 4, background: C.blueLight, color: C.blue, border: `1px solid ${C.blueBorder}` }}>
-                        {m.slice(4)}
-                      </span>
+                      <span key={m} style={{ fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 4, background: C.blueLight, color: C.blue, border: `1px solid ${C.blueBorder}` }}>{m.slice(4)}</span>
                     ))}
                   </div>
                 </div>
@@ -1193,52 +1534,35 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
 function ToolbarBtn({ title, onClick, disabled, children }: { title: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      title={title} onClick={onClick} disabled={disabled}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        width: 26, height: 26, borderRadius: 4, border: `1px solid ${h && !disabled ? C.border : 'transparent'}`,
-        background: h && !disabled ? '#F3F4F6' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        cursor: disabled ? 'not-allowed' : 'pointer', color: disabled ? C.textMuted : C.textSub,
-        fontSize: 14, fontWeight: 600, transition: 'all 0.1s', opacity: disabled ? 0.4 : 1,
-      }}
-    >
-      {children}
-    </button>
+    <button title={title} onClick={onClick} disabled={disabled} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      width: 26, height: 26, borderRadius: 4, border: `1px solid ${h && !disabled ? C.border : 'transparent'}`,
+      background: h && !disabled ? '#F3F4F6' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      cursor: disabled ? 'not-allowed' : 'pointer', color: disabled ? C.textMuted : C.textSub,
+      fontSize: 14, fontWeight: 600, transition: 'all 0.1s', opacity: disabled ? 0.4 : 1,
+    }}>{children}</button>
   );
 }
 
 function ActionBtn({ icon, label, onClick, active }: { icon: React.ReactNode; label: string; onClick: () => void; active?: boolean }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6,
-        border: `1px solid ${active ? C.blue : h ? '#D1D5DB' : C.border}`,
-        background: active ? C.blueLight : h ? '#F9FAFB' : 'transparent',
-        color: active ? C.blue : h ? C.text : C.textMid,
-        fontSize: 12, fontWeight: 500, cursor: 'pointer', transition: 'all 0.15s', whiteSpace: 'nowrap',
-      }}
-    >
-      {icon}
-      {label}
-    </button>
+    <button onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6,
+      border: `1px solid ${active ? C.blue : h ? '#D1D5DB' : C.border}`,
+      background: active ? C.blueLight : h ? '#F9FAFB' : 'transparent',
+      color: active ? C.blue : h ? C.text : C.textMid,
+      fontSize: 12, fontWeight: 500, cursor: 'pointer', transition: 'all 0.15s', whiteSpace: 'nowrap',
+    }}>{icon}{label}</button>
   );
 }
 
 function ExportMenuItem({ label, desc, onClick }: { label: string; desc: string; onClick: () => void }) {
   const [h, setH] = useState(false);
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        width: '100%', display: 'flex', flexDirection: 'column', gap: 1, padding: '9px 14px', textAlign: 'left',
-        background: h ? '#F9FAFB' : 'transparent', border: 'none', cursor: 'pointer', transition: 'background 0.15s',
-      }}
-    >
+    <button onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      width: '100%', display: 'flex', flexDirection: 'column', gap: 1, padding: '9px 14px', textAlign: 'left',
+      background: h ? '#F9FAFB' : 'transparent', border: 'none', cursor: 'pointer', transition: 'background 0.15s',
+    }}>
       <span style={{ fontSize: 13, fontWeight: 500, color: C.text }}>{label}</span>
       <span style={{ fontSize: 11, color: C.textMuted }}>{desc}</span>
     </button>
@@ -1249,22 +1573,13 @@ function MetaRow({ label, value, multiline }: { label: string; value: string; mu
   return (
     <div>
       <span style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 3 }}>{label}</span>
-      <span style={{
-        fontSize: 13, color: C.text, fontWeight: 400, wordBreak: 'break-word',
-        ...(multiline ? { display: 'block', lineHeight: 1.5, fontSize: 12, color: C.textSub } : {}),
-      }}>{value}</span>
+      <span style={{ fontSize: 13, color: C.text, fontWeight: 400, wordBreak: 'break-word', ...(multiline ? { display: 'block', lineHeight: 1.5, fontSize: 12, color: C.textSub } : {}) }}>{value}</span>
     </div>
   );
 }
 
-// ── Utility states ────────────────────────────────────────────────────────────
-
 function LoadingState() {
-  return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'80px 0', color:C.textMuted, fontSize:14 }}>
-      Loading files…
-    </div>
-  );
+  return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'80px 0', color:C.textMuted, fontSize:14 }}>Loading files\u2026</div>;
 }
 
 function EmptyState() {
@@ -1274,9 +1589,7 @@ function EmptyState() {
         <Folder size={34} style={{ color:C.teal }} />
       </div>
       <h3 style={{ fontSize:20, fontWeight:700, color:C.text, margin:'0 0 10px' }}>No saved files yet</h3>
-      <p style={{ fontSize:15, color:C.textSub, margin:0, lineHeight:1.6 }}>
-        Save analysis results from the biostatistics platform and they'll appear here, organized by project or tab.
-      </p>
+      <p style={{ fontSize:15, color:C.textSub, margin:0, lineHeight:1.6 }}>Save analysis results from the biostatistics platform and they'll appear here, organized by project or tab.</p>
     </div>
   );
 }
@@ -1284,11 +1597,275 @@ function EmptyState() {
 function FilteredEmpty({ viewFilter, search }: { viewFilter: ViewFilter; search: string }) {
   return (
     <div style={{ textAlign:'center', padding:'64px 40px', color:C.textMuted, fontSize:14 }}>
-      {search
-        ? `No files match "${search}"`
-        : viewFilter === 'projects'
-        ? 'No project folders yet — save analyses with "Save all data in project" checked'
-        : 'No tab folders yet — save analyses using "Save all data in tab"'}
+      {search ? `No files match "${search}"` : viewFilter === 'projects' ? 'No project folders yet \u2014 save analyses with "Save all data in project" checked' : 'No tab folders yet \u2014 save analyses using "Save all data in tab"'}
     </div>
   );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NEW MODALS — Box.com-style features
+// ══════════════════════════════════════════════════════════════════════════════
+
+function NewFolderDialog({ onCreate, onCancel }: { onCreate: (name: string) => void; onCancel: () => void }) {
+  const [val, setVal] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 0); }, []);
+  const submit = () => { const t = val.trim(); if (t) onCreate(t); };
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.4)', fontFamily:FONT }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:16, boxShadow:'0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth:420, width:'90%', overflow:'hidden' }}>
+        <div style={{ padding:'20px 28px 16px', background:'#007BFF', color:'#fff' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <FolderPlus size={20} />
+            <h3 style={{ fontSize:17, fontWeight:700, margin:0 }}>Create New Folder</h3>
+          </div>
+        </div>
+        <div style={{ padding:'24px 28px' }}>
+          <label style={{ fontSize:13, fontWeight:600, color:C.textSub, display:'block', marginBottom:8 }}>Folder Name</label>
+          <input ref={inputRef} autoFocus value={val} onChange={e => setVal(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }}
+            placeholder="Enter folder name..."
+            style={{ width:'100%', boxSizing:'border-box', padding:'10px 14px', border:'1.5px solid #D1D5DB', borderRadius:8, fontSize:14, outline:'none', color:C.text, fontFamily:'Arial, sans-serif' }}
+          />
+          <div style={{ display:'flex', justifyContent:'flex-end', gap:10, marginTop:20 }}>
+            <button onClick={onCancel} style={{ padding:'9px 20px', borderRadius:8, border:`1px solid ${C.border}`, background:'#fff', color:C.textMid, fontSize:14, fontWeight:500, cursor:'pointer' }}>Cancel</button>
+            <button onClick={submit} disabled={!val.trim()} style={{ padding:'9px 20px', borderRadius:8, border:'none', background: val.trim() ? '#007BFF' : C.border, color:'#fff', fontSize:14, fontWeight:600, cursor: val.trim() ? 'pointer' : 'default', opacity: val.trim() ? 1 : 0.5 }}>Create</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShareDialog({ name, type, onClose }: { name: string; type: 'folder' | 'file'; onClose: () => void }) {
+  const [tab, setTab] = useState<'invite' | 'link'>('invite');
+  const [email, setEmail] = useState('');
+  const [permission, setPermission] = useState<'viewer' | 'editor' | 'uploader'>('viewer');
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [invites, setInvites] = useState<{ email: string; role: string }[]>([]);
+  const shareLink = `${window.location.origin}/shared/${type}/${encodeURIComponent(name)}?token=${Math.random().toString(36).slice(2, 10)}`;
+
+  const sendInvite = () => {
+    if (!email.trim() || !email.includes('@')) return;
+    setInvites(prev => [...prev, { email: email.trim(), role: permission }]);
+    toast.success(`Invited ${email.trim()} as ${permission}`, { style: { background: C.successLight, color: '#166534' } });
+    setEmail('');
+  };
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(shareLink);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+    toast.success('Link copied');
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.4)', fontFamily:FONT }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:16, boxShadow:'0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth:480, width:'90%', overflow:'hidden' }}>
+        <div style={{ padding:'18px 28px 14px', background:'#007BFF', color:'#fff', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <Share2 size={18} />
+            <h3 style={{ fontSize:16, fontWeight:700, margin:0 }}>Share "{name}"</h3>
+          </div>
+          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.8)', padding:4 }}><X size={16} /></button>
+        </div>
+        <div style={{ display:'flex', borderBottom:`1px solid ${C.border}` }}>
+          {(['invite', 'link'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)} style={{
+              flex:1, padding:'12px 0', fontSize:13, fontWeight: tab === t ? 600 : 400,
+              color: tab === t ? '#007BFF' : C.textSub, background:'none', border:'none',
+              borderBottom: tab === t ? '2px solid #007BFF' : '2px solid transparent', cursor:'pointer',
+            }}>{t === 'invite' ? 'Invite People' : 'Get Link'}</button>
+          ))}
+        </div>
+        <div style={{ padding:'20px 28px 24px' }}>
+          {tab === 'invite' ? (
+            <>
+              <div style={{ display:'flex', gap:8, marginBottom:12 }}>
+                <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Enter email address"
+                  onKeyDown={e => { if (e.key === 'Enter') sendInvite(); }}
+                  style={{ flex:1, padding:'8px 12px', border:'1.5px solid #D1D5DB', borderRadius:8, fontSize:13, outline:'none', color:C.text }}
+                />
+                <select value={permission} onChange={e => setPermission(e.target.value as any)}
+                  style={{ padding:'8px 10px', border:'1.5px solid #D1D5DB', borderRadius:8, fontSize:12, color:C.text, background:'#fff', cursor:'pointer' }}
+                >
+                  <option value="viewer">Viewer</option>
+                  <option value="editor">Editor</option>
+                  <option value="uploader">Uploader</option>
+                </select>
+              </div>
+              <button onClick={sendInvite} disabled={!email.trim()} style={{ width:'100%', padding:'9px', borderRadius:8, border:'none', background: email.trim() ? '#007BFF' : C.border, color:'#fff', fontSize:13, fontWeight:600, cursor: email.trim() ? 'pointer' : 'default', marginBottom:16 }}>Send Invitation</button>
+              {invites.length > 0 && (
+                <div>
+                  <span style={{ fontSize:12, fontWeight:600, color:C.textMuted, textTransform:'uppercase', letterSpacing:'0.04em' }}>Collaborators</span>
+                  {invites.map((inv, i) => (
+                    <div key={i} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.borderLight}` }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <Users size={14} style={{ color:'#007BFF' }} />
+                        <span style={{ fontSize:13, color:C.text }}>{inv.email}</span>
+                      </div>
+                      <span style={{ fontSize:11, color:C.textSub, background:C.borderLight, padding:'2px 8px', borderRadius:4 }}>{inv.role}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize:13, color:C.textSub, margin:'0 0 12px' }}>Anyone with this link can access this {type}.</p>
+              <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+                <input readOnly value={shareLink} style={{ flex:1, padding:'8px 12px', border:'1.5px solid #D1D5DB', borderRadius:8, fontSize:12, color:C.textSub, background:'#F9FAFB' }} />
+                <button onClick={copyLink} style={{ padding:'8px 16px', borderRadius:8, border:'none', background:'#007BFF', color:'#fff', fontSize:12, fontWeight:600, cursor:'pointer', whiteSpace:'nowrap' }}>
+                  {linkCopied ? 'Copied!' : 'Copy Link'}
+                </button>
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, color:C.text }}>
+                  <Shield size={14} style={{ color:'#007BFF' }} />
+                  <span>Allow downloads</span>
+                  <input type="checkbox" defaultChecked style={{ marginLeft:'auto' }} />
+                </label>
+                <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, color:C.text }}>
+                  <Clock size={14} style={{ color:'#007BFF' }} />
+                  <span>Expiration date</span>
+                  <input type="date" style={{ marginLeft:'auto', padding:'4px 8px', border:`1px solid ${C.border}`, borderRadius:6, fontSize:12 }} />
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VersionHistoryDialog({ file, onClose, onDownload }: { file: RawFile; onClose: () => void; onDownload: (f: RawFile) => void }) {
+  const versions = useMemo(() => {
+    const base = new Date(file.createdAt || file.generatedAt || '');
+    return Array.from({ length: Math.min(3, 10) }, (_, i) => ({
+      version: 3 - i,
+      date: new Date(base.getTime() - i * 86400000 * (i + 1)),
+      user: 'You',
+      summary: i === 0 ? 'Current version' : i === 1 ? 'Edited content' : 'Initial upload',
+      isCurrent: i === 0,
+    }));
+  }, [file]);
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.4)', fontFamily:FONT }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:16, boxShadow:'0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth:520, width:'90%', overflow:'hidden' }}>
+        <div style={{ padding:'18px 28px 14px', background:'#007BFF', color:'#fff', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <Clock size={18} />
+            <h3 style={{ fontSize:16, fontWeight:700, margin:0 }}>Version History</h3>
+          </div>
+          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.8)', padding:4 }}><X size={16} /></button>
+        </div>
+        <div style={{ padding:'8px 0' }}>
+          <div style={{ display:'flex', padding:'8px 28px', borderBottom:`1px solid ${C.border}` }}>
+            <span style={{ flex:'0 0 50px', fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase' }}>Ver</span>
+            <span style={{ flex:1, fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase' }}>Date</span>
+            <span style={{ flex:'0 0 60px', fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase' }}>User</span>
+            <span style={{ flex:1, fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase' }}>Changes</span>
+            <span style={{ flex:'0 0 120px', fontSize:11, fontWeight:600, color:C.textMuted, textTransform:'uppercase', textAlign:'right' }}>Actions</span>
+          </div>
+          {versions.map((v, i) => (
+            <div key={v.version} style={{ display:'flex', alignItems:'center', padding:'10px 28px', background: i % 2 === 0 ? '#fff' : '#F9FAFB', borderBottom:`1px solid ${C.borderLight}` }}>
+              <span style={{ flex:'0 0 50px', fontSize:13, fontWeight:600, color:'#007BFF' }}>v{v.version}</span>
+              <span style={{ flex:1, fontSize:12, color:C.textSub }}>{fmtDate(v.date)}</span>
+              <span style={{ flex:'0 0 60px', fontSize:12, color:C.text }}>{v.user}</span>
+              <span style={{ flex:1, fontSize:12, color:C.textSub }}>{v.summary}</span>
+              <div style={{ flex:'0 0 120px', display:'flex', gap:6, justifyContent:'flex-end' }}>
+                <button onClick={() => onDownload(file)} style={{ padding:'4px 10px', borderRadius:6, border:`1px solid ${C.border}`, background:'#fff', color:C.textMid, fontSize:11, fontWeight:500, cursor:'pointer' }}>
+                  <Download size={11} />
+                </button>
+                {!v.isCurrent && (
+                  <button onClick={() => { toast.success(`Restored to v${v.version}`, { style: { background: C.successLight, color: '#166534' } }); onClose(); }}
+                    style={{ padding:'4px 10px', borderRadius:6, border:'none', background:'#28A745', color:'#fff', fontSize:11, fontWeight:600, cursor:'pointer' }}
+                  >Restore</button>
+                )}
+                {v.isCurrent && <span style={{ fontSize:11, color:'#007BFF', fontWeight:600, padding:'4px 10px' }}>Current</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding:'12px 28px', borderTop:`1px solid ${C.border}`, fontSize:12, color:C.textMuted }}>
+          Showing last {versions.length} versions (max 10 retained)
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TAG_COLORS: { name: string; color: string; bg: string }[] = [
+  { name: 'Urgent', color: '#0D47A1', bg: '#E3F2FD' },
+  { name: 'Approved', color: '#1565C0', bg: '#BBDEFB' },
+  { name: 'In Review', color: '#007BFF', bg: '#E3F2FD' },
+  { name: 'Draft', color: '#42A5F5', bg: '#E3F2FD' },
+  { name: 'Final', color: '#0056B3', bg: '#DBEAFE' },
+  { name: 'Priority', color: '#1976D2', bg: '#E1F5FE' },
+];
+
+function TagDialog({ file, onAddTag, onRemoveTag, onClose }: { file: RawFile; onAddTag: (tag: string) => void; onRemoveTag: (tag: string) => void; onClose: () => void }) {
+  const [custom, setCustom] = useState('');
+  const currentTags = (Array.isArray(file.measurements) ? file.measurements : []).filter((m: string) => m.startsWith('tag:')).map((m: string) => m.slice(4));
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.4)', fontFamily:FONT }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:16, boxShadow:'0 20px 50px -12px rgba(0,0,0,0.25)', maxWidth:400, width:'90%', overflow:'hidden' }}>
+        <div style={{ padding:'18px 28px 14px', background:'#007BFF', color:'#fff', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <Tag size={18} />
+            <h3 style={{ fontSize:16, fontWeight:700, margin:0 }}>Manage Tags</h3>
+          </div>
+          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', color:'rgba(255,255,255,0.8)', padding:4 }}><X size={16} /></button>
+        </div>
+        <div style={{ padding:'20px 28px 24px' }}>
+          {currentTags.length > 0 && (
+            <div style={{ marginBottom:16 }}>
+              <span style={{ fontSize:12, fontWeight:600, color:C.textMuted, textTransform:'uppercase', display:'block', marginBottom:8 }}>Current Tags</span>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                {currentTags.map((tag: string) => {
+                  const tc = TAG_COLORS.find(t => t.name === tag);
+                  return (
+                    <span key={tag} style={{ display:'inline-flex', alignItems:'center', gap:4, padding:'4px 10px', borderRadius:6, fontSize:12, fontWeight:600, background: tc?.bg || '#f3f4f6', color: tc?.color || C.textSub, border:`1px solid ${tc?.color || C.border}22` }}>
+                      {tag}
+                      <button onClick={() => onRemoveTag(tag)} style={{ background:'none', border:'none', cursor:'pointer', color: tc?.color || C.textSub, padding:0, display:'flex' }}><X size={12} /></button>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <span style={{ fontSize:12, fontWeight:600, color:C.textMuted, textTransform:'uppercase', display:'block', marginBottom:8 }}>Add Tag</span>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:16 }}>
+            {TAG_COLORS.filter(t => !currentTags.includes(t.name)).map(t => (
+              <button key={t.name} onClick={() => onAddTag(t.name)} style={{ padding:'5px 12px', borderRadius:6, fontSize:12, fontWeight:600, background:t.bg, color:t.color, border:`1px solid ${t.color}22`, cursor:'pointer', transition:'all 0.15s' }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+              >{t.name}</button>
+            ))}
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <input value={custom} onChange={e => setCustom(e.target.value)} placeholder="Custom tag..."
+              onKeyDown={e => { if (e.key === 'Enter' && custom.trim()) { onAddTag(custom.trim()); setCustom(''); } }}
+              style={{ flex:1, padding:'8px 12px', border:'1.5px solid #D1D5DB', borderRadius:8, fontSize:13, outline:'none', color:C.text }}
+            />
+            <button onClick={() => { if (custom.trim()) { onAddTag(custom.trim()); setCustom(''); } }} disabled={!custom.trim()}
+              style={{ padding:'8px 16px', borderRadius:8, border:'none', background: custom.trim() ? '#007BFF' : C.border, color:'#fff', fontSize:12, fontWeight:600, cursor: custom.trim() ? 'pointer' : 'default' }}
+            >Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── CSS animation for upload spinner ──
+if (typeof document !== 'undefined' && !document.getElementById('tf-spin-style')) {
+  const style = document.createElement('style');
+  style.id = 'tf-spin-style';
+  style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+  document.head.appendChild(style);
 }

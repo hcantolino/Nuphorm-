@@ -60,6 +60,7 @@ import { useProjectStore, type ProjectSource, formatBytes } from "@/stores/proje
 import { useBiostatisticsStore } from "@/stores/biostatisticsStore";
 // NEW: paperclip modal for managing attached sources (replaces inline chip strip)
 import { AttachmentModal } from "./AttachmentModal";
+import { VoiceDictationButton } from "./VoiceDictationButton";
 
 interface AIBiostatisticsChatProps {
   onMeasurementSelect?: (measurement: string) => void;
@@ -1103,6 +1104,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   const [attachScope, setAttachScope] = useState<'project' | 'tab'>('tab');
   // NEW: controls the AttachmentModal (paperclip) — replaces inline chip strip
   const [attachModalOpen, setAttachModalOpen] = useState(false);
+  // Per-source checked/unchecked state: Record<sourceId, boolean>
+  // Default is true (checked) — only explicitly unchecked sources have `false`.
+  const [sourceSelection, setSourceSelection] = useState<Record<string, boolean>>({});
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1276,6 +1280,99 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       // localStorage quota — silently skip
     }
   }, [attachedFiles, activeTabIdMemo]);
+
+  // ── Persist source selection state per tab ──────────────────────────────
+  useEffect(() => {
+    if (!activeTabIdMemo) return;
+    const key = `biostat-source-sel-${activeTabIdMemo}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed === 'object' && parsed !== null) setSourceSelection(parsed);
+      } catch { /* corrupt — ignore */ }
+    } else {
+      setSourceSelection({});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabIdMemo]);
+
+  useEffect(() => {
+    if (!activeTabIdMemo) return;
+    try {
+      localStorage.setItem(
+        `biostat-source-sel-${activeTabIdMemo}`,
+        JSON.stringify(sourceSelection)
+      );
+    } catch { /* quota */ }
+  }, [sourceSelection, activeTabIdMemo]);
+
+  // ── Source selection helpers ────────────────────────────────────────────
+  const toggleSource = useCallback((sourceId: string) => {
+    setSourceSelection(prev => ({
+      ...prev,
+      [sourceId]: prev[sourceId] === false ? true : false,
+    }));
+  }, []);
+
+  const selectAllSources = useCallback(() => {
+    const next: Record<string, boolean> = {};
+    [...projectSettings.sources.map(s => s.id), ...attachedFiles.map(f => f.id)].forEach(id => { next[id] = true; });
+    setSourceSelection(next);
+  }, [projectSettings.sources, attachedFiles]);
+
+  const selectNoneSources = useCallback(() => {
+    const next: Record<string, boolean> = {};
+    [...projectSettings.sources.map(s => s.id), ...attachedFiles.map(f => f.id)].forEach(id => { next[id] = false; });
+    setSourceSelection(next);
+  }, [projectSettings.sources, attachedFiles]);
+
+  const selectTabOnly = useCallback(() => {
+    const next: Record<string, boolean> = {};
+    projectSettings.sources.forEach(s => { next[s.id] = false; });
+    attachedFiles.forEach(f => { next[f.id] = true; });
+    setSourceSelection(next);
+  }, [projectSettings.sources, attachedFiles]);
+
+  const selectProjectOnly = useCallback(() => {
+    const next: Record<string, boolean> = {};
+    projectSettings.sources.forEach(s => { next[s.id] = true; });
+    attachedFiles.forEach(f => { next[f.id] = false; });
+    setSourceSelection(next);
+  }, [projectSettings.sources, attachedFiles]);
+
+  // Compute active sources for query injection
+  const activeProjectSources = useMemo(
+    () => projectSettings.sources.filter(s => sourceSelection[s.id] !== false),
+    [projectSettings.sources, sourceSelection]
+  );
+  const activeTabFiles = useMemo(
+    () => attachedFiles.filter(f => sourceSelection[f.id] !== false),
+    [attachedFiles, sourceSelection]
+  );
+  const allActiveSourceNames = useMemo(
+    () => [...activeProjectSources.map(s => s.name), ...activeTabFiles.map(f => f.name)],
+    [activeProjectSources, activeTabFiles]
+  );
+  const hasAnySources = projectSettings.sources.length > 0 || attachedFiles.length > 0;
+  const hasActiveSource = allActiveSourceNames.length > 0;
+
+  // Check if a project source has been referenced in any tab's chat messages
+  const tabContentStore = useTabContentStore();
+  const isSourceUsedInQueries = useCallback((sourceId: string) => {
+    const src = projectSettings.sources.find(s => s.id === sourceId);
+    if (!src) return false;
+    const allContent = tabContentStore.tabContent;
+    for (const tabId of Object.keys(allContent)) {
+      const msgs = allContent[tabId]?.chatMessages ?? [];
+      for (const msg of msgs) {
+        if (msg.role === 'user' && msg.metadata?.usedSources?.includes(src.name)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }, [projectSettings.sources, tabContentStore.tabContent]);
 
   // ── Smart auto-scroll ──────────────────────────────────────────────────
   useEffect(() => {
@@ -1465,11 +1562,14 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     if (!explicitText) setInputValue("");
     lastUserQueryRef.current = userMessage;
 
+    // Snapshot active source names at query time for the "Using:" tag
+    const snapshotSourceNames = [...activeProjectSources.map(s => s.name), ...activeTabFiles.map(f => f.name)];
     addChatMessage({
       id: `msg-${Date.now()}`,
       role: "user",
       content: userMessage,
       timestamp: Date.now(),
+      metadata: snapshotSourceNames.length > 0 ? { usedSources: snapshotSourceNames } : undefined,
     });
     setConversationHistory((prev) => [
       ...prev,
@@ -1557,9 +1657,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         ? `[Project Instructions: ${projectSettings.instructions.trim()}]\n\n`
         : "";
 
-      // 2. Project sources — include short text previews where available so the
-      //    AI can reason about the actual data content, not just file names.
-      const projectSourceLines = projectSettings.sources.map((s) => {
+      // 2. Project sources — only include CHECKED sources (per source selection).
+      //    Include short text previews where available so the AI can reason about
+      //    the actual data content, not just file names.
+      const checkedProjectSources = activeProjectSources;
+      const projectSourceLines = checkedProjectSources.map((s) => {
         if (s.preview) {
           const snippet = s.preview.slice(0, 250);
           return `- ${s.name} (excerpt: ${snippet}${s.preview.length > 250 ? "…" : ""})`;
@@ -1571,15 +1673,18 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           ? `[Project Sources (Applied to All Tabs):\n${projectSourceLines.join("\n")}]\n\n`
           : "";
 
-      // 3. Tab-specific attached files (uploaded via the chat paperclip/upload
-      //    in this tab — not shared with other tabs).
-      const tabSourceLines = attachedFiles.map(
+      // 3. Tab-specific attached files — only include CHECKED sources.
+      const checkedTabFiles = activeTabFiles;
+      const tabSourceLines = checkedTabFiles.map(
         (f) => `- ${f.name} (${f.type})`
       );
       const tabSourceContext =
         tabSourceLines.length > 0
           ? `[Tab-Specific Sources (This Tab Only):\n${tabSourceLines.join("\n")}]\n\n`
           : "";
+
+      // Capture active source names for the chat message metadata
+      const querySourceNames = [...checkedProjectSources.map(s => s.name), ...checkedTabFiles.map(f => f.name)];
 
       // Prepend current dataset summary so the AI always knows what data is loaded.
       // Use effectiveData length for accuracy (may differ from stored rowCount if
@@ -1681,23 +1786,44 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         }
       }
 
+      // Use chat_response.message from the LLM if available, otherwise fall back.
+      // Guard: never render raw JSON in the chat bubble — if `content` starts with '{'
+      // it's a raw JSON blob that leaked through; extract chat_response or use a stub.
+      const chatResp = responseObj.chatResponse as { message?: string; suggestions?: string[] } | undefined;
+      let chatBubbleContent: string;
+      if (chatResp?.message) {
+        chatBubbleContent = chatResp.message;
+      } else if (routeToPanel && !isLLMUnavailable) {
+        chatBubbleContent = "Analysis complete — results are in the **Results panel** on the right.";
+      } else if (content.trimStart().startsWith("{")) {
+        // Raw JSON leaked into content — try to extract chat_response.message
+        try {
+          const parsed = JSON.parse(content);
+          chatBubbleContent = parsed?.chat_response?.message
+            || parsed?.analysis
+            || "Analysis complete — results are in the **Results panel** on the right.";
+        } catch {
+          chatBubbleContent = "Analysis complete — results are in the **Results panel** on the right.";
+        }
+      } else {
+        chatBubbleContent = content;
+      }
+
       addChatMessage({
         id: assistantMsgId,
         role: "assistant",
-        // LLM offline: show full content in chat (has retry instructions)
-        // Analytical LLM response: show brief stub in chat; full results go to Results panel
-        // Conversational: show full content in chat
-        content: (routeToPanel && !isLLMUnavailable)
-          ? "Analysis complete — results are in the **Results panel** on the right."
-          : content,
+        content: chatBubbleContent,
         timestamp: Date.now(),
-        ...(isLLMUnavailable && {
-          metadata: {
+        metadata: {
+          ...(isLLMUnavailable && {
             llmUnavailable: true,
             llmError: responseObj.llmError,
             retryQuery: userMessage,
-          },
-        }),
+          }),
+          ...(chatResp?.suggestions && chatResp.suggestions.length > 0 && {
+            chatSuggestions: chatResp.suggestions,
+          }),
+        },
       });
 
       // Push analysis results (charts + tables) to this tab's Graph & Table panel
@@ -1741,6 +1867,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     columnClassifications,
     attachedFiles,
     projectSettings,
+    activeProjectSources,
+    activeTabFiles,
   ]);
 
   // ── Restoring state ────────────────────────────────────────────────────
@@ -1852,6 +1980,20 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     {formatTimestamp(msg.timestamp)}
                   </p>
                 )}
+                {/* "Using:" source tags — shown beneath user messages when sources were active */}
+                {isUser && msg.metadata?.usedSources && msg.metadata.usedSources.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5 justify-end">
+                    <span className="text-[10px] text-blue-200 opacity-80">Using:</span>
+                    {msg.metadata.usedSources.map((name: string, si: number) => (
+                      <span
+                        key={si}
+                        className="text-[10px] bg-blue-500/30 text-blue-100 px-1.5 py-0.5 rounded"
+                      >
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {/* Retry button — shown only when AI interpretation failed */}
                 {!isUser && msg.metadata?.llmUnavailable && (
                   <div className="mt-3 pt-2.5 border-t border-amber-200 dark:border-amber-800/50 space-y-1.5">
@@ -1871,6 +2013,27 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                   </div>
                 )}
               </div>
+
+              {/* Suggestion chips — shown below assistant messages with chatSuggestions */}
+              {!isUser && msg.metadata?.chatSuggestions && msg.metadata.chatSuggestions.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2 max-w-[82%]">
+                  {msg.metadata.chatSuggestions.map((suggestion, sIdx) => (
+                    <button
+                      key={sIdx}
+                      onClick={() => {
+                        setInputValue(suggestion);
+                        // Auto-focus the input so the user can hit Enter
+                        const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+                        input?.focus();
+                      }}
+                      disabled={isLoading}
+                      className="text-left text-xs px-3 py-1.5 rounded-full bg-white dark:bg-gray-700 border border-[#e2e8f0] dark:border-gray-600 text-[#374151] dark:text-gray-200 hover:bg-[#f0fdfa] hover:border-[#14b8a6] hover:text-[#0d9488] transition-colors disabled:opacity-40 shadow-sm"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -1931,11 +2094,27 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               </button>
             </div>
           )}
+          {/* No-sources warning — shown when files are attached but all are unchecked */}
+          {hasAnySources && !hasActiveSource && (
+            <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+              <Paperclip className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+              <span className="text-[11px] text-amber-700 dark:text-amber-300 leading-tight">
+                No sources selected — attach and select at least one file to run analysis
+              </span>
+              <button
+                type="button"
+                onClick={() => setAttachModalOpen(true)}
+                className="text-[11px] font-medium text-[#2563eb] hover:underline flex-shrink-0 ml-auto"
+              >
+                Open Sources
+              </button>
+            </div>
+          )}
           {/* Card-style input container */}
           <div className={cn(
             "flex gap-3 rounded-2xl border-2 bg-background shadow-md px-4 transition-all duration-200",
             compact
-              ? "items-center py-2 border-border/70 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+              ? "items-end py-3 border-border/70 bg-[#f8fafc] focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 focus-within:bg-white"
               : "items-end py-3 border-[#E5E7EB] focus-within:border-[#00B8A9] focus-within:shadow-[0_0_0_3px_rgba(0,184,169,0.14)]"
           )}>
 
@@ -1990,23 +2169,42 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             {/* Divider */}
             <div className="w-px h-6 bg-border/60 flex-shrink-0 mx-0.5 self-end mb-2.5" />
 
+            {/* Voice dictation */}
+            <div className="relative flex-shrink-0 self-end pb-1.5">
+              <VoiceDictationButton
+                inputValue={inputValue}
+                setInputValue={setInputValue}
+                textareaRef={textareaRef}
+                onSubmit={() => handleSendMessage()}
+              />
+            </div>
+
+            {/* Divider */}
+            <div className="w-px h-6 bg-border/60 flex-shrink-0 mx-0.5 self-end mb-2.5" />
+
             {/* Auto-grow textarea — transparent, fills remaining space */}
             <textarea
               ref={textareaRef}
+              data-chat-input=""
               value={inputValue}
               rows={1}
               onChange={(e) => {
                 setInputValue(e.target.value);
-                // Auto-grow up to ~3 lines (120px)
-                e.target.style.height = "auto";
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+                const ta = e.target;
+                ta.style.height = "auto";
+                const sh = ta.scrollHeight;
+                ta.style.height = Math.min(sh, 200) + "px";
+                ta.style.overflowY = sh > 200 ? "auto" : "hidden";
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !isLoading) {
+                if (e.key === "Enter" && !e.shiftKey && !isLoading && !(hasAnySources && !hasActiveSource)) {
                   e.preventDefault();
                   handleSendMessage();
                   requestAnimationFrame(() => {
-                    if (textareaRef.current) textareaRef.current.style.height = "auto";
+                    if (textareaRef.current) {
+                      textareaRef.current.style.height = "80px";
+                      textareaRef.current.style.overflowY = "hidden";
+                    }
                   });
                 }
               }}
@@ -2015,13 +2213,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               placeholder={
                 isLoading
                   ? "Thinking…"
-                  : uploadedData
-                  ? "Ask a question about your data…"
-                  : "Attach a file, then ask a question…"
+                  : "Paste your data or ask a question — no code needed"
               }
               disabled={isLoading}
-              className="flex-1 min-w-0 text-base bg-transparent outline-none placeholder:text-muted-foreground/55 caret-primary disabled:cursor-not-allowed resize-none overflow-hidden leading-6 py-1.5"
-              style={{ minHeight: "28px", maxHeight: "120px" }}
+              className="flex-1 min-w-0 bg-transparent outline-none placeholder:text-muted-foreground/55 caret-primary disabled:cursor-not-allowed resize-none overflow-hidden leading-6"
+              style={{ minHeight: "80px", maxHeight: "200px", padding: "16px 16px", fontSize: "15px" }}
             />
 
             {/* Right: Sources badge + Send */}
@@ -2058,16 +2254,19 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 onClick={() => {
                   handleSendMessage();
                   requestAnimationFrame(() => {
-                    if (textareaRef.current) textareaRef.current.style.height = "auto";
+                    if (textareaRef.current) {
+                      textareaRef.current.style.height = "80px";
+                      textareaRef.current.style.overflowY = "hidden";
+                    }
                   });
                 }}
-                disabled={isLoading || !inputValue.trim()}
+                disabled={isLoading || !inputValue.trim() || (hasAnySources && !hasActiveSource)}
                 aria-label="Send message"
                 className={cn(
                   "rounded-full bg-[#0D6EFD] text-white transition-all p-0 flex-shrink-0",
                   "hover:bg-[#2563EB] active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed",
                   compact
-                    ? "h-8 w-8"
+                    ? "h-11 w-11"
                     : "h-12 w-12 shadow-[0_2px_6px_rgba(13,110,253,0.30)] hover:shadow-[0_4px_14px_rgba(13,110,253,0.42)] hover:scale-110"
                 )}
               >
@@ -2118,6 +2317,13 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         onAddFromLibrary={() => { setAttachScope('tab'); setPickerOpen(true); }}
         onUploadFromComputer={() => { setAttachScope('tab'); computerUploadRef.current?.click(); }}
         tabName={activeTabName}
+        sourceSelection={sourceSelection}
+        onToggleSource={toggleSource}
+        onSelectAll={selectAllSources}
+        onSelectNone={selectNoneSources}
+        onSelectTabOnly={selectTabOnly}
+        onSelectProjectOnly={selectProjectOnly}
+        isSourceUsedInQueries={isSourceUsedInQueries}
       />
 
       <FilePickerDialog

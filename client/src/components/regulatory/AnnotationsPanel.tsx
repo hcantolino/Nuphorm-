@@ -3,19 +3,19 @@ import { X, FileText } from 'lucide-react';
 import type { Annotation } from '@/stores/regulatoryStore';
 
 const COLOR_DOTS: Record<string, string> = {
-  yellow: 'bg-yellow-400',
+  yellow: 'bg-amber-400',
   blue: 'bg-blue-400',
-  green: 'bg-green-400',
+  green: 'bg-emerald-400',
   purple: 'bg-purple-400',
   orange: 'bg-orange-400',
 };
 
 const COLOR_BG: Record<string, string> = {
-  yellow: 'bg-yellow-50 border-yellow-200',
-  blue: 'bg-blue-50 border-blue-200',
-  green: 'bg-green-50 border-green-200',
-  purple: 'bg-purple-50 border-purple-200',
-  orange: 'bg-orange-50 border-orange-200',
+  yellow: 'bg-amber-50 border-amber-200 hover:bg-amber-100/70',
+  blue: 'bg-blue-50 border-blue-200 hover:bg-blue-100/70',
+  green: 'bg-emerald-50 border-emerald-200 hover:bg-emerald-100/70',
+  purple: 'bg-purple-50 border-purple-200 hover:bg-purple-100/70',
+  orange: 'bg-orange-50 border-orange-200 hover:bg-orange-100/70',
 };
 
 interface AnnotationsPanelProps {
@@ -29,7 +29,6 @@ export default function AnnotationsPanel({
   onClose,
   onAnnotationClick,
 }: AnnotationsPanelProps) {
-  // Group annotations by source
   const sources = Array.from(new Set(annotations.map((a) => a.sourceName)));
 
   return (
@@ -38,19 +37,25 @@ export default function AnnotationsPanel({
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: '100%', opacity: 0 }}
       transition={{ type: 'spring', damping: 26, stiffness: 320 }}
-      className="absolute right-0 top-0 bottom-0 w-72 bg-white border-l border-gray-200 shadow-2xl z-30 flex flex-col"
+      className="absolute right-0 top-0 bottom-0 w-72 bg-white border-l shadow-xl z-30 flex flex-col"
+      style={{ borderColor: '#e2e8f0' }}
     >
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-blue-50 flex-shrink-0">
+      <div
+        className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0"
+        style={{ borderColor: '#e2e8f0', background: '#f8fafc' }}
+      >
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">
+          <h3 className="text-sm font-semibold text-slate-800">
             Annotations ({annotations.length})
           </h3>
-          <p className="text-xs text-gray-500 mt-0.5">{sources.length} source{sources.length !== 1 ? 's' : ''}</p>
+          <p className="text-xs text-slate-400 mt-0.5">
+            {sources.length} source{sources.length !== 1 ? 's' : ''}
+          </p>
         </div>
         <button
           onClick={onClose}
-          className="p-1.5 hover:bg-white/60 rounded-lg transition text-gray-500 hover:text-gray-700"
+          className="p-1.5 hover:bg-slate-100 rounded-lg transition text-slate-400 hover:text-slate-600"
         >
           <X className="w-4 h-4" />
         </button>
@@ -58,14 +63,14 @@ export default function AnnotationsPanel({
 
       {/* Source legend */}
       {sources.length > 0 && (
-        <div className="px-4 py-3 border-b border-gray-100 flex flex-col gap-1.5 flex-shrink-0">
+        <div className="px-4 py-3 border-b flex flex-col gap-1.5 flex-shrink-0" style={{ borderColor: '#e2e8f0' }}>
           {sources.map((src) => {
             const firstAnn = annotations.find((a) => a.sourceName === src);
             const color = firstAnn?.color ?? 'yellow';
             return (
               <div key={src} className="flex items-center gap-2">
                 <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${COLOR_DOTS[color] ?? 'bg-gray-400'}`} />
-                <span className="text-xs text-gray-600 truncate">{src}</span>
+                <span className="text-xs text-slate-600 truncate">{src}</span>
               </div>
             );
           })}
@@ -74,12 +79,12 @@ export default function AnnotationsPanel({
 
       {/* Annotation list */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {annotations.map((ann, idx) => (
+        {annotations.map((ann) => (
           <button
             key={ann.id}
             onClick={() => onAnnotationClick(ann)}
-            className={`w-full text-left p-3 rounded-lg border transition hover:shadow-sm ${
-              COLOR_BG[ann.color] ?? 'bg-gray-50 border-gray-200'
+            className={`w-full text-left p-3 rounded-lg border transition cursor-pointer ${
+              COLOR_BG[ann.color] ?? 'bg-slate-50 border-slate-200'
             }`}
           >
             <div className="flex items-start gap-2">
@@ -89,10 +94,10 @@ export default function AnnotationsPanel({
                 }`}
               />
               <div className="min-w-0 flex-1">
-                <p className="text-xs text-gray-800 line-clamp-3 leading-relaxed">{ann.text}</p>
+                <p className="text-xs text-slate-700 line-clamp-3 leading-relaxed">{ann.text}</p>
                 <div className="flex items-center gap-1 mt-1.5">
-                  <FileText className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                  <p className="text-xs text-gray-500 truncate">{ann.sourceName}</p>
+                  <FileText className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                  <p className="text-xs text-slate-400 truncate">{ann.sourceName}</p>
                 </div>
               </div>
             </div>
@@ -101,7 +106,10 @@ export default function AnnotationsPanel({
       </div>
 
       {/* Footer hint */}
-      <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400 flex-shrink-0">
+      <div
+        className="px-4 py-3 border-t text-xs text-slate-400 flex-shrink-0"
+        style={{ borderColor: '#e2e8f0', background: '#f8fafc' }}
+      >
         Click any annotation to preview its source
       </div>
     </motion.div>

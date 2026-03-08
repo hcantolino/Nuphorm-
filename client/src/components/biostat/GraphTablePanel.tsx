@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   BarChart,
   Bar,
@@ -33,15 +33,18 @@ import { Input } from "@/components/ui/input";
 import {
   BarChart2,
   Calculator,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
-
+  Download,
   Save,
   Table2,
   Trash2,
   TrendingUp,
   TriangleAlert,
 } from "lucide-react";
+import { toPng, toJpeg, toSvg } from "html-to-image";
+import { jsPDF } from "jspdf";
 // BEFORE: import PharmaChartPanel, { type PharmaChartType } from "./PharmaChartPanel"
 // AFTER:  Charts tab removed — PharmaChartPanel no longer rendered as a separate view
 import SaveAnalysisModal from "./SaveAnalysisModal";
@@ -54,6 +57,466 @@ function resolveColors(customizations: TabCustomizations): string[] {
   const palette = PALETTES[customizations.palette];
   return Array.from({ length: 6 }, (_, i) =>
     customizations.customColors[i] || palette[i % palette.length]
+  );
+}
+
+// ─── CSV download helpers ────────────────────────────────────────────────────
+
+/** Convert a 2-column metric/value table to CSV and trigger browser download */
+function downloadTableAsCSV(
+  table: Array<{ metric: string; value: any }>,
+  filename: string
+) {
+  const rows = [
+    ["Metric", "Value"],
+    ...table.map((r) => [String(r.metric ?? ""), String(r.value ?? "")]),
+  ];
+  const csv = rows
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  triggerDownload(filename, csv, "text/csv");
+}
+
+/** Convert a multi-column dataset (headers + rows) to CSV and trigger download */
+function downloadDatasetAsCSV(
+  headers: string[],
+  rows: any[][],
+  filename: string
+) {
+  const csvRows = [
+    headers.map((h) => `"${String(h).replace(/"/g, '""')}"`).join(","),
+    ...rows.map((row) =>
+      row
+        .map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`)
+        .join(",")
+    ),
+  ];
+  triggerDownload(filename, csvRows.join("\n"), "text/csv");
+}
+
+/** Convert chart source data (labels + datasets) to CSV and trigger download */
+function downloadChartDataAsCSV(
+  labels: string[],
+  datasets: Array<{ label: string; data: number[] }>,
+  filename: string
+) {
+  const dsLabels = datasets.map((ds) => ds.label ?? "Value");
+  const header = ["Label", ...dsLabels];
+  const rows = labels.map((label, i) => [
+    label,
+    ...datasets.map((ds) => {
+      const v = ds.data?.[i];
+      return typeof v === "number"
+        ? Number.isInteger(v) ? String(v) : v.toFixed(4)
+        : String(v ?? "");
+    }),
+  ]);
+  const csvRows = [
+    header.map((h) => `"${h.replace(/"/g, '""')}"`).join(","),
+    ...rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")),
+  ];
+  triggerDownload(filename, csvRows.join("\n"), "text/csv");
+}
+
+function triggerDownload(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** Build a sanitized filename from a query or title */
+function buildCSVFilename(prefix: string, query?: string): string {
+  const date = new Date().toISOString().slice(0, 10);
+  const slug = (query ?? "export")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .slice(0, 40)
+    .replace(/_+$/, "");
+  return `${prefix}_${slug}_${date}.csv`;
+}
+
+// ─── Export helpers ──────────────────────────────────────────────────────────
+
+/** Build a sanitized filename for any export format */
+function buildExportFilename(
+  title: string | undefined,
+  suffix: string | undefined,
+  ext: string
+): string {
+  const date = new Date().toISOString().slice(0, 10);
+  const slug = (title || "export")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 60);
+  const parts = [slug, suffix, date].filter(Boolean);
+  return `${parts.join("_")}.${ext}`;
+}
+
+/** html-to-image filter: hides the export dropdown button during capture */
+const excludeExportBtn = (node: HTMLElement): boolean => {
+  if (!(node instanceof HTMLElement)) return true;
+  return !node.hasAttribute("data-export-btn");
+};
+
+/** Trigger a file download from a data-URL */
+function triggerDataUrlDownload(filename: string, dataUrl: string) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+/** Render a DOM element to an off-screen canvas at the given scale */
+async function elementToCanvas(
+  el: HTMLElement,
+  scale: number = 2
+): Promise<HTMLCanvasElement> {
+  const dataUrl = await toPng(el, {
+    pixelRatio: scale,
+    filter: excludeExportBtn as any,
+    backgroundColor: "#ffffff",
+  });
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas);
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+/** Build an uncompressed TIFF blob from raw canvas pixel data (300 DPI) */
+function createTiffBlob(canvas: HTMLCanvasElement): Blob {
+  const w = canvas.width;
+  const h = canvas.height;
+  const ctx = canvas.getContext("2d")!;
+  const rgba = ctx.getImageData(0, 0, w, h).data;
+  const rgbLen = w * h * 3;
+  const rgb = new Uint8Array(rgbLen);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+    rgb[j] = rgba[i];
+    rgb[j + 1] = rgba[i + 1];
+    rgb[j + 2] = rgba[i + 2];
+  }
+
+  const ifdEntryCount = 12;
+  const ifdStart = 8;
+  const ifdSize = 2 + ifdEntryCount * 12 + 4;
+  const bpsOff = ifdStart + ifdSize;
+  const xrOff = bpsOff + 6;
+  const yrOff = xrOff + 8;
+  const stripOff = yrOff + 8;
+  const totalSize = stripOff + rgbLen;
+
+  const buf = new ArrayBuffer(totalSize);
+  const dv = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+
+  // TIFF header — little-endian
+  dv.setUint16(0, 0x4949, false); // byte-order "II"
+  dv.setUint16(2, 42, true);
+  dv.setUint32(4, ifdStart, true);
+
+  let off = ifdStart;
+  dv.setUint16(off, ifdEntryCount, true);
+  off += 2;
+
+  const writeTag = (tag: number, type: number, count: number, val: number) => {
+    dv.setUint16(off, tag, true); off += 2;
+    dv.setUint16(off, type, true); off += 2;
+    dv.setUint32(off, count, true); off += 4;
+    dv.setUint32(off, val, true); off += 4;
+  };
+
+  writeTag(256, 3, 1, w);            // ImageWidth
+  writeTag(257, 3, 1, h);            // ImageLength
+  writeTag(258, 3, 3, bpsOff);       // BitsPerSample → offset
+  writeTag(259, 3, 1, 1);            // Compression (none)
+  writeTag(262, 3, 1, 2);            // PhotometricInterpretation (RGB)
+  writeTag(273, 4, 1, stripOff);     // StripOffsets
+  writeTag(277, 3, 1, 3);            // SamplesPerPixel
+  writeTag(278, 4, 1, h);            // RowsPerStrip
+  writeTag(279, 4, 1, rgbLen);       // StripByteCounts
+  writeTag(282, 5, 1, xrOff);       // XResolution → offset
+  writeTag(283, 5, 1, yrOff);       // YResolution → offset
+  writeTag(296, 3, 1, 2);           // ResolutionUnit (inch)
+
+  dv.setUint32(off, 0, true);       // next IFD = 0 (none)
+
+  // BitsPerSample: 8, 8, 8
+  dv.setUint16(bpsOff, 8, true);
+  dv.setUint16(bpsOff + 2, 8, true);
+  dv.setUint16(bpsOff + 4, 8, true);
+
+  // Resolution: 300/1 DPI
+  dv.setUint32(xrOff, 300, true);
+  dv.setUint32(xrOff + 4, 1, true);
+  dv.setUint32(yrOff, 300, true);
+  dv.setUint32(yrOff + 4, 1, true);
+
+  u8.set(rgb, stripOff);
+  return new Blob([buf], { type: "image/tiff" });
+}
+
+/** Export an element in the given image/document format */
+async function exportElementAs(
+  el: HTMLElement,
+  format: string,
+  filename: string
+) {
+  const opts = {
+    pixelRatio: 2,
+    filter: excludeExportBtn as any,
+    backgroundColor: "#ffffff",
+  };
+
+  switch (format) {
+    case "png": {
+      const url = await toPng(el, opts);
+      triggerDataUrlDownload(filename, url);
+      break;
+    }
+    case "jpeg": {
+      const url = await toJpeg(el, { ...opts, quality: 0.95 });
+      triggerDataUrlDownload(filename, url);
+      break;
+    }
+    case "jp2": {
+      // Browsers cannot encode JPEG-2000; export as lossless PNG with .jp2 extension
+      const url = await toPng(el, opts);
+      triggerDataUrlDownload(filename, url);
+      break;
+    }
+    case "tiff": {
+      const canvas = await elementToCanvas(el, 2);
+      const blob = createTiffBlob(canvas);
+      const blobUrl = URL.createObjectURL(blob);
+      triggerDataUrlDownload(filename, blobUrl);
+      URL.revokeObjectURL(blobUrl);
+      break;
+    }
+    case "pdf": {
+      const canvas = await elementToCanvas(el, 2);
+      const imgW = canvas.width;
+      const imgH = canvas.height;
+      const orientation = imgW > imgH ? "landscape" : "portrait";
+      const pdf = new jsPDF({ orientation, unit: "px", format: [imgW, imgH] });
+      pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, imgW, imgH);
+      pdf.save(filename);
+      break;
+    }
+    case "svg": {
+      const url = await toSvg(el, { filter: excludeExportBtn as any, backgroundColor: "#ffffff" });
+      triggerDataUrlDownload(filename, url);
+      break;
+    }
+  }
+}
+
+/** Copy a DOM element's rendered image to the clipboard */
+async function copyElementToClipboard(el: HTMLElement) {
+  const dataUrl = await toPng(el, {
+    pixelRatio: 2,
+    filter: excludeExportBtn as any,
+    backgroundColor: "#ffffff",
+  });
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  await navigator.clipboard.write([
+    new ClipboardItem({ "image/png": blob }),
+  ]);
+}
+
+/** Download a 2-column metric/value table as tab-separated text */
+function downloadTableAsTxt(
+  table: Array<{ metric: string; value: any }>,
+  filename: string
+) {
+  const rows = [
+    "Metric\tValue",
+    ...table.map((r) => `${r.metric ?? ""}\t${r.value ?? ""}`),
+  ];
+  triggerDownload(filename, rows.join("\n"), "text/plain");
+}
+
+// ─── ExportDropdown component ────────────────────────────────────────────────
+
+type ExportMenuItem = { label: string; onClick: () => void } | "divider";
+
+function ExportDropdown({
+  type,
+  title,
+  query,
+  tableData,
+  cleanExportRef,
+}: {
+  type: "chart" | "table";
+  title?: string;
+  query?: string;
+  tableData?: Array<{ metric: string; value: any }>;
+  cleanExportRef?: React.RefObject<HTMLDivElement>;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        !menuRef.current?.contains(e.target as Node) &&
+        !btnRef.current?.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const findTarget = useCallback(
+    (): HTMLElement | null =>
+      btnRef.current?.closest("[data-export-target]") as HTMLElement | null,
+    []
+  );
+
+  const nameBase = title || query;
+
+  const handleImageExport = async (
+    format: string,
+    ext: string,
+    label: string
+  ) => {
+    setOpen(false);
+    // For chart image exports, prefer the clean export element (no UI chrome)
+    const el = (type === "chart" && cleanExportRef?.current)
+      ? cleanExportRef.current
+      : findTarget();
+    if (!el) {
+      toast.error("Nothing to export");
+      return;
+    }
+    try {
+      const suffix = type === "table" ? "statistics" : undefined;
+      const filename = buildExportFilename(nameBase, suffix, ext);
+      await exportElementAs(el, format, filename);
+      toast.success(`Exported as ${label}`);
+    } catch (err) {
+      toast.error(`Export failed: ${(err as Error).message}`);
+    }
+  };
+
+  const handleCopy = async () => {
+    setOpen(false);
+    const el = (type === "chart" && cleanExportRef?.current)
+      ? cleanExportRef.current
+      : findTarget();
+    if (!el) {
+      toast.error("Nothing to copy");
+      return;
+    }
+    try {
+      await copyElementToClipboard(el);
+      toast.success("Copied to clipboard");
+    } catch {
+      toast.error("Failed to copy to clipboard");
+    }
+  };
+
+  const handleCsv = () => {
+    setOpen(false);
+    if (!tableData) return;
+    downloadTableAsCSV(
+      tableData,
+      buildExportFilename(nameBase, "statistics", "csv")
+    );
+    toast.success("Exported as CSV");
+  };
+
+  const handleTxt = () => {
+    setOpen(false);
+    if (!tableData) return;
+    downloadTableAsTxt(
+      tableData,
+      buildExportFilename(nameBase, "statistics", "txt")
+    );
+    toast.success("Exported as TXT");
+  };
+
+  const chartItems: ExportMenuItem[] = [
+    { label: "PNG", onClick: () => handleImageExport("png", "png", "PNG") },
+    { label: "JPEG", onClick: () => handleImageExport("jpeg", "jpg", "JPEG") },
+    { label: "JPEG-2000", onClick: () => handleImageExport("jp2", "jp2", "JPEG-2000") },
+    { label: "TIFF", onClick: () => handleImageExport("tiff", "tiff", "TIFF") },
+    { label: "PDF", onClick: () => handleImageExport("pdf", "pdf", "PDF") },
+    { label: "SVG", onClick: () => handleImageExport("svg", "svg", "SVG") },
+    "divider",
+    { label: "Copy to Clipboard", onClick: handleCopy },
+  ];
+
+  const tableItems: ExportMenuItem[] = [
+    { label: "PNG", onClick: () => handleImageExport("png", "png", "PNG") },
+    { label: "JPEG", onClick: () => handleImageExport("jpeg", "jpg", "JPEG") },
+    { label: "TIFF", onClick: () => handleImageExport("tiff", "tiff", "TIFF") },
+    { label: "PDF", onClick: () => handleImageExport("pdf", "pdf", "PDF") },
+    "divider",
+    { label: "CSV", onClick: handleCsv },
+    { label: "TXT", onClick: handleTxt },
+    "divider",
+    { label: "Copy to Clipboard", onClick: handleCopy },
+  ];
+
+  const items = type === "chart" ? chartItems : tableItems;
+
+  return (
+    <div className="relative" data-export-btn="">
+      <Button
+        ref={btnRef}
+        variant="outline"
+        size="sm"
+        className="h-6 px-2.5 text-[10px] text-[#64748b] border-[#e2e8f0] hover:bg-[#f8fafc] hover:text-[#0f172a] gap-1 font-medium"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Download className="w-3 h-3" />
+        Export
+        <ChevronDown className="w-2.5 h-2.5" />
+      </Button>
+      {open && (
+        <div
+          ref={menuRef}
+          className="absolute right-0 top-full mt-1 bg-white rounded-lg shadow-lg border border-[#e2e8f0] py-1 z-50 min-w-[160px]"
+        >
+          {items.map((item, i) =>
+            item === "divider" ? (
+              <div key={`d-${i}`} className="h-px bg-[#e2e8f0] my-1 mx-2" />
+            ) : (
+              <button
+                key={item.label}
+                className="w-full text-left px-3 py-1.5 text-xs text-[#374151] hover:bg-[#f1f5f9] hover:text-[#0f172a] transition-colors"
+                onClick={item.onClick}
+              >
+                {item.label}
+              </button>
+            )
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -736,6 +1199,9 @@ export const GraphTablePanel: React.FC = () => {
   // Save modal
   const [saveModalOpen, setSaveModalOpen] = useState(false);
 
+  // Clean export ref — hidden off-screen render for publication-quality exports
+  const cleanExportRef = useRef<HTMLDivElement>(null);
+
   // Editable graph title
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const displayTitle = titleOverride ?? activeResult?.graphTitle ?? null;
@@ -769,6 +1235,12 @@ export const GraphTablePanel: React.FC = () => {
   const [chartError, setChartError] = useState(false);
   // Reset chart error whenever the active result changes
   React.useEffect(() => { setChartError(false); }, [activeResult?.id]);
+
+  // Dataset table pagination
+  const DATASET_PAGE_SIZE = 20;
+  const [datasetPage, setDatasetPage] = useState(0);
+  // Reset page when result changes
+  React.useEffect(() => { setDatasetPage(0); }, [activeResult?.id]);
 
   // NEW: for llm_chart results the stats table is often just a "Note" row — suppress it
   //      so the chart is the primary visual and the note appears as a small italic caption.
@@ -1174,22 +1646,32 @@ export const GraphTablePanel: React.FC = () => {
               className="w-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col"
               aria-label={`${headerLabel} — ${activeResult?.graphTitle ?? activeResult?.query ?? "analysis"}`}
               role="img"
+              data-chart-capture={activeResult?.id ?? ""}
+              data-export-target=""
             >
               <CardHeader className="flex-shrink-0 py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-                <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                  <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
-                  {headerLabel}
-                  <Badge className="text-[10px] h-4 bg-[#f1f5f9] text-[#64748b] border-0 capitalize font-normal">
-                    {chartLabel}
-                  </Badge>
-                  {hasTableSync && (
-                    <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal ml-0.5">
-                      Live
+                <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
+                  <span className="flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
+                    {headerLabel}
+                    <Badge className="text-[10px] h-4 bg-[#f1f5f9] text-[#64748b] border-0 capitalize font-normal">
+                      {chartLabel}
                     </Badge>
-                  )}
+                    {hasTableSync && (
+                      <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal ml-0.5">
+                        Live
+                      </Badge>
+                    )}
+                  </span>
+                  <ExportDropdown
+                    type="chart"
+                    title={displayTitle || activeResult?.graphTitle}
+                    query={activeResult?.query}
+                    cleanExportRef={cleanExportRef}
+                  />
                 </CardTitle>
               </CardHeader>
-              <CardContent className="pb-4 pt-3">
+              <CardContent className="pb-4 pt-3" data-chart-export={activeResult?.id}>
                 {chartError ? (
                   // NEW: error fallback — replaces ChartRenderer output when boundary catches
                   <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
@@ -1254,12 +1736,29 @@ export const GraphTablePanel: React.FC = () => {
           return (
             <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="">
               <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-                <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                  <Table2 className="w-4 h-4 text-[#14b8a6]" />
-                  Chart Source Data
-                  <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal">
-                    auto-generated
-                  </Badge>
+                <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
+                  <span className="flex items-center gap-2">
+                    <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                    Chart Source Data
+                    <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal">
+                      auto-generated
+                    </Badge>
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-[10px] text-[#64748b] border-[#e2e8f0] hover:bg-[#f8fafc] hover:text-[#0f172a] gap-1"
+                    onClick={() =>
+                      downloadChartDataAsCSV(
+                        labels,
+                        datasets,
+                        buildCSVFilename("chart_data", activeResult?.query)
+                      )
+                    }
+                  >
+                    <Download className="w-3 h-3" />
+                    CSV
+                  </Button>
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-0 pb-2">
@@ -1322,7 +1821,7 @@ export const GraphTablePanel: React.FC = () => {
                 </Badge>
               </CardTitle>
             </CardHeader>
-            <CardContent className="pb-4 pt-3">
+            <CardContent className="pb-4 pt-3" data-chart-export={activeResult?.id}>
               <ChartErrorBoundary onError={() => {}}>
                 <ChartRenderer
                   chartData={autoChartFromTable}
@@ -1339,19 +1838,27 @@ export const GraphTablePanel: React.FC = () => {
         {/* Now also shown alongside charts (isVizResult) so users always get both              */}
         {/* a visual and tabular representation of the data.                                    */}
         {displayTable.length > 0 && !isNoteOnlyTable && (
-          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="">
+          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="" data-export-target="">
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-              <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                <Table2 className="w-4 h-4 text-[#14b8a6]" />
-                Statistics Summary
-                <span className="text-xs font-normal text-[#64748b]">
-                  — click any cell to edit
+              <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
+                <span className="flex items-center gap-2">
+                  <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                  Statistics Summary
+                  <span className="text-xs font-normal text-[#64748b]">
+                    — click any cell to edit
+                  </span>
+                  {customizations.tableFilter && (
+                    <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/20 ml-1">
+                      filtered
+                    </Badge>
+                  )}
                 </span>
-                {customizations.tableFilter && (
-                  <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/20 ml-1">
-                    filtered
-                  </Badge>
-                )}
+                <ExportDropdown
+                  type="table"
+                  title={displayTitle || activeResult?.graphTitle}
+                  query={activeResult?.query}
+                  tableData={displayTable}
+                />
               </CardTitle>
             </CardHeader>
             <CardContent className="px-0 pb-2">
@@ -1403,39 +1910,91 @@ export const GraphTablePanel: React.FC = () => {
           </Card>
         )}
 
+        {/* Clean Dataset download — shown for data_cleaning results with a dataset */}
+        {activeResult?.analysisResults?.analysis_type === "data_cleaning" &&
+          activeResult?.tableData?.rows?.length > 0 && (
+            <div className="flex justify-center">
+              <Button
+                className="bg-[#14b8a6] hover:bg-[#0d9488] text-white shadow-sm gap-2 px-5 py-2.5 rounded-lg text-sm font-medium"
+                onClick={() => {
+                  const headers = activeResult!.tableData.headers as string[];
+                  const rows = activeResult!.tableData.rows as any[][];
+                  const date = new Date().toISOString().slice(0, 10);
+                  const origName = (activeResult!.query ?? "dataset")
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, "_")
+                    .slice(0, 30)
+                    .replace(/_+$/, "");
+                  downloadDatasetAsCSV(
+                    headers,
+                    rows,
+                    `nuphorm_clean_${origName}_${date}.csv`
+                  );
+                }}
+              >
+                <Download className="w-4 h-4" />
+                Download Clean Dataset (.csv)
+              </Button>
+            </div>
+          )}
+
         {/* Raw data table */}
-        {activeResult?.tableData?.rows?.length > 0 && (
-          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
-            <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-              <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                <Table2 className="w-4 h-4 text-[#14b8a6]" />
-                Dataset
-                <span className="text-xs font-normal text-[#64748b]">
-                  — {activeResult.tableData.rows.length} observations
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-0 pb-0">
-              <div className="overflow-x-auto" style={{ maxHeight: "480px" }}>
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-[#f8fafc] z-10">
-                    <tr className="border-b border-[#e2e8f0]">
-                      {activeResult.tableData.headers.map((h: string, i: number) => (
-                        <th
-                          key={i}
-                          className="text-left py-2 px-3 text-xs font-semibold text-[#64748b] uppercase tracking-wide whitespace-nowrap"
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeResult.tableData.rows
-                      .slice(0, 100)
-                      .map((row: any[], rowIdx: number) => (
+        {activeResult?.tableData?.rows?.length > 0 && (() => {
+          const allRows: any[][] = activeResult.tableData.rows;
+          const totalRows = allRows.length;
+          const totalPages = Math.ceil(totalRows / DATASET_PAGE_SIZE);
+          const startIdx = datasetPage * DATASET_PAGE_SIZE;
+          const endIdx = Math.min(startIdx + DATASET_PAGE_SIZE, totalRows);
+          const pageRows = allRows.slice(startIdx, endIdx);
+
+          return (
+            <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
+              <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
+                <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
+                  <span className="flex items-center gap-2">
+                    <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                    Dataset
+                    <span className="text-xs font-normal text-[#64748b]">
+                      — {totalRows} observation{totalRows !== 1 ? "s" : ""}
+                    </span>
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-[10px] text-[#64748b] border-[#e2e8f0] hover:bg-[#f8fafc] hover:text-[#0f172a] gap-1"
+                    onClick={() =>
+                      downloadDatasetAsCSV(
+                        activeResult!.tableData.headers,
+                        activeResult!.tableData.rows,
+                        buildCSVFilename("dataset", activeResult?.query)
+                      )
+                    }
+                  >
+                    <Download className="w-3 h-3" />
+                    CSV
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-0 pb-0">
+                <div className="overflow-x-auto" style={{ maxWidth: "100%" }}>
+                  <table className="text-sm" style={{ minWidth: `${activeResult.tableData.headers.length * 100}px` }}>
+                    <thead className="sticky top-0 bg-[#f8fafc] z-10">
+                      <tr className="border-b border-[#e2e8f0]">
+                        {activeResult.tableData.headers.map((h: string, i: number) => (
+                          <th
+                            key={i}
+                            className="text-left py-2 px-3 text-xs font-semibold text-[#64748b] uppercase tracking-wide whitespace-nowrap"
+                            style={{ minWidth: "100px" }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pageRows.map((row: any[], rowIdx: number) => (
                         <tr
-                          key={rowIdx}
+                          key={startIdx + rowIdx}
                           className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#f0fdfa] transition-colors"
                           style={
                             customizations.zebraStriping && rowIdx % 2 === 0
@@ -1447,6 +2006,7 @@ export const GraphTablePanel: React.FC = () => {
                             <td
                               key={cellIdx}
                               className="py-1.5 px-3 font-mono text-xs text-[#0f172a] whitespace-nowrap"
+                              style={{ minWidth: "100px" }}
                             >
                               {typeof cell === "number" && !Number.isInteger(cell)
                                 ? cell.toFixed(4)
@@ -1455,23 +2015,46 @@ export const GraphTablePanel: React.FC = () => {
                           ))}
                         </tr>
                       ))}
-                  </tbody>
-                </table>
-                {activeResult.tableData.rows.length > 100 && (
-                  <p className="text-xs text-[#64748b] px-4 py-2 border-t border-[#e2e8f0]">
-                    Showing 100 of {activeResult.tableData.rows.length} rows
+                    </tbody>
+                  </table>
+                </div>
+                {/* Pagination footer */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between px-4 py-2 border-t border-[#e2e8f0] bg-[#f8fafc]">
+                    <span className="text-xs text-[#64748b]">
+                      Showing rows {startIdx + 1}–{endIdx} of {totalRows}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => setDatasetPage((p) => Math.max(0, p - 1))}
+                        disabled={datasetPage === 0}
+                        className="text-xs px-2.5 py-1 rounded border border-[#e2e8f0] text-[#374151] hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-xs text-[#64748b] tabular-nums">
+                        {datasetPage + 1} / {totalPages}
+                      </span>
+                      <button
+                        onClick={() => setDatasetPage((p) => Math.min(totalPages - 1, p + 1))}
+                        disabled={datasetPage >= totalPages - 1}
+                        className="text-xs px-2.5 py-1 rounded border border-[#e2e8f0] text-[#374151] hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {/* Table note (synthetic data disclaimer, etc.) */}
+                {activeResult.analysisResults?.tableNote && (
+                  <p className="text-xs italic text-[#94a3b8] px-4 py-2.5 border-t border-[#e2e8f0]">
+                    {activeResult.analysisResults.tableNote}
                   </p>
                 )}
-              </div>
-              {/* Table note (synthetic data disclaimer, etc.) */}
-              {activeResult.analysisResults?.tableNote && (
-                <p className="text-xs italic text-[#94a3b8] px-4 py-2.5 border-t border-[#e2e8f0]">
-                  {activeResult.analysisResults.tableNote}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        )}
+              </CardContent>
+            </Card>
+          );
+        })()}
 
         {/* AI interpretation / analysis text.
             Show when: no structured table/chart (fallback), OR analysis is pure narrative
@@ -1495,6 +2078,41 @@ export const GraphTablePanel: React.FC = () => {
             </Card>
           )}
       </div>
+
+      {/* Hidden clean export render — off-screen, used as source for publication-quality exports */}
+      {chartData && activeResult?.analysisResults?.results_table?.[0]?.metric !== "Error" && (
+        <div
+          ref={cleanExportRef}
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            left: "-9999px",
+            top: "-9999px",
+            width: 800,
+            backgroundColor: "#ffffff",
+            padding: 24,
+            zIndex: -1,
+          }}
+        >
+          {(displayTitle || activeResult?.graphTitle) && (
+            <h2 style={{
+              fontSize: 16,
+              fontWeight: 700,
+              color: "#0f172a",
+              margin: "0 0 12px 0",
+              fontFamily: "system-ui, -apple-system, sans-serif",
+            }}>
+              {displayTitle || activeResult?.graphTitle}
+            </h2>
+          )}
+          <ChartRenderer
+            chartData={syncedChartData ?? chartData}
+            customizations={customizations}
+            colors={activeColors}
+            preferredType={llmChartType}
+          />
+        </div>
+      )}
 
       {/* Save modal */}
       <SaveAnalysisModal

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Upload, FileText, DownloadCloud, Trash2, Eye, Calendar, HardDrive,
-  Search, X, LayoutGrid, List, Folder, Tag, ChevronDown, Plus,
+  Search, X, LayoutGrid, List, Folder, FolderOpen, Tag, ChevronDown, ChevronRight, Plus,
   FileSpreadsheet, CheckSquare, Square, Braces, Loader2, CheckCircle2,
-  AlertCircle, MoreHorizontal, Zap, Database,
+  AlertCircle, MoreHorizontal, Zap, Database, GripVertical, Copy, Pencil,
+  Share2, FolderPlus, ArrowRight, Check, Move,
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -11,6 +12,20 @@ import { cn } from "@/lib/utils";
 import { type FileFolder, type FileTag } from "@/components/FileOrganization";
 import FilePreviewModal from "@/components/FilePreviewModal";
 import DocumentViewer from "@/components/DocumentViewer";
+import {
+  DragDropContext,
+  Droppable,
+  Draggable,
+  type DropResult,
+  type DraggableProvided,
+  type DroppableProvided,
+} from "react-beautiful-dnd";
+import {
+  ViewToolbar, GroupHeader,
+  type ViewMode, type GroupByOption, type GroupedSection,
+  loadViewMode, saveViewMode, loadGroupBy, saveGroupBy,
+  groupDatasets,
+} from "@/components/ViewToolbar";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -27,6 +42,7 @@ interface UploadedDataset {
   folderId?: string;
   tags?: string[];
   fileUrl?: string;
+  contentType?: string;
 }
 
 interface UploadFileItem {
@@ -72,8 +88,8 @@ const sampleDatasets: UploadedDataset[] = [
 ];
 
 const sampleFolders: FileFolder[] = [
-  { id: "folder-1", name: "Clinical Trials", description: "Phase 1 & 2 trial data", fileCount: 2 },
-  { id: "folder-2", name: "Analysis Data", description: "Biomarker and efficacy data", fileCount: 2 },
+  { id: "folder-1", name: "Clinical Trials", description: "Phase 1 & 2 trial data", fileCount: 2, parentId: null },
+  { id: "folder-2", name: "Analysis Data", description: "Biomarker and efficacy data", fileCount: 2, parentId: null },
 ];
 
 const sampleTags: FileTag[] = [
@@ -85,13 +101,13 @@ const sampleTags: FileTag[] = [
 // ── Tag palette (Finbox) ───────────────────────────────────────────────────────
 
 const TAG_COLORS: Record<string, { pill: string; sidebar: string }> = {
-  teal:   { pill: "bg-[#DBEAFE] text-[#1D4ED8]",       sidebar: "bg-[#EFF6FF] text-[#3B82F6]" },
+  teal:   { pill: "bg-[#DBEAFE] text-[#0056B3]",       sidebar: "bg-[#E3F2FD] text-[#007BFF]" },
   blue:   { pill: "bg-[#DBEAFE] text-[#1D4ED8]",       sidebar: "bg-[#EFF6FF] text-[#3B82F6]" },
-  purple: { pill: "bg-[#ede9fe] text-[#6d28d9]",       sidebar: "bg-[#F3E8FF] text-[#7C3AED]" },
-  orange: { pill: "bg-[#FEF3C7] text-[#B45309]",       sidebar: "bg-[#FFFBEB] text-[#F59E0B]" },
-  green:  { pill: "bg-[#D1FAE5] text-[#065F46]",       sidebar: "bg-[#ECFDF5] text-[#10B981]" },
-  red:    { pill: "bg-red-100 text-red-700",            sidebar: "bg-red-50 text-red-500" },
-  gray:   { pill: "bg-gray-100 text-gray-600",          sidebar: "bg-gray-100 text-gray-500" },
+  purple: { pill: "bg-[#E8EAF6] text-[#283593]",       sidebar: "bg-[#E8EAF6] text-[#3949AB]" },
+  orange: { pill: "bg-[#E3F2FD] text-[#0D47A1]",       sidebar: "bg-[#BBDEFB] text-[#1565C0]" },
+  green:  { pill: "bg-[#E1F5FE] text-[#01579B]",       sidebar: "bg-[#E1F5FE] text-[#0277BD]" },
+  red:    { pill: "bg-[#E3F2FD] text-[#0056B3]",       sidebar: "bg-[#E3F2FD] text-[#0056B3]" },
+  gray:   { pill: "bg-[#E3F2FD] text-[#42A5F5]",       sidebar: "bg-[#E3F2FD] text-[#42A5F5]" },
 };
 
 function tagPillClass(color: string) {
@@ -99,6 +115,33 @@ function tagPillClass(color: string) {
 }
 function tagSidebarClass(color: string) {
   return TAG_COLORS[color]?.sidebar ?? TAG_COLORS.gray.sidebar;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getDescendantFolderIds(folderId: string, folders: FileFolder[]): Set<string> {
+  const ids = new Set<string>();
+  const collect = (parentId: string) => {
+    for (const f of folders) {
+      if (f.parentId === parentId) {
+        ids.add(f.id);
+        collect(f.id);
+      }
+    }
+  };
+  collect(folderId);
+  return ids;
+}
+
+function getBreadcrumbPath(folderId: string | null, folders: FileFolder[]): FileFolder[] {
+  if (!folderId) return [];
+  const path: FileFolder[] = [];
+  let current = folders.find((f) => f.id === folderId);
+  while (current) {
+    path.unshift(current);
+    current = current.parentId ? folders.find((f) => f.id === current!.parentId) : undefined;
+  }
+  return path;
 }
 
 // ── Skeleton card ─────────────────────────────────────────────────────────────
@@ -129,14 +172,86 @@ function FileIcon({ format, size = 24 }: { format: string; size?: number }) {
   return <FileText style={{ width: size, height: size }} className="text-[#3B82F6]" />;
 }
 
-// ── Three-dot card menu ───────────────────────────────────────────────────────
+// ── Context menu (Box-style) ─────────────────────────────────────────────────
 
-function CardMenu({
-  onPreview, onDownload, onDelete,
-}: {
+interface ContextMenuProps {
   onPreview: () => void;
   onDownload: () => void;
+  onRename: () => void;
+  onMove: () => void;
+  onCopy: () => void;
+  onAddTag: () => void;
   onDelete: () => void;
+  onShare?: () => void;
+}
+
+function CardContextMenu(props: ContextMenuProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const item = (icon: React.ReactNode, label: string, onClick: () => void, danger = false) => (
+    <button
+      key={label}
+      onClick={(e) => { e.stopPropagation(); onClick(); setOpen(false); }}
+      className={cn(
+        "w-full text-left px-3 py-2 text-[13px] rounded-md transition-colors flex items-center gap-2.5",
+        danger
+          ? "text-red-600 hover:bg-red-50"
+          : "text-[#374151] hover:bg-[#f3f4f6]"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+
+  const sep = () => <div className="h-px bg-[#f3f4f6] my-1" />;
+
+  return (
+    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className="p-1.5 rounded-md text-[#9ca3af] hover:text-[#3B82F6] hover:bg-[#EFF6FF] transition-colors opacity-0 group-hover:opacity-100"
+        title="More options"
+      >
+        <MoreHorizontal className="w-4 h-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-[#e2e8f0] rounded-xl shadow-lg z-30 p-1">
+          {item(<Eye className="w-3.5 h-3.5" />, "Preview", props.onPreview)}
+          {item(<DownloadCloud className="w-3.5 h-3.5" />, "Download", props.onDownload)}
+          {sep()}
+          {item(<Pencil className="w-3.5 h-3.5" />, "Rename", props.onRename)}
+          {item(<ArrowRight className="w-3.5 h-3.5" />, "Move to...", props.onMove)}
+          {item(<Copy className="w-3.5 h-3.5" />, "Copy", props.onCopy)}
+          {item(<Tag className="w-3.5 h-3.5" />, "Add/Remove Tags", props.onAddTag)}
+          {props.onShare && item(<Share2 className="w-3.5 h-3.5" />, "Share", props.onShare)}
+          {sep()}
+          {item(<Trash2 className="w-3.5 h-3.5" />, "Delete", props.onDelete, true)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Folder context menu ───────────────────────────────────────────────────────
+
+function FolderContextMenu({
+  onRename, onDelete, onNewSubfolder, onMove,
+}: {
+  onRename: () => void;
+  onDelete: () => void;
+  onNewSubfolder: () => void;
+  onMove: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -150,18 +265,16 @@ function CardMenu({
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
 
-  const item = (label: string, onClick: () => void, danger = false) => (
+  const item = (icon: React.ReactNode, label: string, onClick: () => void, danger = false) => (
     <button
       key={label}
       onClick={(e) => { e.stopPropagation(); onClick(); setOpen(false); }}
       className={cn(
-        "w-full text-left px-3 py-2 text-[13px] rounded-md transition-colors",
-        danger
-          ? "text-red-600 hover:bg-red-50"
-          : "text-[#374151] hover:bg-[#f3f4f6]"
+        "w-full text-left px-3 py-2 text-[13px] rounded-md transition-colors flex items-center gap-2.5",
+        danger ? "text-red-600 hover:bg-red-50" : "text-[#374151] hover:bg-[#f3f4f6]"
       )}
     >
-      {label}
+      {icon}{label}
     </button>
   );
 
@@ -169,22 +282,303 @@ function CardMenu({
     <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
-        className="p-1.5 rounded-md text-[#9ca3af] hover:text-[#3B82F6] hover:bg-[#EFF6FF] transition-colors"
-        title="More options"
+        className="p-0.5 rounded text-[#9ca3af] hover:text-[#3B82F6] opacity-0 group-hover:opacity-100 transition-all"
       >
-        <MoreHorizontal className="w-4 h-4" />
+        <MoreHorizontal className="w-3.5 h-3.5" />
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-[#e2e8f0] rounded-xl shadow-lg z-30 p-1">
-          {item("Preview", onPreview)}
-          {item("Analyze with AI", onPreview)}
-          {item("Download", onDownload)}
-          {item("Move to folder", () => {})}
-          {item("Add tags", () => {})}
+          {item(<Pencil className="w-3.5 h-3.5" />, "Rename", onRename)}
+          {item(<FolderPlus className="w-3.5 h-3.5" />, "New Subfolder", onNewSubfolder)}
+          {item(<ArrowRight className="w-3.5 h-3.5" />, "Move", onMove)}
           <div className="h-px bg-[#f3f4f6] my-1" />
-          {item("Delete", onDelete, true)}
+          {item(<Trash2 className="w-3.5 h-3.5" />, "Delete", onDelete, true)}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Right-click context menu button ───────────────────────────────────────────
+
+function CtxBtn({ icon, label, onClick, danger = false }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-full text-left px-3 py-2 text-[13px] rounded-md transition-colors flex items-center gap-2.5",
+        danger ? "text-red-600 hover:bg-red-50" : "text-[#374151] hover:bg-[#f3f4f6]"
+      )}
+    >
+      {icon}{label}
+    </button>
+  );
+}
+
+// ── Inline rename input ───────────────────────────────────────────────────────
+
+function InlineRename({
+  value, onSave, onCancel,
+}: {
+  value: string;
+  onSave: (v: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select(); }, []);
+
+  const save = () => {
+    const trimmed = text.trim();
+    if (trimmed && trimmed !== value) onSave(trimmed);
+    else onCancel();
+  };
+
+  return (
+    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <input
+        ref={inputRef}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") onCancel(); }}
+        onBlur={save}
+        className="flex-1 min-w-0 px-2 py-1 text-sm border-2 border-[#3B82F6] rounded-md bg-white focus:outline-none"
+      />
+      <button onClick={save} className="p-1 text-[#3B82F6] hover:bg-[#EFF6FF] rounded transition-colors">
+        <Check className="w-3.5 h-3.5" />
+      </button>
+      <button onClick={onCancel} className="p-1 text-[#9ca3af] hover:bg-[#f3f4f6] rounded transition-colors">
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+// ── Delete confirmation modal ──────────────────────────────────────────────────
+
+function DeleteConfirmModal({
+  name, count, onConfirm, onCancel,
+}: {
+  name: string;
+  count?: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden border border-[#e2e8f0]">
+        <div className="px-6 py-4 border-b border-[#f3f4f6] bg-red-50">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-red-100 flex items-center justify-center">
+              <Trash2 className="w-4 h-4 text-red-600" />
+            </div>
+            <h2 className="text-sm font-bold text-[#111827]">Confirm Delete</h2>
+          </div>
+        </div>
+        <div className="px-6 py-5">
+          <p className="text-sm text-[#374151] leading-relaxed">
+            {count && count > 1
+              ? `Delete ${count} selected items? This cannot be undone unless in trash.`
+              : <>Delete <span className="font-semibold">{name}</span>? This cannot be undone unless in trash.</>
+            }
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#f3f4f6]">
+          <button onClick={onCancel} className="px-4 py-2 text-sm font-medium text-[#374151] bg-[#f3f4f6] hover:bg-[#e5e7eb] rounded-lg transition-colors">
+            Cancel
+          </button>
+          <button onClick={onConfirm} className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors shadow-sm">
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Folder picker modal ──────────────────────────────────────────────────────
+
+function FolderPickerModal({
+  folders, currentFolderId, onSelect, onCancel, title,
+}: {
+  folders: FileFolder[];
+  currentFolderId?: string;
+  onSelect: (folderId: string | null) => void;
+  onCancel: () => void;
+  title?: string;
+}) {
+  const rootFolders = folders.filter((f) => !f.parentId);
+
+  const renderFolder = (folder: FileFolder, depth: number): React.ReactNode => {
+    const children = folders.filter((f) => f.parentId === folder.id);
+    const isCurrent = folder.id === currentFolderId;
+    return (
+      <div key={folder.id}>
+        <button
+          onClick={() => !isCurrent && onSelect(folder.id)}
+          disabled={isCurrent}
+          className={cn(
+            "w-full text-left flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm transition-colors",
+            isCurrent
+              ? "text-[#9CA3AF] cursor-not-allowed bg-[#f3f4f6]"
+              : "text-[#374151] hover:bg-[#EFF6FF] hover:text-[#3B82F6]"
+          )}
+          style={{ paddingLeft: `${12 + depth * 20}px` }}
+        >
+          <Folder className="w-4 h-4 flex-shrink-0" />
+          <span className="truncate">{folder.name}</span>
+          <span className="ml-auto text-xs text-[#9CA3AF]">{folder.fileCount}</span>
+        </button>
+        {children.map((c) => renderFolder(c, depth + 1))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden border border-[#e2e8f0]">
+        <div className="px-6 py-4 border-b border-[#f3f4f6]">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-[#EFF6FF] flex items-center justify-center">
+              <Move className="w-4 h-4 text-[#3B82F6]" />
+            </div>
+            <h2 className="text-sm font-bold text-[#111827]">{title || "Move to Folder"}</h2>
+          </div>
+        </div>
+        <div className="px-4 py-3 max-h-72 overflow-y-auto space-y-0.5">
+          <button
+            onClick={() => onSelect(null)}
+            className="w-full text-left flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm text-[#374151] hover:bg-[#EFF6FF] hover:text-[#3B82F6] transition-colors"
+          >
+            <Database className="w-4 h-4 flex-shrink-0" />
+            <span>Root (No folder)</span>
+          </button>
+          {rootFolders.map((f) => renderFolder(f, 0))}
+        </div>
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#f3f4f6]">
+          <button onClick={onCancel} className="px-4 py-2 text-sm font-medium text-[#374151] bg-[#f3f4f6] hover:bg-[#e5e7eb] rounded-lg transition-colors">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── New folder modal ──────────────────────────────────────────────────────────
+
+function NewFolderModal({
+  parentId, onClose, onCreate,
+}: {
+  parentId?: string | null;
+  onClose: () => void;
+  onCreate: (name: string, parentId?: string | null) => void;
+}) {
+  const [name, setName] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleCreate = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onCreate(trimmed, parentId);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden border border-[#e2e8f0]">
+        <div className="px-6 py-4 border-b border-[#f3f4f6]">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-[#EFF6FF] flex items-center justify-center">
+              <FolderPlus className="w-4 h-4 text-[#3B82F6]" />
+            </div>
+            <h2 className="text-sm font-bold text-[#111827]">New Folder</h2>
+          </div>
+        </div>
+        <div className="px-6 py-5 space-y-3">
+          <label className="block text-xs font-medium text-[#374151]">Folder name</label>
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+            placeholder="e.g., Phase 3 Data"
+            className="w-full px-3 py-2.5 border border-[#D1D5DB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#3B82F6]/30 focus:border-[#3B82F6] transition"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#f3f4f6]">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-[#374151] bg-[#f3f4f6] hover:bg-[#e5e7eb] rounded-lg transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={handleCreate}
+            disabled={!name.trim()}
+            className="px-4 py-2 text-sm font-semibold text-white bg-[#3B82F6] hover:bg-[#2563EB] rounded-lg transition-colors shadow-sm disabled:opacity-50"
+          >
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Tag picker dropdown ───────────────────────────────────────────────────────
+
+const TAG_COLOR_OPTIONS = [
+  { key: "teal", label: "Clinical", hex: "#007BFF" },
+  { key: "orange", label: "Safety", hex: "#FD7E14" },
+  { key: "green", label: "Analysis", hex: "#28A745" },
+  { key: "purple", label: "Research", hex: "#7C3AED" },
+  { key: "red", label: "Urgent", hex: "#EF4444" },
+];
+
+function TagPickerModal({
+  tags, currentTags, onToggle, onClose,
+}: {
+  tags: FileTag[];
+  currentTags: string[];
+  onToggle: (tagId: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-xs bg-white rounded-2xl shadow-2xl overflow-hidden border border-[#e2e8f0]">
+        <div className="px-5 py-4 border-b border-[#f3f4f6]">
+          <h2 className="text-sm font-bold text-[#111827]">Add/Remove Tags</h2>
+        </div>
+        <div className="px-4 py-3 space-y-1 max-h-60 overflow-y-auto">
+          {tags.map((tag) => {
+            const active = currentTags.includes(tag.id);
+            return (
+              <button
+                key={tag.id}
+                onClick={() => onToggle(tag.id)}
+                className={cn(
+                  "w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors",
+                  active ? "bg-[#EFF6FF] text-[#3B82F6]" : "text-[#374151] hover:bg-[#f3f4f6]"
+                )}
+              >
+                {active ? <CheckSquare className="w-4 h-4 text-[#3B82F6]" /> : <Square className="w-4 h-4 text-[#D1D5DB]" />}
+                <span className={cn("px-2 py-0.5 rounded-full text-[11px] font-medium", tagPillClass(tag.color))}>
+                  {tag.name}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-end px-5 py-3 border-t border-[#f3f4f6]">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-[#374151] bg-[#f3f4f6] hover:bg-[#e5e7eb] rounded-lg transition-colors">
+            Done
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -194,40 +588,124 @@ function CardMenu({
 function DatasetCard({
   dataset, selected, viewMode, allTags,
   onSelect, onPreview, onDownload, onDelete, onClick,
+  onRename, onMove, onAddTag, onContextMenu,
+  renamingId, onRenameSubmit, onRenameCancel,
+  provided,
 }: {
   dataset: UploadedDataset;
   selected: boolean;
-  viewMode: "grid" | "list";
+  viewMode: ViewMode;
   allTags: FileTag[];
   onSelect: (id: string, sel: boolean) => void;
   onPreview: (d: UploadedDataset) => void;
   onDownload: (d: UploadedDataset) => void;
   onDelete: (id: string) => void;
   onClick: (d: UploadedDataset) => void;
+  onRename: (id: string) => void;
+  onMove: (id: string) => void;
+  onAddTag: (id: string) => void;
+  onContextMenu?: (e: React.MouseEvent, d: UploadedDataset) => void;
+  renamingId: string | null;
+  onRenameSubmit: (id: string, name: string) => void;
+  onRenameCancel: () => void;
+  provided?: DraggableProvided;
 }) {
   const cardTags = allTags.filter((t) => dataset.tags?.includes(t.id));
+  const isRenaming = renamingId === dataset.id;
 
   const metaLine = [
     dataset.size,
     dataset.uploadDate,
     dataset.rows > 0 && dataset.columns > 0
-      ? `${dataset.rows.toLocaleString()} rows × ${dataset.columns} cols`
+      ? `${dataset.rows.toLocaleString()} rows x ${dataset.columns} cols`
       : null,
-  ].filter(Boolean).join("  •  ");
+  ].filter(Boolean).join("  \u00B7  ");
 
-  // ── List row ─────────────────────────────────────────────────────────────
-  if (viewMode === "list") {
+  const dragProps = provided ? {
+    ref: provided.innerRef,
+    ...provided.draggableProps,
+  } : {};
+
+  const dragHandleProps = provided?.dragHandleProps ?? {};
+
+  // ── Gallery card ─────────────────────────────────────────────────────────
+  if (viewMode === "gallery") {
     return (
       <div
+        {...dragProps}
         className={cn(
-          "group flex items-center gap-4 bg-white border rounded-md px-5 py-4 cursor-pointer",
-          "transition-colors duration-150",
+          "group relative bg-white rounded-md overflow-hidden cursor-pointer",
+          "border transition-all duration-200",
+          "shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
+          "hover:border-[#007BFF] hover:shadow-[0_2px_4px_rgba(0,0,0,0.05)]",
           selected
-            ? "border-[#3B82F6] bg-[#EFF6FF]"
-            : "border-[#E5E7EB] hover:bg-[#F9FAFB]"
+            ? "border-[#007BFF] ring-1 ring-[#007BFF]/20"
+            : "border-[#DEE2E6]"
+        )}
+        style={provided?.draggableProps?.style}
+        onClick={() => onClick(dataset)}
+        onContextMenu={e => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, dataset); } }}
+      >
+        {/* Large preview area */}
+        <div className="h-44 bg-[#F8FAFC] flex items-center justify-center border-b border-[#DEE2E6]">
+          <div className="w-16 h-16 rounded-xl bg-[#EFF6FF] flex items-center justify-center">
+            <FileIcon format={dataset.format} size={36} />
+          </div>
+        </div>
+        <div className="p-4">
+          <div className="flex items-start justify-between mb-2">
+            <div className="min-w-0 flex-1">
+              {isRenaming ? (
+                <InlineRename value={dataset.name} onSave={(v) => onRenameSubmit(dataset.id, v)} onCancel={onRenameCancel} />
+              ) : (
+                <h3 className="font-bold text-[15px] text-[#111827] truncate">{dataset.name}</h3>
+              )}
+              <p className="text-[11px] text-[#6C757D] truncate mt-0.5">{dataset.fileName}</p>
+            </div>
+            <CardContextMenu
+              onPreview={() => onPreview(dataset)}
+              onDownload={() => onDownload(dataset)}
+              onRename={() => onRename(dataset.id)}
+              onMove={() => onMove(dataset.id)}
+              onCopy={() => toast.info("Copy not yet implemented")}
+              onAddTag={() => onAddTag(dataset.id)}
+              onDelete={() => onDelete(dataset.id)}
+            />
+          </div>
+          <p className="text-[11px] text-[#6C757D] mb-2">{metaLine}</p>
+          {cardTags.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {cardTags.map((t) => (
+                <span key={t.id} className={cn("px-2 py-0.5 rounded-full text-[10px] font-medium", tagPillClass(t.color))}>{t.name}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── List row (also used for columns) ────────────────────────────────────
+  if (viewMode === "list" || viewMode === "columns") {
+    return (
+      <div
+        {...dragProps}
+        className={cn(
+          "group flex items-center gap-4 bg-white border-2 rounded-md px-5 py-4 cursor-pointer",
+          "transition-all duration-200",
+          selected
+            ? "border-[#007BFF] bg-[#E3F2FD]"
+            : "border-transparent hover:border-[#007BFF] shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_4px_rgba(0,0,0,0.05)]",
+          "border border-[#DEE2E6]"
         )}
         onClick={() => onClick(dataset)}
+        onContextMenu={e => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, dataset); } }}
       >
+        {/* Drag handle */}
+        <div {...dragHandleProps} className="flex-shrink-0 text-[#D1D5DB] hover:text-[#9CA3AF] cursor-grab opacity-0 group-hover:opacity-100 transition-opacity">
+          <GripVertical className="w-4 h-4" />
+        </div>
+
         {/* Checkbox */}
         <button
           onClick={(e) => { e.stopPropagation(); onSelect(dataset.id, !selected); }}
@@ -245,8 +723,18 @@ function DatasetCard({
 
         {/* Name + filename */}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-[#111827] truncate">{dataset.name}</p>
-          <p className="text-xs text-[#6b7280] truncate">{dataset.fileName}</p>
+          {isRenaming ? (
+            <InlineRename
+              value={dataset.name}
+              onSave={(v) => onRenameSubmit(dataset.id, v)}
+              onCancel={onRenameCancel}
+            />
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-[#111827] truncate">{dataset.name}</p>
+              <p className="text-xs text-[#6b7280] truncate">{dataset.fileName}</p>
+            </>
+          )}
         </div>
 
         {/* Tags */}
@@ -271,19 +759,16 @@ function DatasetCard({
         </div>
 
         {/* Actions */}
-        <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={(e) => { e.stopPropagation(); onPreview(dataset); }}
-            title="Preview" className="p-1.5 rounded-md text-[#9ca3af] hover:text-[#3B82F6] hover:bg-[#EFF6FF] transition-colors"
-          ><Eye className="w-3.5 h-3.5" /></button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDownload(dataset); }}
-            title="Download" className="p-1.5 rounded-md text-[#9ca3af] hover:text-[#374151] hover:bg-[#f3f4f6] transition-colors"
-          ><DownloadCloud className="w-3.5 h-3.5" /></button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(dataset.id); }}
-            title="Delete" className="p-1.5 rounded-md text-[#9ca3af] hover:text-red-500 hover:bg-red-50 transition-colors"
-          ><Trash2 className="w-3.5 h-3.5" /></button>
+        <div className="flex-shrink-0">
+          <CardContextMenu
+            onPreview={() => onPreview(dataset)}
+            onDownload={() => onDownload(dataset)}
+            onRename={() => onRename(dataset.id)}
+            onMove={() => onMove(dataset.id)}
+            onCopy={() => toast.info("Copy not yet implemented")}
+            onAddTag={() => onAddTag(dataset.id)}
+            onDelete={() => onDelete(dataset.id)}
+          />
         </div>
       </div>
     );
@@ -292,26 +777,33 @@ function DatasetCard({
   // ── Grid card ─────────────────────────────────────────────────────────────
   return (
     <div
+      {...dragProps}
       className={cn(
         "group relative bg-white rounded-md overflow-hidden cursor-pointer",
-        "border transition-colors duration-150",
+        "border-2 transition-all duration-200",
         "shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
-        "hover:bg-[#F9FAFB]",
         selected
-          ? "border-[#3B82F6] ring-1 ring-[#3B82F6]/20"
-          : "border-[#E5E7EB] hover:border-[#93C5FD]"
+          ? "border-[#007BFF] bg-[#E3F2FD]"
+          : "border-[#DEE2E6] hover:border-[#007BFF] hover:shadow-[0_2px_4px_rgba(0,0,0,0.05)]"
       )}
+      style={provided?.draggableProps?.style}
       onClick={() => onClick(dataset)}
+      onContextMenu={e => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, dataset); } }}
     >
       <div className="p-6">
-        {/* Top row: icon + checkbox + menu */}
+        {/* Top row: drag handle + icon + checkbox + menu */}
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-3">
+            {/* Drag handle */}
+            <div {...dragHandleProps} className="absolute top-4 left-2 text-[#D1D5DB] hover:text-[#9CA3AF] cursor-grab opacity-0 group-hover:opacity-100 transition-opacity">
+              <GripVertical className="w-4 h-4" />
+            </div>
+
             {/* Checkbox (hover/selected) */}
             <button
               onClick={(e) => { e.stopPropagation(); onSelect(dataset.id, !selected); }}
               className={cn(
-                "absolute top-4 left-4 text-gray-300 hover:text-[#3B82F6] transition-all",
+                "absolute top-4 left-7 text-gray-300 hover:text-[#3B82F6] transition-all",
                 selected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
               )}
             >
@@ -321,32 +813,46 @@ function DatasetCard({
             </button>
 
             {/* File type icon */}
-            <div className="w-12 h-12 rounded-lg bg-[#EFF6FF] flex items-center justify-center">
+            <div className="w-12 h-12 rounded-lg bg-[#EFF6FF] flex items-center justify-center ml-8">
               <FileIcon format={dataset.format} size={24} />
             </div>
           </div>
 
           <div className="flex items-center gap-1.5">
-            {/* "New" badge — hardcoded on first two for demo */}
             {(dataset.id === "1" || dataset.id === "2") && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#3B82F6] text-white tracking-wide">
                 NEW
               </span>
             )}
-            <CardMenu
+            <CardContextMenu
               onPreview={() => onPreview(dataset)}
               onDownload={() => onDownload(dataset)}
+              onRename={() => onRename(dataset.id)}
+              onMove={() => onMove(dataset.id)}
+              onCopy={() => toast.info("Copy not yet implemented")}
+              onAddTag={() => onAddTag(dataset.id)}
               onDelete={() => onDelete(dataset.id)}
             />
           </div>
         </div>
 
         {/* Dataset name */}
-        <h3 className="font-bold text-[17px] text-[#111827] truncate leading-snug mb-0.5">
-          {dataset.name}
-        </h3>
-        {/* Filename */}
-        <p className="text-[12px] text-[#6b7280] truncate mb-3">{dataset.fileName}</p>
+        {isRenaming ? (
+          <div className="mb-3">
+            <InlineRename
+              value={dataset.name}
+              onSave={(v) => onRenameSubmit(dataset.id, v)}
+              onCancel={onRenameCancel}
+            />
+          </div>
+        ) : (
+          <>
+            <h3 className="font-bold text-[17px] text-[#111827] truncate leading-snug mb-0.5">
+              {dataset.name}
+            </h3>
+            <p className="text-[12px] text-[#6b7280] truncate mb-3">{dataset.fileName}</p>
+          </>
+        )}
 
         {/* Meta line */}
         <p className="text-[12px] text-[#6b7280] mb-4 leading-relaxed">{metaLine}</p>
@@ -395,6 +901,7 @@ function DatasetCard({
 
 function LibrarySidebar({
   folders, tags, datasets, selectedFolderId, selectedTagId, onFolderSelect, onTagSelect,
+  dragOverFolderId, onRenameFolder, onDeleteFolder, onNewSubfolder, onMoveFolder,
 }: {
   folders: FileFolder[];
   tags: FileTag[];
@@ -403,32 +910,94 @@ function LibrarySidebar({
   selectedTagId: string | null;
   onFolderSelect: (id: string | null) => void;
   onTagSelect: (id: string | null) => void;
+  dragOverFolderId: string | null;
+  onRenameFolder: (id: string) => void;
+  onDeleteFolder: (id: string) => void;
+  onNewSubfolder: (parentId: string) => void;
+  onMoveFolder: (id: string) => void;
 }) {
   const [foldersOpen, setFoldersOpen] = useState(true);
   const [tagsOpen, setTagsOpen] = useState(true);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const isAllActive = !selectedFolderId && !selectedTagId;
+
+  const rootFolders = folders.filter((f) => !f.parentId);
+
+  const renderFolderItem = (folder: FileFolder, depth: number) => {
+    const active = selectedFolderId === folder.id;
+    const isDragOver = dragOverFolderId === folder.id;
+    const children = folders.filter((f) => f.parentId === folder.id);
+
+    return (
+      <Droppable droppableId={`folder-${folder.id}`} key={folder.id}>
+        {(provided, snapshot) => (
+          <div ref={provided.innerRef} {...provided.droppableProps}>
+            <div
+              className={cn(
+                "group w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm transition-all text-left cursor-pointer",
+                active
+                  ? "bg-[#EFF6FF] text-[#3B82F6] font-medium border-l-[3px] border-[#3B82F6]"
+                  : "text-[#4B5563] hover:bg-[#F9FAFB] hover:text-[#111827]",
+                (isDragOver || snapshot.isDraggingOver) && "bg-[#E3F2FD] border-2 border-[#3B82F6] ring-2 ring-[#3B82F6]/20"
+              )}
+              style={{ paddingLeft: `${12 + depth * 16}px` }}
+              onClick={() => onFolderSelect(active ? null : folder.id)}
+            >
+              {active
+                ? <FolderOpen className={cn("w-3.5 h-3.5 flex-shrink-0", "text-[#3B82F6]")} />
+                : <Folder className={cn("w-3.5 h-3.5 flex-shrink-0", "text-[#9CA3AF]")} />
+              }
+              <span className="flex-1 truncate">{folder.name}</span>
+              <span className={cn(
+                "text-xs flex-shrink-0 px-1.5 py-0.5 rounded-full",
+                active ? "bg-[#DBEAFE] text-[#3B82F6]" : "text-[#D1D5DB]"
+              )}>
+                {folder.fileCount}
+              </span>
+              <FolderContextMenu
+                onRename={() => onRenameFolder(folder.id)}
+                onDelete={() => onDeleteFolder(folder.id)}
+                onNewSubfolder={() => onNewSubfolder(folder.id)}
+                onMove={() => onMoveFolder(folder.id)}
+              />
+            </div>
+            {provided.placeholder}
+            {children.map((c) => renderFolderItem(c, depth + 1))}
+          </div>
+        )}
+      </Droppable>
+    );
+  };
 
   return (
     <div className="space-y-1">
       {/* All Files */}
-      <button
-        onClick={() => { onFolderSelect(null); onTagSelect(null); }}
-        className={cn(
-          "w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left",
-          isAllActive
-            ? "bg-[#EFF6FF] text-[#3B82F6] border-l-[3px] border-[#3B82F6]"
-            : "text-[#4B5563] hover:bg-[#F9FAFB] hover:text-[#111827]"
+      <Droppable droppableId="folder-root">
+        {(provided, snapshot) => (
+          <div ref={provided.innerRef} {...provided.droppableProps}>
+            <button
+              onClick={() => { onFolderSelect(null); onTagSelect(null); }}
+              className={cn(
+                "w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition-all text-left",
+                isAllActive
+                  ? "bg-[#EFF6FF] text-[#3B82F6] border-l-[3px] border-[#3B82F6]"
+                  : "text-[#4B5563] hover:bg-[#F9FAFB] hover:text-[#111827]",
+                snapshot.isDraggingOver && "bg-[#E3F2FD] border-2 border-[#3B82F6]"
+              )}
+            >
+              <Database className="w-4 h-4 flex-shrink-0" />
+              <span className="flex-1">All Files</span>
+              <span className={cn(
+                "text-xs font-normal px-1.5 py-0.5 rounded-full",
+                isAllActive ? "bg-[#DBEAFE] text-[#3B82F6]" : "text-[#9CA3AF]"
+              )}>
+                {datasets.length}
+              </span>
+            </button>
+            {provided.placeholder}
+          </div>
         )}
-      >
-        <Database className="w-4 h-4 flex-shrink-0" />
-        <span className="flex-1">All Files</span>
-        <span className={cn(
-          "text-xs font-normal px-1.5 py-0.5 rounded-full",
-          isAllActive ? "bg-[#DBEAFE] text-[#3B82F6]" : "text-[#9CA3AF]"
-        )}>
-          {datasets.length}
-        </span>
-      </button>
+      </Droppable>
 
       {/* ── Folders ─────────────────────────────────────────────────────── */}
       <div className="pt-4">
@@ -443,30 +1012,7 @@ function LibrarySidebar({
 
         {foldersOpen && (
           <div className="mt-1 space-y-0.5">
-            {folders.map((folder) => {
-              const active = selectedFolderId === folder.id;
-              return (
-                <button
-                  key={folder.id}
-                  onClick={() => onFolderSelect(active ? null : folder.id)}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm transition-colors text-left",
-                    active
-                      ? "bg-[#EFF6FF] text-[#3B82F6] font-medium border-l-[3px] border-[#3B82F6]"
-                      : "text-[#4B5563] hover:bg-[#F9FAFB] hover:text-[#111827]"
-                  )}
-                >
-                  <Folder className={cn("w-3.5 h-3.5 flex-shrink-0", active ? "text-[#3B82F6]" : "text-[#9CA3AF]")} />
-                  <span className="flex-1 truncate">{folder.name}</span>
-                  <span className={cn(
-                    "text-xs flex-shrink-0 px-1.5 py-0.5 rounded-full",
-                    active ? "bg-[#DBEAFE] text-[#3B82F6]" : "text-[#D1D5DB]"
-                  )}>
-                    {folder.fileCount}
-                  </span>
-                </button>
-              );
-            })}
+            {rootFolders.map((folder) => renderFolderItem(folder, 0))}
           </div>
         )}
       </div>
@@ -492,13 +1038,13 @@ function LibrarySidebar({
                     key={tag.id}
                     onClick={() => onTagSelect(active ? null : tag.id)}
                     className={cn(
-                      "px-2.5 py-1 rounded-full text-[11px] font-medium transition-all",
+                      "px-2.5 py-1 rounded-full text-[11px] font-medium transition-all hover:ring-2 hover:ring-[#3B82F6]/20",
                       tagSidebarClass(tag.color),
                       active && "ring-2 ring-offset-1 ring-offset-white ring-[#3B82F6]"
                     )}
                   >
                     {tag.name}
-                    <span className="opacity-50 ml-1">·</span>
+                    <span className="opacity-50 ml-1">&middot;</span>
                     <span className="opacity-50 ml-0.5">{tag.fileCount}</span>
                   </button>
                 );
@@ -610,7 +1156,7 @@ function UploadModal({
             <div>
               <h2 className="text-sm font-bold text-[#111827]">Upload Datasets</h2>
               <p className="text-xs text-[#6b7280]">
-                {UPLOAD_ACCEPT.join(", ").toUpperCase().replace(/\./g, "")} · Max {UPLOAD_MAX_MB} MB
+                {UPLOAD_ACCEPT.join(", ").toUpperCase().replace(/\./g, "")} &middot; Max {UPLOAD_MAX_MB} MB
               </p>
             </div>
           </div>
@@ -638,7 +1184,7 @@ function UploadModal({
               {isDragging ? "Drop files here" : "Drag & drop files here"}
             </p>
             <p className="text-xs text-[#6b7280]">or click to browse your computer</p>
-            <p className="text-[11px] text-[#9ca3af] mt-2">CSV · XLSX · XLS · JSON · PDF</p>
+            <p className="text-[11px] text-[#9ca3af] mt-2">CSV &middot; XLSX &middot; XLS &middot; JSON &middot; PDF</p>
             <input ref={inputRef} type="file" multiple accept={UPLOAD_ACCEPT.join(",")} onChange={(e) => addFiles(e.target.files)} className="hidden" />
           </div>
 
@@ -666,8 +1212,8 @@ function UploadModal({
                       ) : (
                         <p className="text-[11px] text-[#6b7280]">
                           {(item.file.size / 1024 / 1024).toFixed(2)} MB
-                          {item.status === "uploading" && ` · ${item.progress}%`}
-                          {item.status === "success" && " · uploaded"}
+                          {item.status === "uploading" && ` \u00B7 ${item.progress}%`}
+                          {item.status === "success" && " \u00B7 uploaded"}
                         </p>
                       )}
                     </div>
@@ -697,7 +1243,7 @@ function UploadModal({
                 isUploading ? "bg-[#3B82F6]/60 text-white cursor-not-allowed" : "bg-[#3B82F6] hover:bg-[#2563EB] text-white shadow-sm"
               )}
             >
-              {isUploading ? <><Loader2 className="w-4 h-4 animate-spin" />Uploading…</> : <><Upload className="w-4 h-4" />Upload {pendingCount} file{pendingCount !== 1 ? "s" : ""}</>}
+              {isUploading ? <><Loader2 className="w-4 h-4 animate-spin" />Uploading&hellip;</> : <><Upload className="w-4 h-4" />Upload {pendingCount} file{pendingCount !== 1 ? "s" : ""}</>}
             </button>
           )}
         </div>
@@ -708,24 +1254,31 @@ function UploadModal({
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
-function EmptyState({ hasFilters, onClear, onUpload }: { hasFilters: boolean; onClear: () => void; onUpload: () => void }) {
+function EmptyState({ hasFilters, onClear, onUpload, isDragOver }: { hasFilters: boolean; onClear: () => void; onUpload: () => void; isDragOver?: boolean }) {
   return (
-    <div className="col-span-full flex flex-col items-center justify-center py-28 text-center">
+    <div className={cn(
+      "col-span-full flex flex-col items-center justify-center py-28 text-center rounded-xl transition-all",
+      isDragOver && "border-2 border-dashed border-[#3B82F6] bg-[#EFF6FF]"
+    )}>
       <div className="w-20 h-20 rounded-2xl bg-[#EFF6FF] border-2 border-[#DBEAFE] flex items-center justify-center mb-6">
-        {hasFilters
+        {isDragOver
+          ? <Upload className="w-9 h-9 text-[#3B82F6] animate-bounce" />
+          : hasFilters
           ? <Search className="w-9 h-9 text-[#3B82F6]/60" />
           : <Database className="w-9 h-9 text-[#3B82F6]" />
         }
       </div>
       <h3 className="text-[#111827] font-bold text-xl mb-2">
-        {hasFilters ? "No matching datasets" : "No datasets uploaded yet"}
+        {isDragOver ? "Drop files to upload" : hasFilters ? "No matching datasets" : "No datasets yet"}
       </h3>
       <p className="text-[#6b7280] text-sm max-w-xs leading-relaxed mb-6">
-        {hasFilters
+        {isDragOver
+          ? "Drop files to upload to the current folder"
+          : hasFilters
           ? "Try a different search term or clear the active filters."
-          : "Upload your first clinical trial or analysis CSV to begin running biostatistical analyses."}
+          : "Upload or drag files here to begin running biostatistical analyses."}
       </p>
-      {hasFilters ? (
+      {!isDragOver && (hasFilters ? (
         <button onClick={onClear} className="text-sm text-[#3B82F6] hover:text-[#2563EB] font-semibold transition-colors">
           Clear filters
         </button>
@@ -737,7 +1290,7 @@ function EmptyState({ hasFilters, onClear, onUpload }: { hasFilters: boolean; on
           <Upload className="w-4 h-4" />
           Upload Data
         </button>
-      )}
+      ))}
     </div>
   );
 }
@@ -748,11 +1301,13 @@ export default function DataUploaded() {
   const [datasets, setDatasets] = useState<UploadedDataset[]>(sampleDatasets);
   const [currentPage] = useState(1);
   const [itemsPerPage] = useState(10);
-  const [folders] = useState<FileFolder[]>(sampleFolders);
+  const [folders, setFolders] = useState<FileFolder[]>(sampleFolders);
   const [tags] = useState<FileTag[]>(sampleTags);
   const [selectedDataset, setSelectedDataset] = useState<UploadedDataset | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode("data-library", "grid"));
+  const [groupBy, setGroupBy] = useState<GroupByOption>(() => loadGroupBy("data-library"));
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -760,37 +1315,202 @@ export default function DataUploaded() {
   const [previewFile, setPreviewFile] = useState<UploadedDataset | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // DnD state
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+
+  // Desktop file drag-to-upload
+  const [desktopDragOver, setDesktopDragOver] = useState(false);
+
+  // Rename state
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  // Delete confirmation
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+
+  // Right-click context menu
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; dataset?: UploadedDataset; folderId?: string } | null>(null);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [ctxMenu]);
+
+  // Folder picker
+  const [movingFileId, setMovingFileId] = useState<string | null>(null);
+  const [showBulkMove, setShowBulkMove] = useState(false);
+
+  // New folder modal
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderParentId, setNewFolderParentId] = useState<string | null>(null);
+
+  // Tag picker
+  const [tagPickerFileId, setTagPickerFileId] = useState<string | null>(null);
+
+  // File content for preview modal
+  const [previewContent, setPreviewContent] = useState<{
+    content: string;
+    fileUrl?: string;
+    hasGraphs?: boolean;
+    error?: string;
+    contentType?: string;
+  } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Fetch file content when preview opens
+  useEffect(() => {
+    if (!previewFile) {
+      setPreviewContent(null);
+      return;
+    }
+    const numericId = Number(previewFile.id);
+    if (!Number.isNaN(numericId) && numericId > 0) {
+      // Real file from backend — fetch content
+      setPreviewLoading(true);
+      fetch(`/api/trpc/files.getFileContent?input=${encodeURIComponent(JSON.stringify({ fileId: numericId }))}`)
+        .then(res => res.json())
+        .then(json => {
+          const data = json?.result?.data;
+          if (data) {
+            console.log('[FilePreview] Loaded content:', { fileName: data.fileName, contentType: data.contentType, hasGraphs: data.hasGraphs, contentLength: data.content?.length ?? 0 });
+            setPreviewContent({
+              content: data.content ?? "",
+              fileUrl: data.fileUrl,
+              hasGraphs: data.hasGraphs ?? false,
+              contentType: data.contentType,
+            });
+          } else {
+            console.warn('[FilePreview] No data in response:', json);
+            setPreviewContent({ content: "", error: "Could not load file content" });
+          }
+        })
+        .catch(err => {
+          console.error('[FilePreview] Fetch error:', err);
+          setPreviewContent({ content: "", error: "Failed to fetch file content" });
+        })
+        .finally(() => setPreviewLoading(false));
+    } else {
+      // Sample data — content will come from mock data inside FilePreviewModal
+      setPreviewContent({ content: "" });
+    }
+  }, [previewFile]);
+
   const { data: filesData, isLoading, refetch } = trpc.files.list.useQuery(
     { page: currentPage, limit: itemsPerPage },
     { enabled: true }
   );
   const deleteFilesMutation = trpc.files.delete.useMutation();
+  const updateFileMutation = trpc.files.update.useMutation();
+  const bulkMoveMutation = trpc.files.bulkMove.useMutation();
   const utils = trpc.useUtils();
 
   useEffect(() => {
-    if (filesData?.data && Array.isArray(filesData.data)) {
+    if (filesData?.data && Array.isArray(filesData.data) && filesData.data.length > 0) {
       setDatasets((prev) => {
-        const newData = filesData.data as UploadedDataset[];
-        if (JSON.stringify(prev) !== JSON.stringify(newData)) return newData;
-        return prev;
+        const apiData = filesData.data as UploadedDataset[];
+        const apiIds = new Set(apiData.map((f) => String(f.id)));
+        const kept = prev.filter((d) => !apiIds.has(String(d.id)));
+        const merged = [...apiData, ...kept];
+        if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
+        return merged;
       });
     }
   }, [filesData?.data]);
 
-  const filteredDatasets = useMemo(() => datasets.filter((d) => {
-    const q = searchTerm.toLowerCase();
-    const matchSearch = d.name.toLowerCase().includes(q) || d.fileName.toLowerCase().includes(q);
-    const matchFolder = !selectedFolderId || d.folderId === selectedFolderId;
-    const matchTag = !selectedTagId || (d.tags?.includes(selectedTagId) ?? false);
-    return matchSearch && matchFolder && matchTag;
-  }), [datasets, searchTerm, selectedFolderId, selectedTagId]);
+  // ── Compute live folder & tag counts from actual datasets ─────────────
+  const liveFolders = useMemo(() =>
+    folders.map((f) => ({
+      ...f,
+      fileCount: datasets.filter((d) => d.folderId === f.id).length,
+    })),
+    [folders, datasets]
+  );
+
+  const liveTags = useMemo(() =>
+    tags.map((t) => ({
+      ...t,
+      fileCount: datasets.filter((d) => d.tags?.includes(t.id)).length,
+    })),
+    [tags, datasets]
+  );
+
+  const filteredDatasets = useMemo(() => {
+    return datasets.filter((d) => {
+      const q = searchTerm.toLowerCase();
+      const matchSearch = d.name.toLowerCase().includes(q) || d.fileName.toLowerCase().includes(q)
+        || (d.tags?.some(tid => {
+          const tag = tags.find(t => t.id === tid);
+          return tag?.name.toLowerCase().includes(q);
+        }) ?? false);
+      const matchFolder = !selectedFolderId || d.folderId === selectedFolderId;
+      const matchTag = !selectedTagId || (d.tags?.includes(selectedTagId) ?? false);
+      return matchSearch && matchFolder && matchTag;
+    });
+  }, [datasets, searchTerm, selectedFolderId, selectedTagId, tags]);
+
+  // Grouped datasets
+  const tagNameMap = useMemo(() => {
+    const m = new Map<string, string>();
+    tags.forEach((t) => m.set(t.id, t.name));
+    return m;
+  }, [tags]);
+
+  const groupedDatasets = useMemo(() =>
+    groupDatasets(filteredDatasets, groupBy, tagNameMap),
+    [filteredDatasets, groupBy, tagNameMap]
+  );
+
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    saveViewMode("data-library", mode);
+  }, []);
+
+  const handleGroupByChange = useCallback((group: GroupByOption) => {
+    setGroupBy(group);
+    saveGroupBy("data-library", group);
+    setCollapsedGroups(new Set());
+  }, []);
+
+  const toggleGroupCollapse = useCallback((label: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      next.has(label) ? next.delete(label) : next.add(label);
+      return next;
+    });
+  }, []);
+
+  // Subfolders of current view
+  const childFolders = useMemo(() =>
+    selectedFolderId
+      ? liveFolders.filter((f) => f.parentId === selectedFolderId)
+      : [],
+    [selectedFolderId, liveFolders]
+  );
+
+  // Breadcrumbs
+  const breadcrumbs = useMemo(() =>
+    getBreadcrumbPath(selectedFolderId, liveFolders),
+    [selectedFolderId, liveFolders]
+  );
+
+  // ── Handlers ──────────────────────────────────────────────────────────
 
   const handleDelete = useCallback((id: string | number) => {
     const sid = String(id);
     setDatasets((p) => p.filter((d) => d.id !== sid));
     setSelectedDataset((p) => (p?.id === sid ? null : p));
     setSelectedFileIds((p) => { const s = new Set(p); s.delete(sid); return s; });
+    setDeleteTarget(null);
+    toast.success("File deleted");
   }, []);
+
+  const handleDeleteConfirm = useCallback((id: string) => {
+    const dataset = datasets.find((d) => d.id === id);
+    setDeleteTarget({ id, name: dataset?.name ?? "this file" });
+  }, [datasets]);
 
   const handleUploadComplete = useCallback(async () => {
     await utils.files.list.invalidate();
@@ -810,6 +1530,8 @@ export default function DataUploaded() {
       await deleteFilesMutation.mutateAsync({ fileIds: ids });
       ids.forEach(handleDelete);
       setSelectedFileIds(new Set());
+      setBulkDeleteConfirm(false);
+      toast.success(`Deleted ${ids.length} file(s)`);
     } catch (e) { console.error(e); }
   }, [selectedFileIds, deleteFilesMutation, handleDelete]);
 
@@ -817,15 +1539,177 @@ export default function DataUploaded() {
     setSelectedFileIds((p) => { const s = new Set(p); sel ? s.add(id) : s.delete(id); return s; });
   }, []);
 
+  const handleCtrlClick = useCallback((dataset: UploadedDataset, e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      handleSelectFile(dataset.id, !selectedFileIds.has(dataset.id));
+    } else {
+      // Open in file preview modal (not the PDF DocumentViewer)
+      setPreviewFile(dataset);
+    }
+  }, [handleSelectFile, selectedFileIds]);
+
   const clearAll = useCallback(() => {
     setSearchTerm(""); setSelectedFolderId(null); setSelectedTagId(null);
   }, []);
 
-  const hasActiveFilters = !!(searchTerm || selectedFolderId || selectedTagId);
-  const activeFolder = folders.find((f) => f.id === selectedFolderId);
-  const activeTag = tags.find((t) => t.id === selectedTagId);
+  const handleFileContextMenu = useCallback((e: React.MouseEvent, dataset: UploadedDataset) => {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY, dataset });
+  }, []);
 
-  // "/" shortcut → focus search
+  // Rename
+  const handleRenameSubmit = useCallback((id: string, newName: string) => {
+    setDatasets((prev) => prev.map((d) => d.id === id ? { ...d, name: newName } : d));
+    setRenamingId(null);
+    const numId = parseInt(id, 10);
+    if (!isNaN(numId)) {
+      updateFileMutation.mutate({ fileId: numId, fileName: newName });
+    }
+    toast.success("Renamed successfully");
+  }, [updateFileMutation]);
+
+  // Move single file
+  const handleMoveFile = useCallback((fileId: string, folderId: string | null) => {
+    const folder = liveFolders.find((f) => f.id === folderId);
+    setDatasets((prev) => prev.map((d) => d.id === fileId ? { ...d, folderId: folderId ?? undefined } : d));
+    setMovingFileId(null);
+    const numId = parseInt(fileId, 10);
+    if (!isNaN(numId)) {
+      updateFileMutation.mutate({ fileId: numId, folderId: folderId ?? null });
+    }
+    toast.success(`Moved to ${folder?.name ?? "Root"}`);
+  }, [liveFolders, updateFileMutation]);
+
+  // Bulk move
+  const handleBulkMove = useCallback((folderId: string | null) => {
+    const folder = liveFolders.find((f) => f.id === folderId);
+    const ids = Array.from(selectedFileIds);
+    setDatasets((prev) => prev.map((d) => ids.includes(d.id) ? { ...d, folderId: folderId ?? undefined } : d));
+    setShowBulkMove(false);
+    const numIds = ids.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n));
+    if (numIds.length) {
+      bulkMoveMutation.mutate({ fileIds: numIds, folderId: folderId ?? null });
+    }
+    toast.success(`Moved ${ids.length} file(s) to ${folder?.name ?? "Root"}`);
+    setSelectedFileIds(new Set());
+  }, [selectedFileIds, liveFolders, bulkMoveMutation]);
+
+  // Tag toggle
+  const handleTagToggle = useCallback((tagId: string) => {
+    if (!tagPickerFileId) return;
+    setDatasets((prev) => prev.map((d) => {
+      if (d.id !== tagPickerFileId) return d;
+      const curTags = d.tags ?? [];
+      const newTags = curTags.includes(tagId)
+        ? curTags.filter((t) => t !== tagId)
+        : [...curTags, tagId];
+      return { ...d, tags: newTags };
+    }));
+  }, [tagPickerFileId]);
+
+  // Create folder
+  const handleCreateFolder = useCallback((name: string, parentId?: string | null) => {
+    const id = `folder-${Date.now()}`;
+    setFolders((prev) => [...prev, { id, name, fileCount: 0, parentId: parentId ?? null }]);
+    toast.success(`Folder "${name}" created`);
+  }, []);
+
+  // Delete folder
+  const handleDeleteFolder = useCallback((id: string) => {
+    // Move files in this folder to root
+    setDatasets((prev) => prev.map((d) => d.folderId === id ? { ...d, folderId: undefined } : d));
+    // Remove folder and children
+    const descendants = getDescendantFolderIds(id, folders);
+    descendants.add(id);
+    setFolders((prev) => prev.filter((f) => !descendants.has(f.id)));
+    if (selectedFolderId === id) setSelectedFolderId(null);
+    toast.success("Folder deleted");
+  }, [folders, selectedFolderId]);
+
+  // Rename folder
+  const handleRenameFolder = useCallback((id: string) => {
+    const folder = folders.find((f) => f.id === id);
+    if (!folder) return;
+    const newName = prompt("Rename folder:", folder.name);
+    if (newName && newName.trim()) {
+      setFolders((prev) => prev.map((f) => f.id === id ? { ...f, name: newName.trim() } : f));
+      toast.success("Folder renamed");
+    }
+  }, [folders]);
+
+  // ── Drag & Drop handler (react-beautiful-dnd) ──────────────────────────
+
+  const onDragEnd = useCallback((result: DropResult) => {
+    setDragOverFolderId(null);
+    setIsDraggingFiles(false);
+
+    if (!result.destination) {
+      // Dropped outside valid area
+      return;
+    }
+
+    const { source, destination, draggableId } = result;
+
+    // Moving file to a folder (sidebar drop)
+    if (destination.droppableId.startsWith("folder-")) {
+      const targetFolderId = destination.droppableId === "folder-root"
+        ? null
+        : destination.droppableId.replace("folder-", "");
+      const fileId = draggableId.replace("file-", "");
+
+      // If multiple selected, move all
+      if (selectedFileIds.has(fileId) && selectedFileIds.size > 1) {
+        handleBulkMove(targetFolderId);
+      } else {
+        handleMoveFile(fileId, targetFolderId);
+      }
+      return;
+    }
+
+    // Reorder within grid
+    if (source.droppableId === destination.droppableId && source.droppableId === "main-grid") {
+      setDatasets((prev) => {
+        const filtered = filteredDatasets.map((d) => d.id);
+        const allIds = prev.map((d) => d.id);
+        const fromIdx = allIds.indexOf(filtered[source.index]);
+        const toIdx = allIds.indexOf(filtered[destination.index]);
+        if (fromIdx === -1 || toIdx === -1) return prev;
+        const copy = [...prev];
+        const [removed] = copy.splice(fromIdx, 1);
+        copy.splice(toIdx, 0, removed);
+        return copy;
+      });
+    }
+  }, [selectedFileIds, handleBulkMove, handleMoveFile, filteredDatasets]);
+
+  const onDragStart = useCallback(() => {
+    setIsDraggingFiles(true);
+  }, []);
+
+  const onDragUpdate = useCallback((update: any) => {
+    if (update.destination?.droppableId?.startsWith("folder-")) {
+      const fid = update.destination.droppableId.replace("folder-", "");
+      setDragOverFolderId(fid === "root" ? null : fid);
+    } else {
+      setDragOverFolderId(null);
+    }
+  }, []);
+
+  // Desktop drag-to-upload on main grid
+  const handleDesktopDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDesktopDragOver(false);
+    if (e.dataTransfer.files?.length) {
+      setShowUpload(true);
+    }
+  }, []);
+
+  const hasActiveFilters = !!(searchTerm || selectedFolderId || selectedTagId);
+  const activeFolder = liveFolders.find((f) => f.id === selectedFolderId);
+  const activeTag = liveTags.find((t) => t.id === selectedTagId);
+
+  // "/" shortcut -> focus search
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "/" && !["INPUT", "TEXTAREA"].includes((e.target as HTMLElement)?.tagName ?? "")) {
@@ -837,128 +1721,96 @@ export default function DataUploaded() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#FFFFFF]">
+    <DragDropContext onDragEnd={onDragEnd} onDragStart={onDragStart} onDragUpdate={onDragUpdate}>
+      <div className="min-h-screen bg-[#FFFFFF]">
 
-      {/* ── Sticky top bar ──────────────────────────────────────────────────── */}
-      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-[#E5E7EB]">
-        <div className="max-w-[1440px] mx-auto px-6 lg:px-8 py-4 flex items-center gap-4">
+        {/* ── Sticky top bar ──────────────────────────────────────────────────── */}
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-[#E5E7EB]">
+          <div className="max-w-[1440px] mx-auto px-6 lg:px-8 py-4 flex items-center gap-4">
 
-          {/* Title */}
-          <div className="flex-shrink-0 hidden sm:block mr-2">
-            <h1 className="text-[22px] font-bold text-[#111827] leading-none tracking-tight">Data Library</h1>
-            <p className="text-[12px] text-[#6b7280] mt-0.5">
-              {datasets.length} dataset{datasets.length !== 1 ? "s" : ""}
-            </p>
-          </div>
-
-          {/* Search */}
-          <div className="relative flex-1 max-w-[520px]">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9ca3af] pointer-events-none" />
-            <input
-              ref={searchRef}
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder='Search by name or filename… ("/" to focus)'
-              className="w-full bg-white border border-[#D1D5DB] rounded-md pl-10 pr-9 py-2.5 text-sm text-[#111827] placeholder:text-[#9ca3af] focus:outline-none focus:ring-2 focus:ring-[#3B82F6]/30 focus:border-[#3B82F6] transition"
-            />
-            {searchTerm && (
-              <button onClick={() => setSearchTerm("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#9ca3af] hover:text-[#6b7280] transition-colors">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {/* View toggle */}
-          <div className="flex-shrink-0 flex items-center bg-[#f3f4f6] rounded-md p-0.5 gap-0.5">
-            {(["grid", "list"] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setViewMode(mode)}
-                title={mode === "grid" ? "Grid view" : "List view"}
-                className={cn(
-                  "p-2 rounded transition-all",
-                  viewMode === mode
-                    ? "bg-white text-[#3B82F6] shadow-sm"
-                    : "text-[#6b7280] hover:text-[#374151]"
-                )}
-              >
-                {mode === "grid" ? <LayoutGrid className="w-3.5 h-3.5" /> : <List className="w-3.5 h-3.5" />}
-              </button>
-            ))}
-          </div>
-
-          {/* Upload button */}
-          <button
-            onClick={() => setShowUpload(true)}
-            className="flex-shrink-0 flex items-center gap-2 bg-[#3B82F6] hover:bg-[#2563EB] active:bg-[#1d4ed8] text-white text-sm font-semibold rounded-md px-4 py-2.5 transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4" />
-            Upload
-          </button>
-        </div>
-      </div>
-
-      {/* ── Body ────────────────────────────────────────────────────────────── */}
-      <div className="max-w-[1440px] mx-auto px-6 lg:px-8 py-8">
-        <div className="flex gap-7">
-
-          {/* ── Light sidebar panel ──────────────────────────────────────── */}
-          <aside className="hidden md:block w-52 lg:w-56 flex-shrink-0">
-            <div className="bg-white border border-[#E5E7EB] rounded-xl p-4 sticky top-[73px]">
-              <LibrarySidebar
-                folders={folders}
-                tags={tags}
-                datasets={datasets}
-                selectedFolderId={selectedFolderId}
-                selectedTagId={selectedTagId}
-                onFolderSelect={setSelectedFolderId}
-                onTagSelect={setSelectedTagId}
-              />
+            {/* Title */}
+            <div className="flex-shrink-0 hidden sm:block mr-2">
+              <h1 className="text-[22px] font-bold text-[#111827] leading-none tracking-tight">Data Library</h1>
+              <p className="text-[12px] text-[#6b7280] mt-0.5">
+                {datasets.length} dataset{datasets.length !== 1 ? "s" : ""}
+              </p>
             </div>
-          </aside>
 
-          {/* ── Main area ──────────────────────────────────────────────────── */}
-          <main className="flex-1 min-w-0 space-y-5">
+            {/* Search */}
+            <div className="relative flex-1 max-w-[520px]">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9ca3af] pointer-events-none" />
+              <input
+                ref={searchRef}
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder='Search by name, filename, or tag... ("/" to focus)'
+                className="w-full bg-white border border-[#D1D5DB] rounded-md pl-10 pr-9 py-2.5 text-sm text-[#111827] placeholder:text-[#9ca3af] focus:outline-none focus:ring-2 focus:ring-[#3B82F6]/30 focus:border-[#3B82F6] transition"
+              />
+              {searchTerm && (
+                <button onClick={() => setSearchTerm("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#9ca3af] hover:text-[#6b7280] transition-colors">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
-            {/* Active filter strip */}
-            {hasActiveFilters && (
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-[#6b7280] font-medium">Filtering by:</span>
-                {activeFolder && (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#EFF6FF] border border-[#BFDBFE] text-xs font-medium text-[#3B82F6]">
-                    <Folder className="w-3 h-3" />
-                    {activeFolder.name}
-                    <button onClick={() => setSelectedFolderId(null)} className="ml-0.5 hover:text-[#1D4ED8] transition-colors"><X className="w-3 h-3" /></button>
-                  </span>
-                )}
-                {activeTag && (
-                  <span className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium", tagPillClass(activeTag.color), "border-current/20")}>
-                    <Tag className="w-3 h-3" />
-                    {activeTag.name}
-                    <button onClick={() => setSelectedTagId(null)} className="ml-0.5 transition-colors"><X className="w-3 h-3" /></button>
-                  </span>
-                )}
-                {searchTerm && (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#f3f4f6] border border-[#e5e7eb] text-xs font-medium text-[#374151]">
-                    <Search className="w-3 h-3" />
-                    "{searchTerm}"
-                    <button onClick={() => setSearchTerm("")} className="ml-0.5 hover:text-[#111827] transition-colors"><X className="w-3 h-3" /></button>
-                  </span>
-                )}
-                <button onClick={clearAll} className="text-xs text-[#6b7280] hover:text-[#374151] font-medium transition-colors ml-1">Clear all</button>
-                <span className="ml-auto text-xs text-[#6b7280]">{filteredDatasets.length} of {datasets.length}</span>
-              </div>
-            )}
+            {/* View toggle + Group By */}
+            <ViewToolbar
+              viewMode={viewMode}
+              onViewModeChange={handleViewModeChange}
+              groupBy={groupBy}
+              onGroupByChange={handleGroupByChange}
+            />
 
-            {/* Bulk actions bar */}
-            {selectedFileIds.size > 0 && (
-              <div className="flex items-center gap-3 px-5 py-3.5 bg-[#EFF6FF] border border-[#BFDBFE] rounded-md">
+            {/* New folder button */}
+            <button
+              onClick={() => { setNewFolderParentId(selectedFolderId); setShowNewFolder(true); }}
+              className="flex-shrink-0 flex items-center gap-2 bg-white hover:bg-[#EFF6FF] border border-[#D1D5DB] hover:border-[#3B82F6] text-[#374151] hover:text-[#3B82F6] text-sm font-medium rounded-md px-3 py-2.5 transition-colors"
+            >
+              <FolderPlus className="w-4 h-4" />
+              <span className="hidden lg:inline">New Folder</span>
+            </button>
+
+            {/* Upload button */}
+            <button
+              onClick={() => setShowUpload(true)}
+              className="flex-shrink-0 flex items-center gap-2 bg-[#3B82F6] hover:bg-[#2563EB] active:bg-[#1d4ed8] text-white text-sm font-semibold rounded-md px-4 py-2.5 transition-colors shadow-sm"
+            >
+              <Plus className="w-4 h-4" />
+              Upload
+            </button>
+          </div>
+
+          {/* Bulk actions toolbar */}
+          {selectedFileIds.size > 0 && (
+            <div className="bg-[#EFF6FF] border-t border-[#BFDBFE]">
+              <div className="max-w-[1440px] mx-auto px-6 lg:px-8 py-3 flex items-center gap-3">
                 <span className="text-sm font-semibold text-[#3B82F6]">{selectedFileIds.size} selected</span>
                 <div className="flex-1" />
-                <button onClick={() => setSelectedFileIds(new Set())} className="text-xs text-[#3B82F6] hover:text-[#1D4ED8] font-medium transition-colors">Deselect all</button>
                 <button
-                  onClick={handleBulkDelete}
+                  onClick={() => {
+                    selectedFileIds.forEach((id) => {
+                      const d = datasets.find((ds) => ds.id === id);
+                      if (d) handleDownload(d);
+                    });
+                  }}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-[#f3f4f6] border border-[#D1D5DB] text-[#374151] rounded-md text-xs font-semibold transition-colors"
+                >
+                  <DownloadCloud className="w-3 h-3" />
+                  Download All
+                </button>
+                <button
+                  onClick={() => setShowBulkMove(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-[#EFF6FF] border border-[#BFDBFE] text-[#3B82F6] rounded-md text-xs font-semibold transition-colors"
+                >
+                  <ArrowRight className="w-3 h-3" />
+                  Move Selected
+                </button>
+                <button onClick={() => setSelectedFileIds(new Set())} className="text-xs text-[#3B82F6] hover:text-[#1D4ED8] font-medium transition-colors">
+                  Deselect all
+                </button>
+                <button
+                  onClick={() => setBulkDeleteConfirm(true)}
                   disabled={deleteFilesMutation.isPending}
                   className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-red-50 border border-red-200 text-red-600 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
                 >
@@ -966,60 +1818,354 @@ export default function DataUploaded() {
                   Delete {selectedFileIds.size}
                 </button>
               </div>
-            )}
-
-            {/* Grid / list */}
-            <div className={cn(
-              viewMode === "grid"
-                ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
-                : "space-y-3"
-            )}>
-              {isLoading
-                ? Array.from({ length: 8 }).map((_, i) => <SkeletonCard key={i} />)
-                : filteredDatasets.length === 0
-                ? <EmptyState hasFilters={hasActiveFilters} onClear={clearAll} onUpload={() => setShowUpload(true)} />
-                : filteredDatasets.map((d) => (
-                    <DatasetCard
-                      key={d.id}
-                      dataset={d}
-                      selected={selectedFileIds.has(d.id)}
-                      viewMode={viewMode}
-                      allTags={tags}
-                      onSelect={handleSelectFile}
-                      onPreview={handlePreview}
-                      onDownload={handleDownload}
-                      onDelete={handleDelete}
-                      onClick={setSelectedDataset}
-                    />
-                  ))
-              }
             </div>
-          </main>
+          )}
         </div>
+
+        {/* ── Body ────────────────────────────────────────────────────────────── */}
+        <div className="max-w-[1440px] mx-auto px-6 lg:px-8 py-8">
+          <div className="flex gap-7">
+
+            {/* ── Light sidebar panel ──────────────────────────────────────── */}
+            <aside className="hidden md:block w-52 lg:w-56 flex-shrink-0">
+              <div className="bg-white border border-[#E5E7EB] rounded-xl p-4 sticky top-[73px]">
+                <LibrarySidebar
+                  folders={liveFolders}
+                  tags={liveTags}
+                  datasets={datasets}
+                  selectedFolderId={selectedFolderId}
+                  selectedTagId={selectedTagId}
+                  onFolderSelect={setSelectedFolderId}
+                  onTagSelect={setSelectedTagId}
+                  dragOverFolderId={dragOverFolderId}
+                  onRenameFolder={handleRenameFolder}
+                  onDeleteFolder={handleDeleteFolder}
+                  onNewSubfolder={(parentId) => { setNewFolderParentId(parentId); setShowNewFolder(true); }}
+                  onMoveFolder={() => toast.info("Folder move not yet implemented")}
+                />
+              </div>
+            </aside>
+
+            {/* ── Main area ──────────────────────────────────────────────────── */}
+            <main
+              className="flex-1 min-w-0 space-y-5"
+              onDragOver={(e) => {
+                // Desktop file drag
+                if (e.dataTransfer.types.includes("Files")) {
+                  e.preventDefault();
+                  setDesktopDragOver(true);
+                }
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                setDesktopDragOver(false);
+              }}
+              onDrop={handleDesktopDrop}
+            >
+              {/* Breadcrumbs */}
+              {breadcrumbs.length > 0 && (
+                <div className="flex items-center gap-1.5 text-sm">
+                  <button onClick={() => setSelectedFolderId(null)} className="text-[#3B82F6] hover:text-[#2563EB] font-medium transition-colors">
+                    Data Library
+                  </button>
+                  {breadcrumbs.map((bc) => (
+                    <span key={bc.id} className="flex items-center gap-1.5">
+                      <ChevronRight className="w-3.5 h-3.5 text-[#9CA3AF]" />
+                      <button
+                        onClick={() => setSelectedFolderId(bc.id)}
+                        className={cn(
+                          "font-medium transition-colors",
+                          bc.id === selectedFolderId ? "text-[#111827]" : "text-[#3B82F6] hover:text-[#2563EB]"
+                        )}
+                      >
+                        {bc.name}
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Desktop drag overlay */}
+              {desktopDragOver && (
+                <div className="border-2 border-dashed border-[#3B82F6] bg-[#EFF6FF] rounded-xl p-8 flex flex-col items-center justify-center text-center">
+                  <Upload className="w-8 h-8 text-[#3B82F6] mb-3 animate-bounce" />
+                  <p className="text-sm font-semibold text-[#3B82F6]">Drop files to upload to {activeFolder?.name ?? "current folder"}</p>
+                </div>
+              )}
+
+              {/* Active filter strip */}
+              {hasActiveFilters && !breadcrumbs.length && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-[#6b7280] font-medium">Filtering by:</span>
+                  {activeFolder && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#EFF6FF] border border-[#BFDBFE] text-xs font-medium text-[#3B82F6]">
+                      <Folder className="w-3 h-3" />
+                      {activeFolder.name}
+                      <button onClick={() => setSelectedFolderId(null)} className="ml-0.5 hover:text-[#1D4ED8] transition-colors"><X className="w-3 h-3" /></button>
+                    </span>
+                  )}
+                  {activeTag && (
+                    <span className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium", tagPillClass(activeTag.color), "border-current/20")}>
+                      <Tag className="w-3 h-3" />
+                      {activeTag.name}
+                      <button onClick={() => setSelectedTagId(null)} className="ml-0.5 transition-colors"><X className="w-3 h-3" /></button>
+                    </span>
+                  )}
+                  {searchTerm && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#f3f4f6] border border-[#e5e7eb] text-xs font-medium text-[#374151]">
+                      <Search className="w-3 h-3" />
+                      "{searchTerm}"
+                      <button onClick={() => setSearchTerm("")} className="ml-0.5 hover:text-[#111827] transition-colors"><X className="w-3 h-3" /></button>
+                    </span>
+                  )}
+                  <button onClick={clearAll} className="text-xs text-[#6b7280] hover:text-[#374151] font-medium transition-colors ml-1">Clear all</button>
+                  <span className="ml-auto text-xs text-[#6b7280]">{filteredDatasets.length} of {datasets.length}</span>
+                </div>
+              )}
+
+              {/* Subfolder cards (when inside a folder) */}
+              {childFolders.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {childFolders.map((folder) => (
+                    <button
+                      key={folder.id}
+                      onClick={() => setSelectedFolderId(folder.id)}
+                      className="group flex items-center gap-3 bg-white border border-[#E5E7EB] hover:border-[#93C5FD] rounded-lg px-4 py-3 transition-all hover:bg-[#F9FAFB] text-left"
+                    >
+                      <Folder className="w-5 h-5 text-[#3B82F6] flex-shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-[#111827] truncate">{folder.name}</p>
+                        <p className="text-xs text-[#9CA3AF]">{folder.fileCount} files</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Columns view: sidebar + content side-by-side */}
+              {viewMode === "columns" && (
+                <div className="flex gap-4 min-h-[400px]">
+                  {/* Folders column */}
+                  <div className="w-56 flex-shrink-0 bg-white border border-[#DEE2E6] rounded-lg overflow-y-auto">
+                    <div className="p-3 border-b border-[#DEE2E6]">
+                      <p className="text-xs font-bold text-[#6C757D] uppercase tracking-wider">Folders</p>
+                    </div>
+                    <button
+                      onClick={() => { setSelectedFolderId(null); setSelectedTagId(null); }}
+                      className={cn("w-full text-left flex items-center gap-2 px-3 py-2.5 text-sm transition-colors",
+                        !selectedFolderId ? "bg-[#E3F2FD] text-[#007BFF] font-medium" : "text-[#374151] hover:bg-[#F9FAFB]"
+                      )}
+                    >
+                      <Database className="w-4 h-4" /> All Files
+                    </button>
+                    {liveFolders.map((f) => (
+                      <button
+                        key={f.id}
+                        onClick={() => setSelectedFolderId(f.id === selectedFolderId ? null : f.id)}
+                        className={cn("w-full text-left flex items-center gap-2 px-3 py-2.5 text-sm transition-colors",
+                          selectedFolderId === f.id ? "bg-[#E3F2FD] text-[#007BFF] font-medium" : "text-[#374151] hover:bg-[#F9FAFB]"
+                        )}
+                      >
+                        <Folder className="w-4 h-4" />
+                        <span className="flex-1 truncate">{f.name}</span>
+                        <span className="text-xs text-[#9CA3AF]">{f.fileCount}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {/* Files column */}
+                  <div className="flex-1 min-w-0">
+                    <Droppable droppableId="main-grid" direction="vertical">
+                      {(provided: DroppableProvided) => (
+                        <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-2">
+                          {filteredDatasets.length === 0
+                            ? <EmptyState hasFilters={hasActiveFilters} onClear={clearAll} onUpload={() => setShowUpload(true)} isDragOver={desktopDragOver} />
+                            : filteredDatasets.map((d, index) => (
+                                <Draggable key={d.id} draggableId={`file-${d.id}`} index={index}>
+                                  {(dragProvided: DraggableProvided) => (
+                                    <DatasetCard dataset={d} selected={selectedFileIds.has(d.id)} viewMode="list" allTags={tags}
+                                      onSelect={handleSelectFile} onPreview={handlePreview} onDownload={handleDownload}
+                                      onDelete={handleDeleteConfirm} onClick={(ds) => handleCtrlClick(ds, { ctrlKey: false, metaKey: false, preventDefault: () => {} } as any)}
+                                      onRename={setRenamingId} onMove={setMovingFileId} onAddTag={setTagPickerFileId} onContextMenu={handleFileContextMenu}
+                                      renamingId={renamingId} onRenameSubmit={handleRenameSubmit} onRenameCancel={() => setRenamingId(null)} provided={dragProvided} />
+                                  )}
+                                </Draggable>
+                              ))
+                          }
+                          {provided.placeholder}
+                        </div>
+                      )}
+                    </Droppable>
+                  </div>
+                </div>
+              )}
+
+              {/* Grid / List / Gallery views with grouping */}
+              {viewMode !== "columns" && (
+                <Droppable droppableId="main-grid" direction={viewMode === "grid" || viewMode === "gallery" ? "horizontal" : "vertical"}>
+                  {(provided: DroppableProvided) => (
+                    <div ref={provided.innerRef} {...provided.droppableProps}>
+                      {isLoading
+                        ? <div className={cn(
+                            viewMode === "list" ? "space-y-3" : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+                          )}>{Array.from({ length: 8 }).map((_, i) => <SkeletonCard key={i} />)}</div>
+                        : filteredDatasets.length === 0
+                        ? <EmptyState hasFilters={hasActiveFilters} onClear={clearAll} onUpload={() => setShowUpload(true)} isDragOver={desktopDragOver} />
+                        : groupedDatasets.map((group) => {
+                            const isCollapsed = collapsedGroups.has(group.label);
+                            let globalIndex = 0;
+                            // Compute global index offset
+                            for (const g of groupedDatasets) {
+                              if (g === group) break;
+                              globalIndex += g.items.length;
+                            }
+                            return (
+                              <div key={group.label || "all"}>
+                                {group.label && (
+                                  <GroupHeader
+                                    label={group.label}
+                                    count={group.items.length}
+                                    collapsed={isCollapsed}
+                                    onToggle={() => toggleGroupCollapse(group.label)}
+                                  />
+                                )}
+                                {!isCollapsed && (
+                                  <div className={cn(
+                                    viewMode === "list" ? "space-y-3 mb-4" :
+                                    viewMode === "gallery" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-4" :
+                                    "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-4"
+                                  )}>
+                                    {group.items.map((d, i) => (
+                                      <Draggable key={d.id} draggableId={`file-${d.id}`} index={globalIndex + i}>
+                                        {(dragProvided: DraggableProvided) => (
+                                          <DatasetCard dataset={d} selected={selectedFileIds.has(d.id)} viewMode={viewMode} allTags={tags}
+                                            onSelect={handleSelectFile} onPreview={handlePreview} onDownload={handleDownload}
+                                            onDelete={handleDeleteConfirm} onClick={(ds) => handleCtrlClick(ds, { ctrlKey: false, metaKey: false, preventDefault: () => {} } as any)}
+                                            onRename={setRenamingId} onMove={setMovingFileId} onAddTag={setTagPickerFileId} onContextMenu={handleFileContextMenu}
+                                            renamingId={renamingId} onRenameSubmit={handleRenameSubmit} onRenameCancel={() => setRenamingId(null)} provided={dragProvided} />
+                                        )}
+                                      </Draggable>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                      }
+                      {provided.placeholder}
+                    </div>
+                  )}
+                </Droppable>
+              )}
+            </main>
+          </div>
+        </div>
+
+        {/* Modals */}
+        <UploadModal open={showUpload} onClose={() => setShowUpload(false)} onUploadComplete={handleUploadComplete} />
+
+        {previewFile && (
+          <FilePreviewModal
+            file={{
+              name: previewFile.fileName,
+              content: previewContent?.content ?? "",
+              type:
+                previewFile.format === "CSV"
+                  ? "csv"
+                  : previewFile.format === "JSON"
+                  ? "txt"
+                  : previewFile.format === "XLSX"
+                  ? "csv"
+                  : null,
+              size: previewFile.size,
+              uploadedDate: previewFile.uploadDate,
+              fileUrl: previewContent?.fileUrl,
+              hasGraphs: previewContent?.hasGraphs,
+              error: previewContent?.error,
+            }}
+            onClose={() => setPreviewFile(null)}
+          />
+        )}
+        {selectedDataset && (
+          <DocumentViewer document={selectedDataset} onClose={() => setSelectedDataset(null)} />
+        )}
+
+        {/* Right-click context menu */}
+        {ctxMenu && (
+          <div
+            onMouseDown={e => e.stopPropagation()}
+            className="fixed z-[9999] bg-white border border-[#e2e8f0] rounded-xl shadow-lg p-1 min-w-[190px]"
+            style={{ top: ctxMenu.y, left: ctxMenu.x }}
+          >
+            {ctxMenu.dataset && (
+              <>
+                <CtxBtn icon={<Eye className="w-3.5 h-3.5" />} label="Preview" onClick={() => { setPreviewFile(ctxMenu.dataset!); setCtxMenu(null); }} />
+                <CtxBtn icon={<DownloadCloud className="w-3.5 h-3.5" />} label="Download" onClick={() => { handleDownload(ctxMenu.dataset!); setCtxMenu(null); }} />
+                <div className="h-px bg-[#f3f4f6] my-1" />
+                <CtxBtn icon={<Pencil className="w-3.5 h-3.5" />} label="Rename" onClick={() => { setRenamingId(ctxMenu.dataset!.id); setCtxMenu(null); }} />
+                <CtxBtn icon={<ArrowRight className="w-3.5 h-3.5" />} label="Move to..." onClick={() => { setMovingFileId(ctxMenu.dataset!.id); setCtxMenu(null); }} />
+                <CtxBtn icon={<Copy className="w-3.5 h-3.5" />} label="Copy" onClick={() => { toast.info("Copy not yet implemented"); setCtxMenu(null); }} />
+                <CtxBtn icon={<Tag className="w-3.5 h-3.5" />} label="Add/Remove Tags" onClick={() => { setTagPickerFileId(ctxMenu.dataset!.id); setCtxMenu(null); }} />
+                <div className="h-px bg-[#f3f4f6] my-1" />
+                <CtxBtn icon={<Trash2 className="w-3.5 h-3.5" />} label="Delete" danger onClick={() => { handleDeleteConfirm(ctxMenu.dataset!.id); setCtxMenu(null); }} />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Delete confirmation */}
+        {deleteTarget && (
+          <DeleteConfirmModal
+            name={deleteTarget.name}
+            onConfirm={() => handleDelete(deleteTarget.id)}
+            onCancel={() => setDeleteTarget(null)}
+          />
+        )}
+        {bulkDeleteConfirm && (
+          <DeleteConfirmModal
+            name=""
+            count={selectedFileIds.size}
+            onConfirm={handleBulkDelete}
+            onCancel={() => setBulkDeleteConfirm(false)}
+          />
+        )}
+
+        {/* Folder picker for move */}
+        {movingFileId && (
+          <FolderPickerModal
+            folders={liveFolders}
+            currentFolderId={datasets.find((d) => d.id === movingFileId)?.folderId}
+            onSelect={(fid) => handleMoveFile(movingFileId, fid)}
+            onCancel={() => setMovingFileId(null)}
+          />
+        )}
+        {showBulkMove && (
+          <FolderPickerModal
+            folders={liveFolders}
+            title={`Move ${selectedFileIds.size} file(s)`}
+            onSelect={handleBulkMove}
+            onCancel={() => setShowBulkMove(false)}
+          />
+        )}
+
+        {/* New folder modal */}
+        {showNewFolder && (
+          <NewFolderModal
+            parentId={newFolderParentId}
+            onClose={() => setShowNewFolder(false)}
+            onCreate={handleCreateFolder}
+          />
+        )}
+
+        {/* Tag picker */}
+        {tagPickerFileId && (
+          <TagPickerModal
+            tags={tags}
+            currentTags={datasets.find((d) => d.id === tagPickerFileId)?.tags ?? []}
+            onToggle={handleTagToggle}
+            onClose={() => setTagPickerFileId(null)}
+          />
+        )}
       </div>
-
-      {/* Modals */}
-      <UploadModal open={showUpload} onClose={() => setShowUpload(false)} onUploadComplete={handleUploadComplete} />
-
-      {previewFile && (
-        <FilePreviewModal
-          file={{
-            name: previewFile.fileName,
-            content: "",
-            type:
-              previewFile.format === "CSV"
-                ? "csv"
-                : previewFile.format === "JSON"
-                ? "txt"
-                : null,
-            size: previewFile.size,
-          }}
-          onClose={() => setPreviewFile(null)}
-        />
-      )}
-      {selectedDataset && (
-        <DocumentViewer document={selectedDataset} onClose={() => setSelectedDataset(null)} />
-      )}
-    </div>
+    </DragDropContext>
   );
 }

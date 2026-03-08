@@ -7,6 +7,7 @@ export interface FileFolder {
   name: string;
   description?: string;
   fileCount: number;
+  parentId?: string | null;
 }
 
 export interface FileTag {

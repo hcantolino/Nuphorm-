@@ -49,6 +49,8 @@ export interface ChatMessage {
   metadata?: {
     query?: string; // Original user query
     analysisType?: string; // Type of analysis performed
+    usedSources?: string[]; // Filenames of sources active when query was sent
+    [key: string]: any; // Allow additional metadata (llmUnavailable, chatSuggestions, etc.)
   };
 }
 

@@ -5,7 +5,6 @@ import {
   Check,
   Loader2,
   Calculator,
-  Code2,
   Wand2,
   ShieldCheck,
   BarChart2,
@@ -53,7 +52,6 @@ const CATEGORIES = [
   { id: 'bioequiv',     label: 'Bioequiv.',    icon: Scale        },
   { id: 'inferential',  label: 'Inferential',  icon: FlaskConical },
   { id: 'samplesize',   label: 'Sample Size',  icon: Calculator   },
-  { id: 'script',       label: 'Script',       icon: Code2        },
 ] as const;
 
 type CategoryId = (typeof CATEGORIES)[number]['id'];
@@ -339,82 +337,6 @@ function SampleSizePanel() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const DEFAULT_SCRIPT = `# Custom analysis script
-# Available: np, pd, math, json, scipy_stats
-import numpy as np
-values = [1, 2, 3, 4, 5, 6, 7, 8]
-result = {
-    "mean":   round(float(np.mean(values)), 4),
-    "std":    round(float(np.std(values, ddof=1)), 4),
-    "median": float(np.median(values)),
-    "n":      len(values),
-}
-print(f"Mean: {result['mean']}, Std: {result['std']}")
-`;
-
-function CustomScriptPanel() {
-  const [code, setCode] = useState(DEFAULT_SCRIPT);
-  const [running, setRunning] = useState(false);
-  const [output, setOutput] = useState('');
-  const [resultData, setResultData] = useState<unknown>(null);
-  const [error, setError] = useState('');
-
-  const run = async () => {
-    setRunning(true); setError(''); setOutput(''); setResultData(null);
-    try {
-      const res = await fetch(`${BIOSTAT_API}/stats/script`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-      });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d?.detail ?? `HTTP ${res.status}`); }
-      const data = await res.json(); setOutput(data.output ?? '');
-      if (data.result != null) setResultData(data.result);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Execution failed');
-    } finally { setRunning(false); }
-  };
-
-  return (
-    <div className="p-3 space-y-3">
-      <div className="rounded-lg bg-slate-900 border border-slate-700 px-3 py-2">
-        <p className="text-[11px] text-slate-300 font-semibold">Python · NumPy · pandas · scipy</p>
-        <p className="text-[10px] text-slate-500 mt-0.5">Define a <code className="text-slate-300">result</code> variable to display it as a card.</p>
-      </div>
-      <textarea value={code} onChange={(e) => setCode(e.target.value)} spellCheck={false} rows={8}
-        className="w-full text-xs font-mono rounded-md border border-slate-700 bg-slate-950 text-green-400 p-3 resize-none focus:outline-none focus:ring-1 focus:ring-slate-500 leading-relaxed" />
-      <button onClick={run} disabled={running || !code.trim()}
-        className="w-full py-2 text-xs font-semibold bg-slate-700 text-white rounded-md hover:bg-slate-600 disabled:opacity-50 flex items-center justify-center gap-1.5">
-        {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Code2 className="w-3.5 h-3.5" />}
-        {running ? 'Running…' : '▶  Run Script'}
-      </button>
-      {error && <div className="text-xs text-red-400 bg-red-950/50 rounded p-2 font-mono whitespace-pre-wrap">{error}</div>}
-      {output && (
-        <div className="rounded border border-border bg-muted/30 p-3">
-          <p className="text-[10px] font-bold text-muted-foreground uppercase mb-1">stdout</p>
-          <pre className="text-xs font-mono whitespace-pre-wrap max-h-28 overflow-y-auto">{output}</pre>
-        </div>
-      )}
-      {resultData != null && (
-        <div className="rounded border border-slate-700 bg-slate-900/50 p-3">
-          <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">result</p>
-          {typeof resultData === 'object' && !Array.isArray(resultData) ? (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-              {Object.entries(resultData as Record<string, unknown>).map(([k, v]) => (
-                <div key={k}>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wide">{k.replace(/_/g, ' ')}</p>
-                  <p className="text-xs font-semibold text-slate-200">{typeof v === 'number' ? v.toFixed(4) : String(v)}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <pre className="text-xs font-mono text-slate-200 whitespace-pre-wrap">{JSON.stringify(resultData, null, 2)}</pre>
-          )}
         </div>
       )}
     </div>
@@ -756,7 +678,6 @@ export default function BiostatisticsMeasurementsPanel({
     }
     if (activeCategory === 'inferential') return <InferentialPanel />;
     if (activeCategory === 'samplesize') return <SampleSizePanel />;
-    if (activeCategory === 'script') return <CustomScriptPanel />;
 
     // Regular measurement category
     return (

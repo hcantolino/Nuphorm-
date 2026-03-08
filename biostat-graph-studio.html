@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioStat Graph Studio</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/recharts@2/umd/Recharts.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    [contenteditable]:focus { outline: 2px solid #14b8a6; outline-offset: 1px; }
+    button:hover { opacity: 0.9; }
+    select:focus, input:focus, textarea:focus { outline: 2px solid #14b8a6; outline-offset: -1px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+    // Pull Recharts components from global
+    const {
+      ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area,
+      ScatterChart, Scatter, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+      Tooltip, Legend, ReferenceLine, LabelList,
+    } = Recharts;
+
+    const { useState, useRef, useCallback, useEffect, useMemo } = React;
+
+    // ── THEME ──
+    const THEME = {
+      navy: '#1a2035', navyLight: '#243049', parchment: '#faf8f5',
+      panelBg: '#ffffff', accent: '#14b8a6', accentHover: '#0d9488',
+      blue: '#3b82f6', gold: '#eab308', orange: '#f97316', red: '#ef4444',
+      purple: '#8b5cf6', green: '#22c55e',
+      textPrimary: '#1e293b', textSecondary: '#64748b', textMuted: '#94a3b8',
+      border: '#e2e8f0', tableBorder: '#cbd5e1',
+    };
+    const CHART_COLORS = ['#3b82f6','#ef4444','#22c55e','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#f97316','#6366f1','#14b8a6'];
+    const MARKER_SHAPES = ['circle','square','triangle','diamond','cross','star'];
+    const LINE_STYLES = { solid: undefined, dashed: '8 4', dotted: '2 4' };
+    const SIG_COLORS = { ns:'#94a3b8','*':'#eab308','**':'#f97316','***':'#ef4444','****':'#8b5cf6' };
+    const SIG_PVALS = { ns:'p > 0.05','*':'p < 0.05','**':'p < 0.01','***':'p < 0.001','****':'p < 0.0001' };
+    const LAYOUT_OPTIONS = [
+      { id:'1x1',label:'1x1',cols:1,rows:1 },{ id:'1x2',label:'1x2',cols:2,rows:1 },
+      { id:'2x1',label:'2x1',cols:1,rows:2 },{ id:'2x2',label:'2x2',cols:2,rows:2 },
+      { id:'1x3',label:'1x3',cols:3,rows:1 },{ id:'2x3',label:'2x3',cols:3,rows:2 },
+    ];
+
+    // ── UTILITIES ──
+    function parseCSV(text) {
+      const lines = text.trim().split('\n').filter(l => l.trim());
+      if (lines.length < 2) return { headers: [], rows: [] };
+      const sep = lines[0].includes('\t') ? '\t' : ',';
+      const headers = lines[0].split(sep).map(h => h.trim().replace(/^["']|["']$/g, ''));
+      const rows = lines.slice(1).map(line => {
+        const vals = line.split(sep).map(v => v.trim().replace(/^["']|["']$/g, ''));
+        const obj = {};
+        headers.forEach((h, i) => {
+          const raw = vals[i] || '';
+          const num = parseFloat(raw);
+          obj[h] = isNaN(num) || raw.startsWith('>') || raw.startsWith('<') ? raw : num;
+        });
+        return obj;
+      });
+      return { headers, rows };
+    }
+    function detectTableMode(headers, rows) {
+      let catCount = 0, micLike = false;
+      headers.forEach(h => {
+        const vals = rows.map(r => r[h]);
+        if (vals.filter(v => typeof v === 'number').length < vals.length * 0.5) catCount++;
+        if (vals.some(v => typeof v === 'string' && (/^[><]/.test(v) || v === '-'))) micLike = true;
+      });
+      return catCount > 3 || micLike;
+    }
+    function sigFigs(n, figs = 4) {
+      if (typeof n !== 'number' || isNaN(n)) return n;
+      if (n === 0) return '0';
+      return parseFloat(n.toPrecision(figs)).toString();
+    }
+    function darkenColor(hex, amt = 0.2) {
+      const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+      const f = 1 - amt;
+      return `rgb(${Math.round(r*f)},${Math.round(g*f)},${Math.round(b*f)})`;
+    }
+    function generateFilename(title, ext) {
+      const clean = (title||'chart').replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-|-$/g,'');
+      return `${clean}_${new Date().toISOString().slice(0,10)}.${ext}`;
+    }
+
+    // ── CUSTOM DOT ──
+    function CustomDot({ cx, cy, fill, shape='circle', size=6, outline=false }) {
+      const stroke = fill, fillColor = outline ? '#fff' : fill, sw = outline ? 2 : 0;
+      switch (shape) {
+        case 'square': return <rect x={cx-size/2} y={cy-size/2} width={size} height={size} fill={fillColor} stroke={stroke} strokeWidth={sw} />;
+        case 'triangle': return <polygon points={`${cx},${cy-size} ${cx-size},${cy+size*0.6} ${cx+size},${cy+size*0.6}`} fill={fillColor} stroke={stroke} strokeWidth={sw} />;
+        case 'triangle-down': return <polygon points={`${cx},${cy+size} ${cx-size},${cy-size*0.6} ${cx+size},${cy-size*0.6}`} fill={fillColor} stroke={stroke} strokeWidth={sw} />;
+        case 'diamond': return <polygon points={`${cx},${cy-size} ${cx+size},${cy} ${cx},${cy+size} ${cx-size},${cy}`} fill={fillColor} stroke={stroke} strokeWidth={sw} />;
+        case 'cross': { const t=size*0.3; return <path d={`M${cx-size},${cy-t}L${cx-size},${cy+t}L${cx-t},${cy+t}L${cx-t},${cy+size}L${cx+t},${cy+size}L${cx+t},${cy+t}L${cx+size},${cy+t}L${cx+size},${cy-t}L${cx+t},${cy-t}L${cx+t},${cy-size}L${cx-t},${cy-size}L${cx-t},${cy-t}Z`} fill={fillColor} stroke={stroke} strokeWidth={sw} />; }
+        case 'star': { const pts=[]; for(let i=0;i<10;i++){const r=i%2===0?size:size*0.45,a=Math.PI/5*i-Math.PI/2;pts.push(`${cx+r*Math.cos(a)},${cy+r*Math.sin(a)}`);} return <polygon points={pts.join(' ')} fill={fillColor} stroke={stroke} strokeWidth={sw} />; }
+        default: return <circle cx={cx} cy={cy} r={size/2} fill={fillColor} stroke={outline?stroke:'none'} strokeWidth={sw} />;
+      }
+    }
+    function makeDotRenderer(shape, color, outline=false) {
+      return (props) => {
+        const {cx,cy}=props; if(cx==null||cy==null)return null;
+        return <CustomDot cx={cx} cy={cy} fill={color} shape={shape} size={6} outline={outline} />;
+      };
+    }
+
+    // ── SIGNIFICANCE BRACKETS ──
+    function SigBrackets({comparisons,chartWidth,chartHeight,margin,data,xKey,groups}) {
+      if(!comparisons||comparisons.length===0||!data||data.length===0) return null;
+      const plotWidth=chartWidth-(margin?.left||60)-(margin?.right||20);
+      const barGroupWidth=plotWidth/data.length;
+      const barWidth=barGroupWidth/(groups.length+1);
+      const brackets=comparisons.map((comp,idx)=>{
+        const g1=groups.indexOf(comp.group1),g2=groups.indexOf(comp.group2);
+        if(g1===-1||g2===-1)return null;
+        const xIdx=comp.xIndex!=null?comp.xIndex:0;
+        const baseX=(margin?.left||60)+xIdx*barGroupWidth+barGroupWidth/2;
+        const x1=baseX+(g1-(groups.length-1)/2)*barWidth;
+        const x2=baseX+(g2-(groups.length-1)/2)*barWidth;
+        const bracketY=(margin?.top||20)-8-idx*24;
+        const color=SIG_COLORS[comp.sig]||'#64748b';
+        return(<g key={idx}><line x1={x1} y1={bracketY+6} x2={x1} y2={bracketY} stroke={color} strokeWidth={1.5}/><line x1={x1} y1={bracketY} x2={x2} y2={bracketY} stroke={color} strokeWidth={1.5}/><line x1={x2} y1={bracketY} x2={x2} y2={bracketY+6} stroke={color} strokeWidth={1.5}/><text x={(x1+x2)/2} y={bracketY-4} textAnchor="middle" fontSize={13} fontWeight="bold" fill={color}>{comp.sig}</text></g>);
+      });
+      return(<svg style={{position:'absolute',top:0,left:0,width:chartWidth,height:chartHeight,pointerEvents:'none'}}>{brackets}</svg>);
+    }
+
+    // ── PUBLICATION TABLE ──
+    function PubTable({headers,rows,footnotes=''}) {
+      const isQual=v=>typeof v==='string'&&/^[><]/.test(v);
+      const downloadCSV=()=>{
+        const csv=[headers.join(','),...rows.map(r=>headers.map(h=>{const v=r[h];return typeof v==='string'&&v.includes(',')?`"${v}"`:v}).join(','))].join('\n');
+        const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=generateFilename('table','csv');a.click();
+      };
+      return(
+        <div style={{fontFamily:"'Georgia','Times New Roman',serif"}}>
+          <div style={{display:'flex',justifyContent:'flex-end',marginBottom:8}}>
+            <button onClick={downloadCSV} style={S.smallBtn}>Export CSV</button>
+          </div>
+          <div style={{overflowX:'auto',border:`1px solid ${THEME.tableBorder}`,borderRadius:4}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+              <thead><tr>{headers.map((h,i)=>(<th key={i} style={{background:THEME.navy,color:'#fff',fontWeight:700,padding:'10px 14px',textAlign:'left',borderBottom:`2px solid ${THEME.navy}`,whiteSpace:'pre-line',fontSize:12,letterSpacing:'0.02em'}}>{h}</th>))}</tr></thead>
+              <tbody>{rows.map((row,ri)=>(<tr key={ri} style={{background:ri%2===0?'#fff':'#f8fafc'}}>{headers.map((h,ci)=>{const val=row[h];const isNum=typeof val==='number';const q=isQual(val);return(<td key={ci} style={{padding:'8px 14px',borderBottom:`1px solid ${THEME.border}`,textAlign:isNum?'right':'left',fontFamily:isNum?"'SF Mono','Fira Code',monospace":'inherit',fontStyle:q?'italic':'normal',color:q?THEME.textMuted:(val==='-'?THEME.textMuted:THEME.textPrimary)}}>{isNum?sigFigs(val):(val||'-')}</td>);})}</tr>))}</tbody>
+            </table>
+          </div>
+          {footnotes&&<div style={{marginTop:8,fontSize:11,color:THEME.textSecondary,fontStyle:'italic',lineHeight:1.5}}>{footnotes}</div>}
+        </div>
+      );
+    }
+
+    // ── REFERENCE LINES PANEL ──
+    function ReferenceLinesPanel({lines,onChange}) {
+      const addLine=preset=>{
+        const defs={baseline:{axis:'y',value:0,label:'No Effect',style:'dashed',color:THEME.textMuted},vehicle:{axis:'y',value:100,label:'Vehicle Baseline',style:'dashed',color:THEME.blue},custom:{axis:'y',value:'',label:'',style:'dashed',color:THEME.red}};
+        onChange([...lines,{id:Date.now(),...defs[preset]}]);
+      };
+      const upd=(id,f,v)=>onChange(lines.map(l=>l.id===id?{...l,[f]:f==='value'?(isNaN(Number(v))?v:Number(v)):v}:l));
+      const rm=id=>onChange(lines.filter(l=>l.id!==id));
+      return(
+        <div style={S.subPanel}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8,color:THEME.textPrimary}}>Reference Lines</div>
+          <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
+            <button onClick={()=>addLine('baseline')} style={S.presetBtn}>+ Baseline y=0</button>
+            <button onClick={()=>addLine('vehicle')} style={S.presetBtn}>+ Vehicle y=100</button>
+            <button onClick={()=>addLine('custom')} style={S.presetBtn}>+ Custom</button>
+          </div>
+          {lines.map(l=>(
+            <div key={l.id} style={{display:'flex',gap:6,alignItems:'center',marginBottom:6,flexWrap:'wrap'}}>
+              <select value={l.axis} onChange={e=>upd(l.id,'axis',e.target.value)} style={S.miniSelect}><option value="y">Y</option><option value="x">X</option></select>
+              <input type="text" value={l.value} onChange={e=>upd(l.id,'value',e.target.value)} placeholder="Value" style={{...S.miniInput,width:60}}/>
+              <input type="text" value={l.label} onChange={e=>upd(l.id,'label',e.target.value)} placeholder="Label" style={{...S.miniInput,width:90}}/>
+              <select value={l.style} onChange={e=>upd(l.id,'style',e.target.value)} style={S.miniSelect}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select>
+              <input type="color" value={l.color} onChange={e=>upd(l.id,'color',e.target.value)} style={{width:28,height:24,border:'none',cursor:'pointer',padding:0}}/>
+              <button onClick={()=>rm(l.id)} style={S.removeBtn}>x</button>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ── SIGNIFICANCE BRACKETS PANEL ──
+    function SigBracketsPanel({comparisons,onChange,groups}) {
+      const add=()=>onChange([...comparisons,{id:Date.now(),group1:groups[0]||'',group2:groups[1]||'',sig:'*',xIndex:0}]);
+      const upd=(id,f,v)=>onChange(comparisons.map(c=>c.id===id?{...c,[f]:f==='xIndex'?Number(v):v}:c));
+      const rm=id=>onChange(comparisons.filter(c=>c.id!==id));
+      return(
+        <div style={S.subPanel}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8,color:THEME.textPrimary}}>Significance Brackets</div>
+          <button onClick={add} style={S.presetBtn}>+ Add comparison</button>
+          {comparisons.map(c=>(
+            <div key={c.id} style={{display:'flex',gap:6,alignItems:'center',marginTop:6,flexWrap:'wrap'}}>
+              <select value={c.group1} onChange={e=>upd(c.id,'group1',e.target.value)} style={S.miniSelect}>{groups.map(g=><option key={g} value={g}>{g}</option>)}</select>
+              <span style={{fontSize:12,color:THEME.textMuted}}>vs</span>
+              <select value={c.group2} onChange={e=>upd(c.id,'group2',e.target.value)} style={S.miniSelect}>{groups.map(g=><option key={g} value={g}>{g}</option>)}</select>
+              <select value={c.sig} onChange={e=>upd(c.id,'sig',e.target.value)} style={S.miniSelect}>{Object.keys(SIG_COLORS).map(s=><option key={s} value={s}>{s} ({SIG_PVALS[s]})</option>)}</select>
+              <button onClick={()=>rm(c.id)} style={S.removeBtn}>x</button>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ── CHART OPTIONS PANEL ──
+    function ChartOptionsPanel({options,onChange,numericKeys}) {
+      const set=(k,v)=>onChange({...options,[k]:v});
+      return(
+        <div style={S.subPanel}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8,color:THEME.textPrimary}}>Chart Options</div>
+          <label style={S.toggleRow}><input type="checkbox" checked={options.showValueLabels} onChange={e=>set('showValueLabels',e.target.checked)}/><span>Show values on bars</span></label>
+          <div style={{...S.toggleRow,flexDirection:'column',alignItems:'flex-start',gap:4}}>
+            <span style={{fontSize:12,fontWeight:500}}>Y-Axis Scale</span>
+            <div style={{display:'flex',gap:2,background:'#f1f5f9',borderRadius:6,padding:2}}>
+              {['linear','log'].map(s=>(<button key={s} onClick={()=>{if(s==='log'&&options._hasZeroOrNeg)alert('Warning: Data has zeros/negatives. Log scale may error.');set('yScale',s);}} style={{...S.segBtn,...(options.yScale===s?S.segBtnActive:{})}}>{s==='log'?'Log\u2081\u2080':'Linear'}</button>))}
+            </div>
+          </div>
+          {numericKeys&&numericKeys.length>0&&(
+            <div style={{marginTop:8}}>
+              <span style={{fontSize:12,fontWeight:500,color:THEME.textPrimary}}>Marker Shapes</span>
+              {numericKeys.map((k,i)=>(
+                <div key={k} style={{display:'flex',alignItems:'center',gap:6,marginTop:4}}>
+                  <span style={{fontSize:11,width:80,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{k}</span>
+                  <select value={(options.markers||{})[k]||MARKER_SHAPES[i%MARKER_SHAPES.length]} onChange={e=>set('markers',{...(options.markers||{}),[k]:e.target.value})} style={S.miniSelect}>{MARKER_SHAPES.map(s=><option key={s} value={s}>{s}</option>)}</select>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── SCREENING PANEL ──
+    function ScreeningPanel({config,onChange}) {
+      const set=(k,v)=>onChange({...config,[k]:v});
+      return(
+        <div style={S.subPanel}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:8,color:THEME.textPrimary}}>Screening Mode (&gt;15 categories)</div>
+          <label style={S.toggleRow}><span style={{fontSize:12}}>Threshold:</span><input type="number" value={config.threshold??''} onChange={e=>set('threshold',e.target.value===''?null:Number(e.target.value))} placeholder="e.g. 0.10" style={{...S.miniInput,width:80}}/></label>
+          <label style={S.toggleRow}><span style={{fontSize:12}}>Active color:</span><input type="color" value={config.activeColor||'#22c55e'} onChange={e=>set('activeColor',e.target.value)} style={{width:28,height:22,border:'none',padding:0}}/></label>
+          <label style={S.toggleRow}><span style={{fontSize:12}}>Inactive color:</span><input type="color" value={config.inactiveColor||'#cbd5e1'} onChange={e=>set('inactiveColor',e.target.value)} style={{width:28,height:22,border:'none',padding:0}}/></label>
+        </div>
+      );
+    }
+
+    // ── CAPTION PANEL ──
+    function CaptionPanel({caption,onCaptionChange,stats}) {
+      const [copied,setCopied]=useState(false);
+      const copy=()=>navigator.clipboard.writeText(caption).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});
+      return(
+        <div style={{...S.subPanel,marginTop:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+            <span style={{fontWeight:600,fontSize:13,color:THEME.textPrimary}}>Figure Notes</span>
+            <button onClick={copy} style={S.smallBtn}>{copied?'Copied!':'Copy'}</button>
+          </div>
+          <div contentEditable suppressContentEditableWarning style={{border:`1px solid ${THEME.border}`,borderRadius:6,padding:'8px 12px',fontSize:12,lineHeight:1.6,color:THEME.textPrimary,minHeight:50,fontFamily:"'Georgia',serif",background:'#fafafa'}} onBlur={e=>onCaptionChange(e.target.innerText)}>{caption||'Click to add figure caption...'}</div>
+          {stats&&<div style={{marginTop:8,fontSize:11,color:THEME.textSecondary,lineHeight:1.6}}>{stats.split('\n').map((l,i)=><div key={i}>{l}</div>)}</div>}
+        </div>
+      );
+    }
+
+    // ── EXPORT DROPDOWN ──
+    function ExportDropdown({chartRef,title,data,headers}) {
+      const [open,setOpen]=useState(false);
+      const exportPNG=async()=>{setOpen(false);if(!chartRef.current)return;try{const d=await htmlToImage.toPng(chartRef.current,{pixelRatio:3,backgroundColor:'#fff'});const a=document.createElement('a');a.href=d;a.download=generateFilename(title,'png');a.click();}catch(e){console.error(e);alert('PNG export failed');}};
+      const exportSVG=async()=>{setOpen(false);if(!chartRef.current)return;try{const d=await htmlToImage.toSvg(chartRef.current,{backgroundColor:'#fff'});const a=document.createElement('a');a.href=d;a.download=generateFilename(title,'svg');a.click();}catch(e){console.error(e);}};
+      const exportCSV=()=>{setOpen(false);if(!data||!headers)return;const csv=[headers.join(','),...data.map(r=>headers.map(h=>{const v=r[h];return typeof v==='string'&&v.includes(',')?`"${v}"`:(v??'')}).join(','))].join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=generateFilename(title,'csv');a.click();};
+      return(
+        <div style={{position:'relative'}}>
+          <button onClick={()=>setOpen(!open)} style={S.smallBtn}>Export &#9662;</button>
+          {open&&<div style={{position:'absolute',top:'100%',right:0,marginTop:4,background:'#fff',border:`1px solid ${THEME.border}`,borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:50,minWidth:140}}>
+            <button onClick={exportPNG} style={S.dropItem}>PNG (300 DPI)</button>
+            <button onClick={exportSVG} style={S.dropItem}>SVG (vector)</button>
+            <button onClick={exportCSV} style={S.dropItem}>CSV (data)</button>
+          </div>}
+        </div>
+      );
+    }
+
+    // ── CHART RENDERER ──
+    function ChartRenderer({data,headers,chartType,title,xLabel,yLabel,referenceLines,comparisons,chartOptions,screeningConfig,panelLabel,numericKeys,xKey}) {
+      const isScreening=chartType==='bar'&&data.length>15;
+      const chartHeight=isScreening?450:340;
+      const chartWidth=isScreening?Math.max(800,data.length*32):undefined;
+      const margin={top:comparisons.length>0?40+comparisons.length*24:30,right:30,bottom:isScreening?80:40,left:60};
+      const yScale=chartOptions.yScale||'linear';
+      const yDomain=yScale==='log'?['auto','auto']:undefined;
+      const yTickFmt=yScale==='log'?(v=>{if(v<=0)return v;const e=Math.log10(v);return Number.isInteger(e)?`10${String.fromCharCode(8304+e)}`:v}):undefined;
+      const yLabelText=yLabel?(yScale==='log'?`${yLabel} (log scale)`:yLabel):undefined;
+      const getBarFill=(entry,key)=>{if(isScreening&&screeningConfig.threshold!=null)return entry[key]>screeningConfig.threshold?(screeningConfig.activeColor||'#22c55e'):(screeningConfig.inactiveColor||'#cbd5e1');return undefined;};
+
+      const refLines=referenceLines.map((rl,i)=>(
+        <ReferenceLine key={`rl-${i}`} {...(rl.axis==='y'?{y:rl.value}:{x:rl.value})} stroke={rl.color||THEME.textMuted} strokeDasharray={LINE_STYLES[rl.style]} strokeWidth={1.5} label={rl.label?{value:rl.label,position:rl.axis==='y'?'right':'top',fill:rl.color||THEME.textMuted,fontSize:11,fontWeight:500}:undefined}/>
+      ));
+      const threshLine=isScreening&&screeningConfig.threshold!=null?<ReferenceLine y={screeningConfig.threshold} stroke={THEME.red} strokeDasharray="8 4" strokeWidth={1.5} label={{value:`Cutoff: ${screeningConfig.threshold}`,position:'right',fill:THEME.red,fontSize:11}}/>:null;
+      const cXAxis=<XAxis dataKey={xKey} tick={{fontSize:isScreening?10:12,fill:THEME.textSecondary}} angle={isScreening?-45:0} textAnchor={isScreening?'end':'middle'} label={xLabel?{value:xLabel,position:'insideBottom',offset:isScreening?-70:-5,fill:THEME.textSecondary,fontSize:12}:undefined} interval={0}/>;
+      const cYAxis=<YAxis scale={yScale} domain={yDomain} tickFormatter={yTickFmt} tick={{fontSize:12,fill:THEME.textSecondary}} allowDataOverflow={yScale==='log'} label={yLabelText?{value:yLabelText,angle:-90,position:'insideLeft',offset:0,fill:THEME.textSecondary,fontSize:12}:undefined}/>;
+
+      const renderChart=()=>{
+        switch(chartType){
+          case 'bar': return(
+            <BarChart data={data} margin={margin}>
+              <CartesianGrid strokeDasharray="3 3" stroke={THEME.border}/>{cXAxis}{cYAxis}
+              <Tooltip contentStyle={{background:THEME.navy,color:'#fff',border:'none',borderRadius:6,fontSize:12}}/>
+              <Legend/>{refLines}{threshLine}
+              {numericKeys.map((key,i)=>(
+                <Bar key={key} dataKey={key} fill={CHART_COLORS[i%CHART_COLORS.length]} maxBarSize={isScreening?18:40} radius={[3,3,0,0]}>
+                  {chartOptions.showValueLabels&&<LabelList dataKey={key} position="top" fontSize={10} formatter={v=>sigFigs(v)} fill={darkenColor(CHART_COLORS[i%CHART_COLORS.length])} style={{fontFamily:"'SF Mono',monospace"}}/>}
+                  {isScreening&&screeningConfig.threshold!=null&&data.map((entry,j)=><Cell key={j} fill={getBarFill(entry,key)||CHART_COLORS[i%CHART_COLORS.length]}/>)}
+                </Bar>
+              ))}
+            </BarChart>);
+          case 'line': return(
+            <LineChart data={data} margin={margin}>
+              <CartesianGrid strokeDasharray="3 3" stroke={THEME.border}/>{cXAxis}{cYAxis}
+              <Tooltip contentStyle={{background:THEME.navy,color:'#fff',border:'none',borderRadius:6,fontSize:12}}/>
+              <Legend/>{refLines}
+              {numericKeys.map((key,i)=>{const shape=(chartOptions.markers||{})[key]||MARKER_SHAPES[i%MARKER_SHAPES.length];const color=CHART_COLORS[i%CHART_COLORS.length];return(
+                <Line key={key} type="monotone" dataKey={key} stroke={color} strokeWidth={2} dot={makeDotRenderer(shape,color,i>=3)} activeDot={{r:8,fill:color,stroke:'#fff',strokeWidth:2}}/>
+              );})}
+            </LineChart>);
+          case 'area': return(
+            <AreaChart data={data} margin={margin}>
+              <CartesianGrid strokeDasharray="3 3" stroke={THEME.border}/>{cXAxis}{cYAxis}
+              <Tooltip contentStyle={{background:THEME.navy,color:'#fff',border:'none',borderRadius:6,fontSize:12}}/>
+              <Legend/>{refLines}
+              {numericKeys.map((key,i)=><Area key={key} type="monotone" dataKey={key} stroke={CHART_COLORS[i%CHART_COLORS.length]} fill={CHART_COLORS[i%CHART_COLORS.length]} fillOpacity={0.15} strokeWidth={2}/>)}
+            </AreaChart>);
+          case 'scatter':
+            if(numericKeys.length<2) return <div style={{padding:40,textAlign:'center',color:THEME.textMuted}}>Scatter requires 2+ numeric columns.</div>;
+            return(
+              <ScatterChart margin={margin}>
+                <CartesianGrid strokeDasharray="3 3" stroke={THEME.border}/>
+                <XAxis dataKey={numericKeys[0]} name={numericKeys[0]} type="number" tick={{fontSize:12,fill:THEME.textSecondary}}/>
+                <YAxis dataKey={numericKeys[1]} name={numericKeys[1]} type="number" tick={{fontSize:12,fill:THEME.textSecondary}}/>
+                <Tooltip contentStyle={{background:THEME.navy,color:'#fff',border:'none',borderRadius:6,fontSize:12}}/>
+                {refLines}<Scatter data={data} fill={CHART_COLORS[0]}>{data.map((_,i)=><Cell key={i} fill={CHART_COLORS[i%CHART_COLORS.length]}/>)}</Scatter>
+              </ScatterChart>);
+          case 'pie': return(
+            <PieChart>
+              <Pie data={data} dataKey={numericKeys[0]} nameKey={xKey} cx="50%" cy="50%" outerRadius={120} label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} labelLine={{stroke:THEME.textMuted}}>{data.map((_,i)=><Cell key={i} fill={CHART_COLORS[i%CHART_COLORS.length]}/>)}</Pie>
+              <Tooltip contentStyle={{background:THEME.navy,color:'#fff',border:'none',borderRadius:6,fontSize:12}}/><Legend/>
+            </PieChart>);
+          default: return null;
+        }
+      };
+      const cStyle=isScreening?{width:chartWidth,height:chartHeight}:{width:'100%',height:chartHeight};
+      return(
+        <div style={{position:'relative',background:'#fff',padding:16,borderRadius:8}}>
+          {panelLabel&&<div style={{position:'absolute',top:12,left:16,fontWeight:700,fontSize:16,color:THEME.navy}}>{panelLabel}</div>}
+          {title&&<div style={{textAlign:'center',fontWeight:600,fontSize:14,color:THEME.textPrimary,marginBottom:8}}>{title}</div>}
+          <div style={isScreening?{overflowX:'auto',overflowY:'hidden'}:{}}>
+            <div style={cStyle}><ResponsiveContainer width="100%" height="100%">{renderChart()}</ResponsiveContainer></div>
+          </div>
+          {chartType==='bar'&&comparisons.length>0&&<SigBrackets comparisons={comparisons} chartWidth={600} chartHeight={chartHeight} margin={margin} data={data} xKey={xKey} groups={numericKeys}/>}
+          {isScreening&&(
+            <div style={{height:40,marginTop:8,background:'#f8fafc',borderRadius:4,overflow:'hidden',position:'relative'}}>
+              <div style={{fontSize:9,color:THEME.textMuted,padding:'2px 6px'}}>Overview</div>
+              <svg width="100%" height="28" viewBox={`0 0 ${data.length} 28`} preserveAspectRatio="none">
+                {data.map((d,i)=>{const val=numericKeys[0]?d[numericKeys[0]]:0;const mx=Math.max(...data.map(r=>numericKeys[0]?(r[numericKeys[0]]||0):0));const h=mx>0?(val/mx)*24:0;const fill=screeningConfig.threshold!=null&&val>screeningConfig.threshold?(screeningConfig.activeColor||'#22c55e'):(screeningConfig.inactiveColor||'#cbd5e1');return <rect key={i} x={i} y={24-h} width={0.8} height={h} fill={fill}/>;
+                })}
+              </svg>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── CSV DETECTION & PREVIEW ──
+    function detectCSVInText(text){
+      const lines=text.trim().split('\n');
+      const csvLines=lines.filter(l=>l.includes(',')||l.includes('\t'));
+      if(csvLines.length<2)return null;
+      const sep=csvLines[0].includes('\t')?'\t':',';
+      let startIdx=-1;
+      for(let i=0;i<lines.length;i++){if((lines[i].match(new RegExp(sep==='\t'?'\t':',','g'))||[]).length>=1){if(startIdx===-1)startIdx=i;}else if(startIdx!==-1)break;}
+      if(startIdx===-1)return null;
+      const csvBlock=[];
+      for(let i=startIdx;i<lines.length;i++){const c=(lines[i].match(new RegExp(sep==='\t'?'\t':',','g'))||[]).length;if(c>=1)csvBlock.push(lines[i]);else break;}
+      if(csvBlock.length<2)return null;
+      const headerCols=csvBlock[0].split(sep).map(h=>h.trim().replace(/^["']|["']$/g,''));
+      const colCounts=csvBlock.map(l=>l.split(sep).length);
+      const expectedCols=colCounts[0];
+      const mismatchRow=colCounts.findIndex((c,i)=>i>0&&c!==expectedCols);
+      return{detected:true,headers:headerCols,colCount:expectedCols,rowCount:csvBlock.length-1,csvText:csvBlock.join('\n'),mismatchRow:mismatchRow!==-1?mismatchRow+1:null};
+    }
+    function CSVPreview({text}){
+      const info=useMemo(()=>detectCSVInText(text),[text]);
+      if(!info)return null;
+      const shown=info.headers.slice(0,4);const more=info.headers.length-4;
+      if(info.mismatchRow)return(<div style={{padding:'6px 12px',background:'#fef9c3',border:'1px solid #fde047',borderRadius:8,fontSize:11,color:'#92400e',marginBottom:6}}>Column count mismatch — check row {info.mismatchRow}</div>);
+      return(<div style={{padding:'6px 12px',background:'#ecfdf5',border:`1px solid ${THEME.accent}`,borderRadius:8,fontSize:11,color:THEME.textPrimary,marginBottom:6}}><span style={{color:THEME.green,fontWeight:600}}>Data detected</span><span style={{color:THEME.textSecondary,marginLeft:8}}>{info.colCount} columns · {info.rowCount} rows</span><div style={{color:THEME.textMuted,marginTop:2,fontSize:10}}>{shown.join(', ')}{more>0?` ... +${more} more`:''}</div></div>);
+    }
+
+    // ── SUGGESTION CHIPS ──
+    const SUGGESTION_CHIPS=['Compare groups with a bar chart','Make a line chart with error bars','Add significance stars between groups','Add a reference line at y = 0','Switch to log scale','Show values on each bar','Generate a Kaplan-Meier curve','Make a waterfall plot'];
+    function SuggestionChips({onSelect}){
+      return(<div style={{display:'flex',flexWrap:'wrap',gap:6,padding:'12px 0'}}>{SUGGESTION_CHIPS.map(chip=>(<button key={chip} onClick={()=>onSelect(chip)} style={{background:'#fff',border:`1px solid ${THEME.border}`,borderRadius:20,padding:'6px 14px',fontSize:11,color:THEME.textSecondary,cursor:'pointer'}} onMouseEnter={e=>{e.target.style.borderColor=THEME.accent;e.target.style.color=THEME.accent;}} onMouseLeave={e=>{e.target.style.borderColor=THEME.border;e.target.style.color=THEME.textSecondary;}}>{chip}</button>))}</div>);
+    }
+
+    // ── NATURAL LANGUAGE INTERPRETER ──
+    function interpretMessage(text,cur){
+      const lower=text.toLowerCase();const updates={};let desc='';
+      if(/\b(bar chart|bar graph|bars)\b/.test(lower)){updates.chartType='bar';desc+='Switched to bar chart. ';}
+      else if(/\b(line chart|line graph|lines)\b/.test(lower)){updates.chartType='line';desc+='Switched to line chart. ';}
+      else if(/\b(area chart|area graph)\b/.test(lower)){updates.chartType='area';desc+='Switched to area chart. ';}
+      else if(/\b(scatter|scatter plot)\b/.test(lower)){updates.chartType='scatter';desc+='Switched to scatter plot. ';}
+      else if(/\b(pie chart|pie graph)\b/.test(lower)){updates.chartType='pie';desc+='Switched to pie chart. ';}
+      if(/\blog\s*scale\b/.test(lower)||/\blog.?10\b/.test(lower)){updates.chartOptions={...(cur.chartOptions||{}),yScale:'log'};desc+='Switched Y-axis to log scale. ';}
+      else if(/\blinear\s*scale\b/.test(lower)){updates.chartOptions={...(cur.chartOptions||{}),yScale:'linear'};desc+='Switched Y-axis to linear scale. ';}
+      if(/\bshow\s*(the\s+)?values?\b/.test(lower)||/\bvalue\s*labels?\b/.test(lower)){updates.chartOptions={...(updates.chartOptions||cur.chartOptions||{}),showValueLabels:true};desc+='Added value labels. ';}
+      if(/\bhide\s*(the\s+)?values?\b/.test(lower)){updates.chartOptions={...(updates.chartOptions||cur.chartOptions||{}),showValueLabels:false};desc+='Removed value labels. ';}
+      const refMatch=lower.match(/(?:add\s+)?(?:a\s+)?(?:dashed\s+|dotted\s+|solid\s+)?(?:reference\s+|ref\s+)?(?:line|baseline)\s+(?:at\s+)?([xy])\s*=\s*(-?\d+\.?\d*)/);
+      if(refMatch){const axis=refMatch[1],value=parseFloat(refMatch[2]);const ls=/dotted/.test(lower)?'dotted':/solid/.test(lower)?'solid':'dashed';const lm=text.match(/label(?:ed|led)?\s*["']?([^"'\n,]+)["']?/i);const newLine={id:Date.now(),axis,value,style:ls,color:axis==='y'?THEME.blue:THEME.orange,label:lm?lm[1].trim():(value===0?'Baseline':value===100?'Vehicle':`${axis}=${value}`)};updates.referenceLines=[...(cur.referenceLines||[]),newLine];desc+=`Added ${ls} reference line at ${axis}=${value}. `;}
+      const sigMatch=text.match(/(?:add\s+)?(\*{1,4}|ns)\s+(?:significance\s+)?(?:between|comparing)\s+(.+?)\s+(?:and|vs\.?)\s+(.+?)(?:\s*$|\.)/i);
+      if(sigMatch){const sig=sigMatch[1],g1=sigMatch[2].trim(),g2=sigMatch[3].trim();updates.comparisons=[...(cur.comparisons||[]),{id:Date.now(),group1:g1,group2:g2,sig,xIndex:0}];desc+=`Added ${sig} bracket between ${g1} and ${g2}. `;}
+      const titleMatch=text.match(/(?:title|heading)\s*(?:to|=|:)\s*["']?([^"'\n]+)["']?/i);
+      if(titleMatch){updates.title=titleMatch[1].trim();desc+='Updated title. ';}
+      if(/\b(?:show|switch|view)\s*(?:as\s+)?(?:a\s+)?table\b/.test(lower)){updates.viewMode='table';desc+='Switched to table view. ';}
+      return{updates,description:desc.trim()||null};
+    }
+
+    // ── INLINE CHART CARD ──
+    function ChatChartCard({config,headers,rows,onOpenInSettings}){
+      const chartRef=useRef(null);const xKey=headers[0]||'';
+      const numericKeys=headers.filter(h=>h!==xKey&&rows.some(r=>typeof r[h]==='number'));
+      const isTableData=detectTableMode(headers,rows);
+      const activeView=config.viewMode==='table'||(config.viewMode==='auto'&&isTableData)?'table':'chart';
+      const typeBadge=activeView==='table'?'TABLE':(config.chartType||'bar').toUpperCase();
+      return(
+        <div style={{border:`1px solid ${THEME.border}`,borderRadius:10,background:'#fff',overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',background:'#f8fafc',borderBottom:`1px solid ${THEME.border}`}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:600,fontSize:13,color:THEME.textPrimary}}>{config.title||'Chart'}</span>
+              <span style={{background:THEME.accent,color:'#fff',fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:4,letterSpacing:'0.04em'}}>{typeBadge}</span>
+              <span style={{fontSize:11,color:THEME.textMuted}}>{rows.length} obs</span>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <ExportDropdown chartRef={chartRef} title={config.title} data={rows} headers={headers}/>
+              {onOpenInSettings&&<button onClick={onOpenInSettings} style={{...S.smallBtn,background:THEME.navyLight,fontSize:10}}>Open in Settings</button>}
+            </div>
+          </div>
+          <div ref={chartRef} style={{padding:12}}>
+            {activeView==='table'?<PubTable headers={headers} rows={rows} footnotes={config.footnotes}/>:
+            <ChartRenderer data={rows} headers={headers} chartType={config.chartType||'bar'} title={null} xLabel={config.xLabel} yLabel={config.yLabel} referenceLines={config.referenceLines||[]} comparisons={config.comparisons||[]} chartOptions={config.chartOptions||{showValueLabels:false,yScale:'linear',markers:{}}} screeningConfig={config.screeningConfig||{}} panelLabel={null} numericKeys={numericKeys} xKey={xKey}/>}
+          </div>
+        </div>
+      );
+    }
+
+    // ── ERROR VALUES EDITOR ──
+    function ErrorValuesEditor({headers,rows,overrides,onOverridesChange}){
+      const [open,setOpen]=useState(false);const xKey=headers[0]||'';
+      const numericKeys=headers.filter(h=>h!==xKey&&rows.some(r=>typeof r[h]==='number'));
+      if(!numericKeys.length)return null;
+      return(<div style={{marginTop:8}}>
+        <button onClick={()=>setOpen(!open)} style={{background:'none',border:'none',fontSize:11,color:THEME.textSecondary,cursor:'pointer',padding:'4px 0'}}>{open?'Hide':'Override error values — click any number to edit'}</button>
+        {open&&<div style={{overflowX:'auto',marginTop:6}}><table style={{borderCollapse:'collapse',fontSize:11,width:'100%'}}><thead><tr><th style={{textAlign:'left',padding:'4px 8px',color:THEME.textSecondary,borderBottom:`1px solid ${THEME.border}`}}>{xKey}</th>{numericKeys.map(k=><th key={k} style={{textAlign:'right',padding:'4px 8px',color:THEME.textSecondary,borderBottom:`1px solid ${THEME.border}`}}>{k} Mean</th>)}{numericKeys.map(k=><th key={`e${k}`} style={{textAlign:'right',padding:'4px 8px',color:THEME.accent,borderBottom:`1px solid ${THEME.border}`}}>Error (+/-)</th>)}</tr></thead><tbody>{rows.map((row,ri)=><tr key={ri} style={{background:ri%2===0?'#fff':'#f8fafc'}}><td style={{padding:'4px 8px',fontWeight:500}}>{row[xKey]}</td>{numericKeys.map(k=><td key={k} style={{padding:'4px 8px',textAlign:'right',fontFamily:'monospace'}}>{typeof row[k]==='number'?sigFigs(row[k]):row[k]}</td>)}{numericKeys.map(k=>{const ek=`${ri}-${k}`;const val=(overrides&&overrides[ek]!=null)?overrides[ek]:'';return <td key={`e${k}`} style={{padding:'2px 4px',textAlign:'right'}}><input type="number" step="any" value={val} placeholder="—" onChange={e=>{const v=e.target.value===''?null:parseFloat(e.target.value);onOverridesChange({...overrides,[ek]:v});}} style={{width:56,border:`1px solid ${THEME.border}`,borderRadius:4,padding:'2px 4px',fontSize:11,textAlign:'right',fontFamily:'monospace',color:THEME.accent}}/></td>;})}</tr>)}</tbody></table></div>}
+      </div>);
+    }
+
+    // ── CHAT INPUT ──
+    function ChatInput({onSend,onFileAttach,disabled}){
+      const [text,setText]=useState('');const taRef=useRef(null);
+      const handleKeyDown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(text.trim()){onSend(text);setText('');}}};
+      useEffect(()=>{const ta=taRef.current;if(ta){ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,200)+'px';}},[text]);
+      return(
+        <div style={{borderTop:`1px solid ${THEME.border}`,padding:'10px 14px',background:'#fff'}}>
+          <CSVPreview text={text}/>
+          <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+            <button onClick={onFileAttach} title="Attach CSV file" style={{background:'none',border:`1px solid ${THEME.border}`,borderRadius:8,width:36,height:36,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:THEME.textMuted,flexShrink:0}}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <textarea ref={taRef} value={text} onChange={e=>setText(e.target.value)} onKeyDown={handleKeyDown} disabled={disabled} placeholder="Paste your data or ask a question... (Shift+Enter for new line)" rows={1} style={{flex:1,resize:'none',border:`1px solid ${THEME.border}`,borderRadius:10,padding:'10px 14px',fontSize:13,fontFamily:"'Inter',sans-serif",color:THEME.textPrimary,outline:'none',lineHeight:1.5,maxHeight:200,overflowY:'auto'}}/>
+            <button onClick={()=>{if(text.trim()){onSend(text);setText('');}}} disabled={!text.trim()||disabled} style={{background:text.trim()?THEME.accent:THEME.border,color:'#fff',border:'none',borderRadius:8,width:36,height:36,display:'flex',alignItems:'center',justifyContent:'center',cursor:text.trim()?'pointer':'default',flexShrink:0}}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── DATA PANEL (chat-based) ──
+    function DataPanel({panelIndex,panelLabel,panelState,onUpdate}){
+      const {chartType,title,xLabel,yLabel,referenceLines,comparisons,chartOptions,screeningConfig,viewMode,footnotes,caption}=panelState;
+      const [messages,setMessages]=useState([]);
+      const [sessionCSV,setSessionCSV]=useState('');
+      const [errorOverrides,setErrorOverrides]=useState({});
+      const [configOpen,setConfigOpen]=useState(false);
+      const threadRef=useRef(null);const fileInputRef=useRef(null);
+      const {headers,rows}=useMemo(()=>sessionCSV?parseCSV(sessionCSV):{headers:[],rows:[]},[sessionCSV]);
+      const xKey=headers[0]||'';
+      const numericKeys=useMemo(()=>headers.filter(h=>h!==xKey&&rows.some(r=>typeof r[h]==='number')),[headers,rows,xKey]);
+      const isTableData=useMemo(()=>headers.length>0&&detectTableMode(headers,rows),[headers,rows]);
+      const hasZeroOrNeg=useMemo(()=>rows.some(r=>numericKeys.some(k=>typeof r[k]==='number'&&r[k]<=0)),[rows,numericKeys]);
+      useEffect(()=>{if(chartOptions._hasZeroOrNeg!==hasZeroOrNeg)onUpdate({chartOptions:{...chartOptions,_hasZeroOrNeg:hasZeroOrNeg}});},[hasZeroOrNeg]);
+      const set=u=>onUpdate(u);
+      useEffect(()=>{if(threadRef.current)threadRef.current.scrollTop=threadRef.current.scrollHeight;},[messages]);
+      const currentConfig={chartType,title,xLabel,yLabel,referenceLines,comparisons,chartOptions,screeningConfig,viewMode,footnotes,caption};
+
+      const handleSend=text=>{
+        const userMsg={id:Date.now(),role:'user',text};setMessages(p=>[...p,userMsg]);
+        const csvInfo=detectCSVInText(text);let csv=sessionCSV;let cc={...currentConfig};let aiText='';
+        if(csvInfo&&csvInfo.detected){
+          csv=csvInfo.csvText;setSessionCSV(csv);const parsed=parseCSV(csv);const xk=parsed.headers[0]||'';
+          const isTbl=detectTableMode(parsed.headers,parsed.rows);
+          let inferredType=chartType;const lower=text.toLowerCase();
+          if(/\bbar\b/.test(lower))inferredType='bar';else if(/\bline\b/.test(lower))inferredType='line';else if(/\barea\b/.test(lower))inferredType='area';else if(/\bscatter\b/.test(lower))inferredType='scatter';else if(/\bpie\b/.test(lower))inferredType='pie';
+          const autoTitle=parsed.headers.length>1?`${parsed.headers.slice(1).join(' vs ')} by ${xk}`:'Chart';
+          cc={...cc,chartType:inferredType,title:autoTitle,viewMode:isTbl?'table':'chart'};
+          set({chartType:inferredType,title:autoTitle,viewMode:isTbl?'table':'chart'});
+          aiText=`Got it — parsed ${parsed.headers.length} columns and ${parsed.rows.length} rows. Here's your ${isTbl?'table':inferredType+' chart'}:`;
+        }else if(csv){
+          const{updates,description}=interpretMessage(text,currentConfig);
+          if(Object.keys(updates).length>0){set(updates);cc={...cc,...updates};aiText=`Updated — ${description}`;}
+          else aiText=`I have your data loaded (${rows.length} rows). Try asking me to change the chart type, add reference lines, switch to log scale, or add significance brackets.`;
+        }else{
+          aiText='Paste your CSV data alongside your request and I\'ll generate a chart. For example:\n\n"Here\'s my data — make a bar chart\nTime,Drug A,Drug B\n0,100,100\n30,85,92\n60,62,78"';
+        }
+        setMessages(p=>[...p,{id:Date.now()+1,role:'ai',text:aiText,hasChart:csv!=='',chartConfig:{...cc},csvSnapshot:csv}]);
+      };
+      const handleFileAttach=()=>fileInputRef.current?.click();
+      const handleFileLoad=e=>{const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{const t=ev.target?.result;if(typeof t==='string')handleSend(`Here's my data from ${file.name} — make a chart\n${t}`);};reader.readAsText(file);e.target.value='';};
+      const activeView=viewMode==='auto'?(isTableData?'table':'chart'):viewMode;
+
+      return(
+        <div style={{border:`1px solid ${THEME.border}`,borderRadius:10,background:'#fff',overflow:'hidden',display:'flex',flexDirection:'column',height:panelLabel?620:680}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 14px',borderBottom:`1px solid ${THEME.border}`,background:'#f8fafc',flexShrink:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              {panelLabel&&<span style={{fontWeight:700,fontSize:15,color:THEME.navy}}>{panelLabel}</span>}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={THEME.accent} strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+              <span style={{fontSize:13,fontWeight:600,color:THEME.textPrimary}}>Chat</span>
+              {sessionCSV&&<span style={{fontSize:10,color:THEME.green,fontWeight:500}}>Data loaded</span>}
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              {sessionCSV&&<button onClick={()=>setConfigOpen(!configOpen)} style={S.smallBtn}>{configOpen?'Close':'Settings'}</button>}
+            </div>
+          </div>
+          <div style={{display:'flex',flex:1,overflow:'hidden'}}>
+            <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+              <div ref={threadRef} style={{flex:1,overflowY:'auto',padding:'14px 14px 8px'}}>
+                {messages.length===0&&(
+                  <div style={{textAlign:'center',padding:'40px 20px'}}>
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke={THEME.border} strokeWidth="1.5" style={{margin:'0 auto 12px'}}><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                    <div style={{fontSize:14,fontWeight:600,color:THEME.textPrimary,marginBottom:4}}>Paste data, get a chart</div>
+                    <div style={{fontSize:12,color:THEME.textMuted,marginBottom:16}}>Paste CSV data with a request — like chatting with a colleague.</div>
+                    <SuggestionChips onSelect={chip=>handleSend(chip)}/>
+                  </div>
+                )}
+                {messages.map(msg=>(
+                  <div key={msg.id} style={{marginBottom:12,display:'flex',flexDirection:'column',alignItems:msg.role==='user'?'flex-end':'flex-start'}}>
+                    <div style={{maxWidth:msg.hasChart?'100%':'85%',width:msg.hasChart?'100%':undefined,padding:msg.hasChart?0:'10px 14px',borderRadius:12,background:msg.role==='user'?THEME.navy:'#f1f5f9',color:msg.role==='user'?'#fff':THEME.textPrimary,fontSize:13,lineHeight:1.5,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
+                      {msg.role==='user'?(()=>{const ci=detectCSVInText(msg.text);if(ci){const nonCsv=msg.text.replace(ci.csvText,'').trim();return(<div>{nonCsv&&<div>{nonCsv}</div>}<div style={{fontSize:11,opacity:0.7,marginTop:nonCsv?6:0,background:'rgba(255,255,255,0.1)',padding:'6px 10px',borderRadius:6}}>{ci.colCount} columns · {ci.rowCount} rows attached</div></div>);}return msg.text;})():(
+                        <div>{msg.hasChart?(<div><div style={{padding:'10px 14px 8px',fontSize:13,color:THEME.textPrimary}}>{msg.text}</div><ChatChartCard config={msg.chartConfig} headers={parseCSV(msg.csvSnapshot).headers} rows={parseCSV(msg.csvSnapshot).rows} onOpenInSettings={()=>setConfigOpen(true)}/><ErrorValuesEditor headers={parseCSV(msg.csvSnapshot).headers} rows={parseCSV(msg.csvSnapshot).rows} overrides={errorOverrides} onOverridesChange={setErrorOverrides}/></div>):msg.text}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <input ref={fileInputRef} type="file" accept=".csv,.tsv,.txt" style={{display:'none'}} onChange={handleFileLoad}/>
+              <ChatInput onSend={handleSend} onFileAttach={handleFileAttach}/>
+            </div>
+            {configOpen&&sessionCSV&&(
+              <div style={{width:260,borderLeft:`1px solid ${THEME.border}`,padding:10,overflowY:'auto',background:'#fafafa',flexShrink:0}}>
+                <div style={S.subPanel}><div style={{fontWeight:600,fontSize:13,marginBottom:8}}>Chart Type</div><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{['bar','line','area','scatter','pie'].map(t=>(<button key={t} onClick={()=>set({chartType:t})} style={{...S.segBtn,...(chartType===t?S.segBtnActive:{}),textTransform:'capitalize'}}>{t}</button>))}</div></div>
+                <div style={S.subPanel}><div style={{fontWeight:600,fontSize:13,marginBottom:8}}>Axes</div><input value={xLabel} onChange={e=>set({xLabel:e.target.value})} placeholder="X-axis label" style={{...S.miniInput,width:'100%',marginBottom:6}}/><input value={yLabel} onChange={e=>set({yLabel:e.target.value})} placeholder="Y-axis label" style={{...S.miniInput,width:'100%'}}/></div>
+                <ChartOptionsPanel options={chartOptions} onChange={o=>set({chartOptions:o})} numericKeys={numericKeys}/>
+                <ReferenceLinesPanel lines={referenceLines} onChange={l=>set({referenceLines:l})}/>
+                {(chartType==='bar'||chartType==='line')&&<SigBracketsPanel comparisons={comparisons} onChange={c=>set({comparisons:c})} groups={numericKeys}/>}
+                {chartType==='bar'&&rows.length>15&&<ScreeningPanel config={screeningConfig} onChange={c=>set({screeningConfig:c})}/>}
+                {activeView==='table'&&(<div style={S.subPanel}><div style={{fontWeight:600,fontSize:13,marginBottom:8}}>Table Footnotes</div><textarea value={footnotes} onChange={e=>set({footnotes:e.target.value})} placeholder="Abbreviations: MXF = moxifloxacin..." style={{...S.miniInput,width:'100%',height:60,resize:'vertical'}}/></div>)}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── MAIN APP ──
+    const defaultPanel=()=>({chartType:'bar',title:'',xLabel:'',yLabel:'',referenceLines:[],comparisons:[],chartOptions:{showValueLabels:false,yScale:'linear',markers:{},_hasZeroOrNeg:false},screeningConfig:{threshold:null,activeColor:'#22c55e',inactiveColor:'#cbd5e1'},viewMode:'auto',footnotes:'',caption:''});
+
+    function App() {
+      const [layout,setLayout]=useState('1x1');
+      const [panels,setPanels]=useState([defaultPanel()]);
+      const [figCaption,setFigCaption]=useState('');
+      const figRef=useRef(null);
+      const lc=LAYOUT_OPTIONS.find(l=>l.id===layout)||LAYOUT_OPTIONS[0];
+      const pc=lc.cols*lc.rows;
+
+      useEffect(()=>{if(panels.length<pc)setPanels(p=>[...p,...Array(pc-p.length).fill(null).map(()=>defaultPanel())]);},[pc]);
+      const updatePanel=(i,u)=>setPanels(p=>p.map((x,j)=>j===i?{...x,...u}:x));
+      const labels=pc>1?'ABCDEFGHI'.slice(0,pc).split(''):[null];
+      const exportFig=async()=>{if(!figRef.current)return;try{const d=await htmlToImage.toPng(figRef.current,{pixelRatio:3,backgroundColor:'#fff'});const a=document.createElement('a');a.href=d;a.download=generateFilename('figure','png');a.click();}catch(e){console.error(e);}};
+
+      return(
+        <div style={{minHeight:'100vh',background:THEME.parchment,fontFamily:"'Inter','Segoe UI',system-ui,sans-serif"}}>
+          <div style={{background:THEME.navy,color:'#fff',padding:'14px 24px',display:'flex',justifyContent:'space-between',alignItems:'center',boxShadow:'0 2px 8px rgba(0,0,0,0.15)',flexWrap:'wrap',gap:8}}>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#14b8a6" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              <span style={{fontSize:18,fontWeight:700,letterSpacing:'-0.02em'}}>BioStat Graph Studio</span>
+              <span style={{fontSize:11,color:THEME.textMuted,marginLeft:4}}>Publication-quality figures</span>
+            </div>
+            <div style={{display:'flex',gap:10,alignItems:'center'}}>
+              <span style={{fontSize:12,color:THEME.textMuted}}>Layout:</span>
+              <select value={layout} onChange={e=>setLayout(e.target.value)} style={{background:THEME.navyLight,color:'#fff',border:'1px solid rgba(255,255,255,0.15)',borderRadius:6,padding:'4px 8px',fontSize:12}}>
+                {LAYOUT_OPTIONS.map(l=><option key={l.id} value={l.id}>{l.label}</option>)}
+              </select>
+              {pc>1&&<button onClick={exportFig} style={{background:THEME.accent,color:'#fff',border:'none',borderRadius:6,padding:'6px 14px',fontSize:12,fontWeight:600,cursor:'pointer'}}>Export Figure</button>}
+            </div>
+          </div>
+          <div style={{padding:24,maxWidth:1400,margin:'0 auto'}} ref={figRef}>
+            <div style={{display:'grid',gridTemplateColumns:`repeat(${lc.cols},1fr)`,gap:16}}>
+              {panels.slice(0,pc).map((p,i)=><DataPanel key={i} panelIndex={i} panelLabel={labels[i]} panelState={p} onUpdate={u=>updatePanel(i,u)}/>)}
+            </div>
+            {pc>1&&(
+              <div style={{marginTop:16,background:'#fff',border:`1px solid ${THEME.border}`,borderRadius:8,padding:16}}>
+                <div style={{fontWeight:600,fontSize:13,color:THEME.textPrimary,marginBottom:6}}>Figure Caption</div>
+                <div contentEditable suppressContentEditableWarning style={{border:`1px solid ${THEME.border}`,borderRadius:6,padding:'10px 14px',fontSize:13,lineHeight:1.7,color:THEME.textPrimary,minHeight:60,fontFamily:"'Georgia',serif",background:'#fafafa'}} onBlur={e=>setFigCaption(e.target.innerText)}>{figCaption||'Click to add overall figure caption...'}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── STYLES ──
+    const S={
+      subPanel:{marginBottom:12,padding:10,background:'#fff',borderRadius:8,border:`1px solid ${THEME.border}`},
+      presetBtn:{background:THEME.parchment,border:`1px solid ${THEME.border}`,borderRadius:6,padding:'4px 10px',fontSize:11,color:THEME.textSecondary,cursor:'pointer',fontWeight:500},
+      smallBtn:{background:THEME.accent,color:'#fff',border:'none',borderRadius:6,padding:'5px 12px',fontSize:11,fontWeight:600,cursor:'pointer'},
+      miniSelect:{border:`1px solid ${THEME.border}`,borderRadius:4,padding:'3px 6px',fontSize:11,color:THEME.textPrimary,background:'#fff'},
+      miniInput:{border:`1px solid ${THEME.border}`,borderRadius:4,padding:'4px 8px',fontSize:11,color:THEME.textPrimary},
+      removeBtn:{background:'none',border:'none',color:THEME.red,cursor:'pointer',fontWeight:700,fontSize:14,padding:'0 4px'},
+      toggleRow:{display:'flex',alignItems:'center',gap:8,marginBottom:6,fontSize:12,color:THEME.textPrimary,cursor:'pointer'},
+      segBtn:{background:'transparent',border:'none',borderRadius:4,padding:'4px 10px',fontSize:11,fontWeight:500,color:THEME.textSecondary,cursor:'pointer'},
+      segBtnActive:{background:'#fff',color:THEME.textPrimary,boxShadow:'0 1px 3px rgba(0,0,0,0.1)',fontWeight:600},
+      dropItem:{display:'block',width:'100%',textAlign:'left',background:'none',border:'none',padding:'8px 14px',fontSize:12,color:THEME.textPrimary,cursor:'pointer',borderBottom:`1px solid ${THEME.border}`},
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

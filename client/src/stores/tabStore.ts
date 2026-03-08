@@ -106,9 +106,10 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     try {
       getAIPanelStore().getState().removeTab(tabId);
     } catch (_) { /* harmless */ }
-    // Remove persisted attached-file list for this tab
+    // Remove persisted attached-file list and source selection for this tab
     try {
       localStorage.removeItem(`biostat-tab-files-${tabId}`);
+      localStorage.removeItem(`biostat-source-sel-${tabId}`);
     } catch (_) { /* harmless */ }
   },
 
@@ -145,6 +146,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       try { getTabContentStore().getState().removeTabContent(tab.id); } catch (_) {}
       try { getAIPanelStore().getState().removeTab(tab.id); } catch (_) {}
       try { localStorage.removeItem(`biostat-tab-files-${tab.id}`); } catch (_) {}
+      try { localStorage.removeItem(`biostat-source-sel-${tab.id}`); } catch (_) {}
     });
 
     set({ tabs: [defaultTab], activeTabId: defaultTab.id });
@@ -168,6 +170,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       try { getTabContentStore().getState().removeTabContent(tab.id); } catch (_) {}
       try { getAIPanelStore().getState().removeTab(tab.id); } catch (_) {}
       try { localStorage.removeItem(`biostat-tab-files-${tab.id}`); } catch (_) {}
+      try { localStorage.removeItem(`biostat-source-sel-${tab.id}`); } catch (_) {}
     });
     set({ tabs: [], activeTabId: null });
   },

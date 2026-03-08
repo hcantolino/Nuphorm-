@@ -14,6 +14,8 @@ export interface ChatMessage {
     llmUnavailable?: boolean;  // true when AI interpretation failed and fallback was used
     llmError?: string;         // raw error message for debugging
     retryQuery?: string;       // original user query to replay on retry
+    chatSuggestions?: string[]; // clickable follow-up suggestions from chat_response
+    usedSources?: string[];    // filenames of sources active when query was sent
   };
 }
 

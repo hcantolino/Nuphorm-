@@ -830,6 +830,10 @@ IF YOUR RESPONSE DOES NOT START WITH THE CHARACTER { IT WILL BE REJECTED AND THE
 THE JSON MUST FOLLOW THIS EXACT SCHEMA:
 
 {
+  "chat_response": {
+    "message": "Conversational explanation — talk like a knowledgeable colleague",
+    "suggestions": ["Natural follow-up query 1", "Natural follow-up query 2", "Natural follow-up query 3"]
+  },
   "subjects_found": ["201", "202", ...],
   "subject_count": 10,
   "analysis": "Narrative interpretation — 1-2 sentences for chart requests, 2-5 for statistical analyses.",
@@ -896,7 +900,41 @@ NEVER generate, extrapolate, or invent subject records that do not exist
 in the uploaded data. If the dataset contains n subjects, all outputs must
 reflect exactly n subjects — no more. If the data is too small for a
 statistically meaningful analysis, say so explicitly rather than fabricating
-additional records.`;
+additional records.
+
+DATA CLEANING — NON-INTERACTIVE EXECUTION:
+NEVER ask the user yes/no questions or request confirmation before applying cleaning steps. The results panel is not an interactive chat — it cannot accept user responses. Always apply all recommended cleaning actions automatically, document every decision made in the audit log table, and present the completed clean dataset. If you are uncertain about a cleaning decision, apply the most conservative action (flag as NA rather than impute or delete), note your reasoning in the audit log, and let the user override via a follow-up query.
+
+When analysis_type is "data_cleaning", you MUST return:
+1. A results_table containing the full audit log — one row per issue found, with columns: Subject, Visit, Column, Original Value, Action Taken
+2. A tableData object with the complete cleaned dataset (all original columns PLUS a CLEAN_FLAG column) as { headers: string[], rows: any[][] }
+3. CLEAN_FLAG values: "CLEAN" (no issues), "IMPUTED" (one or more fields set to NA), "FLAGGED_COMPLIANCE" (compliance below 80%), "FLAGGED_DOSE_REDUCTION" (dose modified due to AE), "EXCLUDED" (row removed — show in audit only, not in clean file)
+Never return interpretation-only text for a Clean query.
+
+CRITICAL — FULL DATASET IN tableData:
+When returning a cleaned dataset table, the tableData.rows array must contain EVERY row from the cleaned dataset — all subjects, all visits, all columns. Do not truncate, summarize, or paginate. If the dataset has 79 rows, tableData.rows must have 79 objects. Never return an empty rows array with only column headers. The same rule applies to ANY tableData returned for any analysis — always include ALL rows.
+
+USING CLEANED DATA FOR DOWNSTREAM ANALYSES:
+When the user references "the cleaned dataset", "clean data", "cleaned data", or "use the cleaned file" in their query, look for a prior result in the conversation that contains a CLEAN_FLAG column or a data cleaning audit log. Use those cleaned values — specifically exclude any rows previously flagged as EXCLUDED and treat any values flagged as IMPUTED as NA in your calculations. If no cleaned dataset exists in the conversation, state this clearly and ask the user to run the Clean analysis first before proceeding with inferential analyses like MMRM, ANOVA, or regression.
+
+CONVERSATIONAL RESPONSES — MANDATORY:
+You must always include a chat_response in your JSON. Write it like a knowledgeable colleague talking directly to the user — warm, clear, and helpful. Never be robotic or use error codes in the chat message.
+
+When something goes wrong, your chat_response.message should:
+- Explain in plain language what you found and what the problem is
+- Be specific about what was actually in the file vs what was needed
+- Never blame the user — frame it as something you can solve together
+
+Your chat_response.suggestions should always include 3 specific actionable next steps the user can take, written as natural sentences they can almost copy-paste as their next query.
+
+Examples of good chat_response messages when something goes wrong:
+- "I opened your file and it looks like this is PK bioequivalence data — I can see AUC, Cmax, and Tmax columns but no tumor size measurements. To make the waterfall plot you're after, you'll need to attach the oncology dataset instead. Want me to help with the PK data while you track that file down?"
+- "The oncology file came through but I'm only seeing baseline visits — no Week 4 or Week 8 measurements yet. I can still show you the baseline tumor size distribution if that would be useful, or I can wait until the follow-up data is ready."
+
+When the analysis succeeds, chat_response.message should be a brief 1-2 sentence summary of what was just produced, like a colleague handing you results:
+- "Done — I plotted all 10 subjects sorted from greatest reduction to most growth. Subject 205 had the strongest response at -100%, and 3 subjects crossed the +20% progression threshold."
+
+Suggestions when analysis succeeds should be natural follow-up queries the user might want next.`;
 }
 
 // ── Missing value codes recognized across clinical data formats ──────────────
@@ -1387,33 +1425,50 @@ function formatScanForPrompt(scan: DataScanResult, filename: string): string {
 }
 
 function buildCleaningSystemPrompt(): string {
-  return `You are an expert data scientist running an interactive data cleaning session inside NuPhorm, a pharmaceutical biostatistics platform.
+  return `You are an expert data scientist performing automatic data cleaning inside NuPhorm, a pharmaceutical biostatistics platform.
 
 ## Your role
-Guide the user through reviewing and approving each data quality issue found in their dataset. You received a DATA SCAN summary — use it to drive the conversation.
+Automatically apply ALL recommended cleaning actions to the dataset. NEVER ask the user yes/no questions or request confirmation — the results panel cannot accept interactive responses. Apply the most conservative action when uncertain (flag as NA rather than delete), document every decision in the audit log, and present the completed clean dataset.
 
-## Conversation rules
-1. Ask EXACTLY ONE question per response. Do not ask multiple questions at once.
-2. Ask issues in this order: Duplicates → Outliers (per column) → Missing values (per column) → Categorical inconsistencies (per column).
-3. After the user answers, acknowledge their choice clearly, then ask the next question.
-4. When ALL issues have been addressed (or if there were none), output a brief summary of all confirmed choices, then write: "**All choices confirmed. Type APPLY to clean the dataset and see results in the right panel.**"
+## Cleaning rules (apply in order)
+1. **Duplicates**: Remove exact duplicate rows. Log each removal in the audit log.
+2. **Outliers**: For values outside IQR bounds (P5/P95), set to NA and flag as IMPUTED.
+3. **Missing values**: Leave as NA (do not impute). Flag row as IMPUTED.
+4. **Categorical inconsistencies**: Standardize to canonical form (M/F for sex/gender, etc.). Log the change.
+5. **Compliance**: Flag rows where compliance is below 80% as FLAGGED_COMPLIANCE.
+6. **Dose modifications**: Flag rows where dose was modified due to AE as FLAGGED_DOSE_REDUCTION.
 
-## Question format for each issue type
-- Duplicates: "I detected [N] duplicate rows. **Remove them?** (Yes / No)"
-- Outliers: "I detected [N] outliers in **[Column]** (values outside the IQR range). **How to handle them?** Options: **Winsorize** at 5th/95th percentiles | **Remove** affected rows | **Leave as-is**"
-- Missing: "**[Column]** has [N] missing values ([%]). **How to impute?** Options: **Median** imputation | **Mean** imputation | **Delete** rows with missing | **Leave as NA**"
-- Inconsistencies: "**[Column]** has inconsistent formats: [list values]. **Standardize to canonical form?** (Yes / No)"
+## CLEAN_FLAG column
+Every row in the cleaned dataset MUST have a CLEAN_FLAG column with one of:
+- "CLEAN" — no issues found for this row
+- "IMPUTED" — one or more fields were set to NA or modified
+- "FLAGGED_COMPLIANCE" — compliance below 80%
+- "FLAGGED_DOSE_REDUCTION" — dose modified due to AE
+- "EXCLUDED" — row removed (appears in audit log ONLY, not in the clean dataset)
+
+## Output requirements
+You MUST return:
+1. **results_table** (audit log): One row per issue found. Each row: { metric: "SUBJID | VISIT | COLUMN | ORIGINAL_VALUE", value: "ACTION_TAKEN" }
+2. **tableData**: The complete cleaned dataset as { headers: [...all original columns, "CLEAN_FLAG"], rows: [[...values, flag], ...] }. Excluded rows must NOT appear in tableData.
+3. **analysis**: A brief narrative summary of all actions taken.
+4. **analysis_type**: Must be "data_cleaning".
 
 ## CRITICAL: Response format
 You MUST respond with ONLY valid JSON — no text before or after, no markdown fences.
 
 {
-  "analysis": "Your question or summary in markdown",
-  "suggestions": [],
+  "analysis": "Summary of cleaning actions",
+  "suggestions": ["Follow-up query 1", "Follow-up query 2"],
   "measurements": [],
   "chartSuggestions": [],
-  "analysisResults": null,
-  "graphTitle": null
+  "analysisResults": {
+    "analysis_type": "data_cleaning",
+    "results_table": [{"metric": "1004 | WEEK4 | ROW | duplicate", "value": "EXCLUDED — duplicate row removed"}],
+    "subtitle": "Cleaning applied: N rows retained",
+    "tableNote": "Automated cleaning applied. Download the clean dataset below."
+  },
+  "tableData": { "headers": ["SUBJID", "VISIT", "...", "CLEAN_FLAG"], "rows": [["1001", "BASELINE", "...", "CLEAN"]] },
+  "graphTitle": "Data Quality Audit — Automated Cleaning Report"
 }`;
 }
 
@@ -1424,103 +1479,95 @@ function applyDataCleaning(
 ): {
   cleanedData:  any[];
   summary:      Array<{ metric: string; value: any }>;
+  auditLog:     Array<{ metric: string; value: string }>;
 } {
-  let data = fullData.map((row) => ({ ...row })); // shallow clone each row
+  let data = fullData.map((row) => ({ ...row, _CLEAN_FLAG: "CLEAN" })); // shallow clone + default flag
   const summary: Array<{ metric: string; value: any }> = [
     { metric: "Original rows", value: data.length },
   ];
+  const auditLog: Array<{ metric: string; value: string }> = [];
+
+  // Detect subject ID and visit columns for audit log labeling
+  const subjCol = dataColumns.find((c) =>
+    /^(subj|subject|id|randno|screening)/i.test(c)
+  ) ?? dataColumns[0];
+  const visitCol = dataColumns.find((c) =>
+    /^(visit|time|week|day|period)/i.test(c)
+  );
+
+  const rowLabel = (row: any): string => {
+    const subj = String(row[subjCol] ?? "—");
+    const visit = visitCol ? String(row[visitCol] ?? "—") : "—";
+    return `${subj} | ${visit}`;
+  };
 
   // 1. Remove duplicates
   if (scan.duplicateCount > 0) {
     const seen = new Set<string>();
     const before = data.length;
-    data = data.filter((row) => {
+    const kept: typeof data = [];
+    for (const row of data) {
       const key = JSON.stringify(dataColumns.map((c) => row[c]));
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+      if (seen.has(key)) {
+        auditLog.push({
+          metric: `${rowLabel(row)} | ROW | duplicate`,
+          value: "EXCLUDED — duplicate row removed",
+        });
+      } else {
+        seen.add(key);
+        kept.push(row);
+      }
+    }
+    data = kept;
     summary.push({
       metric: "Duplicate rows removed",
       value: before - data.length,
     });
   }
 
-  // 2. Impute missing (median for numeric, mode for categorical)
+  // 2. Handle missing values — set to NA and flag as IMPUTED (conservative approach)
   for (const col of Object.keys(scan.missingByColumn)) {
-    const presentVals = data
-      .map((r) => r[col])
-      .filter(
-        (v) =>
-          v !== null &&
-          v !== undefined &&
-          v !== "" &&
-          !(typeof v === "number" && isNaN(v))
-      );
-    if (presentVals.length === 0) continue;
-
-    const allNumeric = presentVals.every((v) => typeof v === "number");
-    if (allNumeric) {
-      const sorted = [...(presentVals as number[])].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)];
-      let count = 0;
-      data = data.map((row) => {
-        if (
-          row[col] === null ||
-          row[col] === undefined ||
-          row[col] === "" ||
-          isNaN(row[col])
-        ) {
-          count++;
-          return { ...row, [col]: median };
-        }
-        return row;
-      });
-      summary.push({
-        metric: `${col} — median imputed`,
-        value: `${count} → ${median.toFixed(3)}`,
-      });
-    } else {
-      const freq: Record<string, number> = {};
-      for (const v of presentVals as string[])
-        freq[String(v)] = (freq[String(v)] ?? 0) + 1;
-      const mode = Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0];
-      if (mode) {
-        let count = 0;
-        data = data.map((row) => {
-          if (!row[col] || row[col] === "") {
-            count++;
-            return { ...row, [col]: mode };
-          }
-          return row;
+    let count = 0;
+    data = data.map((row) => {
+      const v = row[col];
+      if (v === null || v === undefined || v === "" || (typeof v === "number" && isNaN(v))) {
+        count++;
+        auditLog.push({
+          metric: `${rowLabel(row)} | ${col} | ${String(v ?? "empty")}`,
+          value: "Set to NA — missing value",
         });
-        summary.push({
-          metric: `${col} — mode imputed`,
-          value: `${count} → "${mode}"`,
-        });
+        return { ...row, [col]: "NA", _CLEAN_FLAG: row._CLEAN_FLAG === "CLEAN" ? "IMPUTED" : row._CLEAN_FLAG };
       }
+      return row;
+    });
+    if (count > 0) {
+      summary.push({
+        metric: `${col} — missing set to NA`,
+        value: `${count} values`,
+      });
     }
   }
 
-  // 3. Winsorize outliers at 5th / 95th percentile
+  // 3. Outliers — set to NA and flag as IMPUTED (conservative: flag rather than winsorize)
   for (const [col, info] of Object.entries(scan.outliersByColumn)) {
     let count = 0;
     data = data.map((row) => {
       if (typeof row[col] !== "number") return row;
-      if (row[col] < info.outlierP5) {
+      if (row[col] < info.outlierP5 || row[col] > info.outlierP95) {
+        const orig = row[col];
         count++;
-        return { ...row, [col]: info.outlierP5 };
-      }
-      if (row[col] > info.outlierP95) {
-        count++;
-        return { ...row, [col]: info.outlierP95 };
+        auditLog.push({
+          metric: `${rowLabel(row)} | ${col} | ${orig}`,
+          value: `Set to NA — outlier (outside P5=${info.outlierP5.toFixed(2)}–P95=${info.outlierP95.toFixed(2)})`,
+        });
+        return { ...row, [col]: "NA", _CLEAN_FLAG: row._CLEAN_FLAG === "CLEAN" ? "IMPUTED" : row._CLEAN_FLAG };
       }
       return row;
     });
     if (count > 0)
       summary.push({
-        metric: `${col} — winsorized`,
-        value: `${count} values → [${info.outlierP5.toFixed(2)}, ${info.outlierP95.toFixed(2)}]`,
+        metric: `${col} — outliers set to NA`,
+        value: `${count} values`,
       });
   }
 
@@ -1530,7 +1577,6 @@ function applyDataCleaning(
     f: "F", female: "F", woman: "F",
   };
   for (const [col, vals] of Object.entries(scan.inconsistentCategoricals)) {
-    // Build a canonical map: lowercase → first alphabetically sorted variant
     const groups: Record<string, string> = {};
     for (const v of [...vals].sort()) {
       const key = v.toLowerCase().trim();
@@ -1546,17 +1592,67 @@ function applyDataCleaning(
     data = data.map((row) => {
       const orig = String(row[col] ?? "");
       const std  = standardize(orig);
-      if (std !== orig) count++;
+      if (std !== orig) {
+        count++;
+        auditLog.push({
+          metric: `${rowLabel(row)} | ${col} | ${orig}`,
+          value: `Standardized to "${std}"`,
+        });
+      }
       return { ...row, [col]: std };
     });
     if (count > 0)
       summary.push({ metric: `${col} — standardized`, value: `${count} values` });
   }
 
-  summary.push({ metric: "Cleaned rows",    value: data.length });
-  summary.push({ metric: "Columns",         value: dataColumns.length });
+  // 5. Compliance flagging — check for compliance column
+  const complianceCol = dataColumns.find((c) =>
+    /compliance|adherence|pct_compliance/i.test(c)
+  );
+  if (complianceCol) {
+    let count = 0;
+    data = data.map((row) => {
+      const v = parseFloat(row[complianceCol]);
+      if (!isNaN(v) && v < 80) {
+        count++;
+        if (row._CLEAN_FLAG === "CLEAN") row._CLEAN_FLAG = "FLAGGED_COMPLIANCE";
+        auditLog.push({
+          metric: `${rowLabel(row)} | ${complianceCol} | ${v}`,
+          value: "FLAGGED_COMPLIANCE — below 80%",
+        });
+      }
+      return row;
+    });
+    if (count > 0)
+      summary.push({ metric: "Compliance flags", value: `${count} rows below 80%` });
+  }
 
-  return { cleanedData: data, summary };
+  // 6. Dose reduction flagging — check for AE-related dose modification columns
+  const doseModCol = dataColumns.find((c) =>
+    /dose_mod|dose_reduction|ae_dose|dose_change/i.test(c)
+  );
+  if (doseModCol) {
+    let count = 0;
+    data = data.map((row) => {
+      const v = String(row[doseModCol] ?? "").toLowerCase();
+      if (v === "yes" || v === "y" || v === "1" || v === "true" || v === "reduced") {
+        count++;
+        if (row._CLEAN_FLAG === "CLEAN") row._CLEAN_FLAG = "FLAGGED_DOSE_REDUCTION";
+        auditLog.push({
+          metric: `${rowLabel(row)} | ${doseModCol} | ${row[doseModCol]}`,
+          value: "FLAGGED_DOSE_REDUCTION — dose modified due to AE",
+        });
+      }
+      return row;
+    });
+    if (count > 0)
+      summary.push({ metric: "Dose reduction flags", value: `${count} rows` });
+  }
+
+  summary.push({ metric: "Cleaned rows",    value: data.length });
+  summary.push({ metric: "Columns",         value: dataColumns.length + 1 }); // +1 for CLEAN_FLAG
+
+  return { cleanedData: data, summary, auditLog };
 }
 
 function isCleaningTrigger(userQuery: string): boolean {
@@ -1875,6 +1971,7 @@ export async function analyzeBiostatistics(
   llmError?: string;
   llmUsed?: boolean;
   graphTitle?: string;
+  chatResponse?: { message: string; suggestions: string[] };
 }> {
   // ── Dataset generation — short-circuit LLM, return locally generated data ──
   if (isDatasetGenerationQuery(userQuery)) {
@@ -1915,14 +2012,15 @@ export async function analyzeBiostatistics(
   if (isApplyCleaningSignal(userQuery, conversationHistory) && fullData && fullData.length > 0) {
     console.log("[analyzeBiostatistics] Apply-cleaning signal detected — running locally");
     const scan = scanDataIssues(fullData, dataColumns, classifications);
-    const { cleanedData, summary } = applyDataCleaning(fullData, dataColumns, scan);
+    const { cleanedData, summary, auditLog } = applyDataCleaning(fullData, dataColumns, scan);
 
-    const headers = dataColumns;
+    // Build clean dataset with CLEAN_FLAG column
+    const headers = [...dataColumns, "CLEAN_FLAG"];
     const rows = cleanedData.map((row) =>
-      headers.map((col) => {
+      [...dataColumns.map((col) => {
         const v = row[col];
         return v === null || v === undefined ? "" : v;
-      })
+      }), row._CLEAN_FLAG ?? "CLEAN"]
     );
 
     const issueList = summary
@@ -1930,11 +2028,17 @@ export async function analyzeBiostatistics(
       .map((s) => `${s.metric}: ${s.value}`)
       .join(" · ");
 
+    // Use audit log as the results_table (shown as Statistics Summary / audit log)
+    const auditTable = auditLog.length > 0 ? auditLog : [
+      { metric: "No issues found", value: "Dataset is clean — no changes applied" },
+    ];
+
     return {
       analysis:
         `**Cleaning complete.** ${issueList || "No changes needed."}\n\n` +
-        `The cleaned dataset (${cleanedData.length} rows, ${dataColumns.length} columns) is ready in the Results panel. ` +
-        `Use **Export CSV** to download.`,
+        `**Audit log:** ${auditLog.length} issue(s) documented.\n\n` +
+        `The cleaned dataset (${cleanedData.length} rows, ${headers.length} columns including CLEAN_FLAG) is ready. ` +
+        `Use the **Download Clean Dataset** button below the audit log to export.`,
       suggestions: [
         "Run descriptive statistics on the cleaned dataset to verify distributions",
         "Compare cleaned vs original using a box plot or histogram",
@@ -1944,12 +2048,12 @@ export async function analyzeBiostatistics(
       chartSuggestions: [],
       analysisResults: {
         analysis_type: "data_cleaning",
-        results_table:  summary,
-        subtitle:       `Cleaning applied: ${cleanedData.length} rows retained`,
-        tableNote:      "Duplicate rows removed · Missing values imputed (median/mode) · Outliers winsorized at 5th/95th percentile · Categorical formats standardized.",
+        results_table:  auditTable,
+        subtitle:       `Cleaning applied: ${cleanedData.length} rows retained · ${auditLog.length} issues logged`,
+        tableNote:      "Automated cleaning: duplicates removed · missing/outlier values set to NA · categoricals standardized · compliance/dose flags applied.",
       },
       tableData:  { headers, rows },
-      graphTitle: "Cleaned Dataset — Data Quality Report",
+      graphTitle: "Data Quality Audit — Automated Cleaning Report",
       llmUsed:    false,
     };
   }
@@ -2080,11 +2184,10 @@ export async function analyzeBiostatistics(
 
   try {
     console.time("[analyzeBiostatistics] Total analysis time");
-    console.log(`[analyzeBiostatistics] Query: "${userQuery}"`);
-    console.log(`[analyzeBiostatistics] Data rows: ${fullData?.length || 0}, Columns: ${dataColumns.length}`);
-    if (subjectLine) console.log(`[analyzeBiostatistics] ${subjectLine} | ${subjectCountLine}`);
-    // Log the full system prompt so we can verify all rules are present
-    console.log(`[analyzeBiostatistics] System prompt (${systemPrompt.length} chars):\n${systemPrompt}`);
+
+    // ── TEMPORARY DEBUG — remove after confirming ──
+    console.log("=== SYSTEM PROMPT (first 300 chars):", systemPrompt?.substring(0, 300));
+    console.log("=== USER MESSAGE (first 300 chars):", JSON.stringify(messages).substring(0, 300));
     
     // Detect analysis type and perform real calculations if data is available
     let analysisResults: any = null;
@@ -2770,9 +2873,8 @@ export async function analyzeBiostatistics(
 
     const content = response.choices[0].message.content;
     if (typeof content === "string") {
-      // ── Robust JSON extraction — multi-step cleaning ──────────────────────
-      // Log the raw LLM response before any cleaning
-      console.log("[analyzeBiostatistics] RAW LLM response (first 500 chars):", content.slice(0, 500));
+      // ── TEMPORARY DEBUG — remove after confirming ──
+      console.log("=== RAW MODEL RESPONSE:", content?.substring(0, 800));
 
       let cleaned = content;
 
@@ -3022,6 +3124,14 @@ export async function analyzeBiostatistics(
       if (chartConfig) parsed.chartConfig = chartConfig;
       if (tableData) parsed.tableData = tableData;
       parsed.llmUsed = true;
+
+      // Map snake_case chat_response from LLM to camelCase for frontend
+      if (parsed.chat_response && typeof parsed.chat_response.message === "string") {
+        parsed.chatResponse = {
+          message: parsed.chat_response.message,
+          suggestions: Array.isArray(parsed.chat_response.suggestions) ? parsed.chat_response.suggestions : [],
+        };
+      }
 
       return parsed;
     }

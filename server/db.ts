@@ -405,6 +405,43 @@ export async function getStorageUsage(userId: number) {
   }
 }
 
+export async function updateUploadedFile(fileId: number, userId: number, data: {
+  fileName?: string;
+  folderId?: string | null;
+  tags?: string[];
+  description?: string;
+}) {
+  const db = await getDb();
+  if (!db) {
+    // No database — update local JSON
+    const records = readLocalMetadata();
+    const idx = records.findIndex((r) => r.id === fileId && r.userId === userId);
+    if (idx === -1) return false;
+    if (data.fileName !== undefined) records[idx].fileName = data.fileName;
+    if (data.folderId !== undefined) records[idx].folderId = data.folderId ?? undefined;
+    if (data.tags !== undefined) records[idx].tags = JSON.stringify(data.tags);
+    if (data.description !== undefined) records[idx].description = data.description;
+    records[idx].updatedAt = new Date().toISOString();
+    writeLocalMetadata(records);
+    return true;
+  }
+
+  try {
+    const updateData: Record<string, any> = { updatedAt: new Date() };
+    if (data.fileName !== undefined) updateData.fileName = data.fileName;
+    if (data.folderId !== undefined) updateData.folderId = data.folderId;
+    if (data.tags !== undefined) updateData.tags = JSON.stringify(data.tags);
+    if (data.description !== undefined) updateData.description = data.description;
+    await db.update(uploadedFiles).set(updateData).where(
+      and(eq(uploadedFiles.id, fileId), eq(uploadedFiles.userId, userId))
+    );
+    return true;
+  } catch (error) {
+    console.error("[Database] Update uploaded file error:", error);
+    return false;
+  }
+}
+
 export async function formatBytes(bytes: number): Promise<string> {
   if (bytes === 0) return "0 Bytes";
   const k = 1024;
@@ -568,15 +605,22 @@ export async function deleteUploadedFile(fileId: number, userId: number): Promis
   }
 }
 
-export async function deleteTechnicalFile(fileId: number, userId: number) {
-  const db = await getDb();
-  if (!db) return;
+export async function updateTechnicalFile(fileId: number, userId: number, data: { title?: string; measurements?: string[] }): Promise<boolean> {
+  const records = readLocalTechnical();
+  const idx = records.findIndex((r) => r.id === fileId && r.userId === userId);
+  if (idx === -1) return false;
+  if (data.title !== undefined) records[idx].title = data.title;
+  if (data.measurements !== undefined) records[idx].measurements = JSON.stringify(data.measurements);
+  writeLocalTechnical(records);
+  return true;
+}
 
-  try {
-    // Implementation would go here
-  } catch (error) {
-    console.error("[Database] Delete technical file error:", error);
-  }
+export async function deleteTechnicalFile(fileId: number, userId: number): Promise<boolean> {
+  const records = readLocalTechnical();
+  const filtered = records.filter((r) => !(r.id === fileId && r.userId === userId));
+  if (filtered.length === records.length) return false;
+  writeLocalTechnical(filtered);
+  return true;
 }
 
 export async function submitFeedback(userId: number, data: {

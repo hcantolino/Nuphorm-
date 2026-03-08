@@ -35,12 +35,50 @@ import { trpc } from "@/lib/trpc";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { jsPDF } from "jspdf";
+import { toPng } from "html-to-image";
+import html2canvas from "html2canvas";
 import type { PanelResult } from "@/stores/aiPanelStore";
 import type { Tab } from "@/stores/tabStore";
 
+/**
+ * Capture a chart from the live DOM by result ID.
+ * Returns a base64 PNG data URL, or null if no chart element is found.
+ */
+async function captureChartImage(resultId: string): Promise<string | null> {
+  const el = document.querySelector<HTMLElement>(`[data-chart-capture="${resultId}"]`);
+  if (!el) return null;
+  try {
+    const canvas = await html2canvas(el, {
+      backgroundColor: "#ffffff",
+      scale: 2,
+      logging: false,
+      useCORS: true,
+    });
+    return canvas.toDataURL("image/png");
+  } catch (err) {
+    console.warn("[SaveAnalysisModal] Chart capture failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Pre-capture chart images for a batch of results.
+ * Returns a map of resultId → base64 PNG data URL.
+ */
+async function captureChartImages(results: PanelResult[]): Promise<Record<string, string>> {
+  const map: Record<string, string> = {};
+  for (const r of results) {
+    if (r.analysisResults?.chart_data && r.id) {
+      const img = await captureChartImage(r.id);
+      if (img) map[r.id] = img;
+    }
+  }
+  return map;
+}
+
 // ── types ─────────────────────────────────────────────────────────────────────
 
-type SaveFormat = "csv" | "xlsx" | "pdf" | "json" | "sas" | "dta";
+type SaveFormat = "csv" | "xlsx" | "pdf" | "png" | "json" | "sas" | "dta";
 
 interface FormatOption {
   id: SaveFormat;
@@ -79,6 +117,15 @@ const FORMAT_OPTIONS: FormatOption[] = [
     bg: "#fef2f2",
     textColor: "#dc2626",
     borderColor: "#fecaca",
+  },
+  {
+    id: "png",
+    label: "PNG",
+    ext: ".png",
+    description: "Image export of chart",
+    bg: "#faf5ff",
+    textColor: "#7c3aed",
+    borderColor: "#e9d5ff",
   },
   {
     id: "json",
@@ -229,16 +276,21 @@ function buildJSONExport(
 }
 
 /** PDF using jsPDF v4 native drawing (no plugins required) — returns base64 */
-function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
+function buildPDFExport(
+  title: string,
+  resultsToSave: PanelResult[],
+  chartImages: Record<string, string> = {}
+): string {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const margin = 14;
   const pageW = 210;
+  const contentW = pageW - margin * 2;
   const colMetric = margin;
   const colValue = margin + 110;
   let y = 28;
 
-  const checkPage = () => {
-    if (y > 272) {
+  const checkPage = (needed = 0) => {
+    if (y + needed > 272) {
       doc.addPage();
       y = 20;
     }
@@ -255,7 +307,7 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
   // ── Title
   (doc as any).setTextColor(15, 23, 42);
   doc.setFontSize(15);
-  const titleLines = doc.splitTextToSize(title, pageW - margin * 2) as string[];
+  const titleLines = doc.splitTextToSize(title, contentW) as string[];
   doc.text(titleLines, margin, y);
   y += titleLines.length * 7 + 3;
 
@@ -283,16 +335,30 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
     (doc as any).setTextColor(15, 23, 42);
     const qLines = doc.splitTextToSize(
       `${ri + 1}. ${r.query.slice(0, 120)}`,
-      pageW - margin * 2
+      contentW
     ) as string[];
     doc.text(qLines, margin, y);
     y += qLines.length * 5 + 4;
+
+    // ── Chart image (above the stats table)
+    const chartImg = r.id ? chartImages[r.id] : undefined;
+    if (chartImg) {
+      const imgW = contentW;
+      const imgH = imgW * 0.55; // ~16:9 aspect ratio
+      checkPage(imgH + 4);
+      try {
+        doc.addImage(chartImg, "PNG", margin, y, imgW, imgH);
+        y += imgH + 4;
+      } catch (imgErr) {
+        console.warn("[buildPDFExport] addImage failed:", imgErr);
+      }
+    }
 
     if (tbl.length > 0) {
       // Table header row
       checkPage();
       doc.setFillColor(241, 245, 249);
-      doc.rect(margin, y - 4, pageW - margin * 2, 7, "F");
+      doc.rect(margin, y - 4, contentW, 7, "F");
       doc.setFontSize(9);
       doc.setFont("helvetica", "bold");
       (doc as any).setTextColor(51, 65, 85);
@@ -305,7 +371,7 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
         checkPage();
         if (idx % 2 === 0) {
           doc.setFillColor(248, 250, 252);
-          doc.rect(margin, y - 4, pageW - margin * 2, 7, "F");
+          doc.rect(margin, y - 4, contentW, 7, "F");
         }
         doc.setFontSize(8.5);
         doc.setFont("helvetica", "normal");
@@ -332,7 +398,7 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
     doc.setFontSize(8.5);
     const analysisLines = doc.splitTextToSize(
       r.analysis.slice(0, 1200),
-      pageW - margin * 2
+      contentW
     ) as string[];
     analysisLines.forEach((line) => {
       checkPage();
@@ -351,14 +417,16 @@ function buildPDFExport(title: string, resultsToSave: PanelResult[]): string {
 function buildSingleResultPDF(
   resultTitle: string,
   itemType: "Graph" | "Table" | "Query",
-  r: PanelResult
+  r: PanelResult,
+  chartImages: Record<string, string> = {}
 ): string {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const margin = 14;
   const pageW = 210;
+  const contentW = pageW - margin * 2;
   let y = 28;
 
-  const checkPage = () => { if (y > 272) { doc.addPage(); y = 20; } };
+  const checkPage = (needed = 0) => { if (y + needed > 272) { doc.addPage(); y = 20; } };
 
   // Header bar
   doc.setFillColor(37, 99, 235);
@@ -371,7 +439,7 @@ function buildSingleResultPDF(
   // Title
   (doc as any).setTextColor(15, 23, 42);
   doc.setFontSize(13);
-  const titleLines = doc.splitTextToSize(resultTitle, pageW - margin * 2) as string[];
+  const titleLines = doc.splitTextToSize(resultTitle, contentW) as string[];
   doc.text(titleLines, margin, y);
   y += titleLines.length * 6 + 3;
 
@@ -388,9 +456,23 @@ function buildSingleResultPDF(
     doc.setFont("helvetica", "bold");
     (doc as any).setTextColor(15, 23, 42);
     doc.setFontSize(10);
-    const qLines = doc.splitTextToSize(`Query: ${r.query.slice(0, 200)}`, pageW - margin * 2) as string[];
+    const qLines = doc.splitTextToSize(`Query: ${r.query.slice(0, 200)}`, contentW) as string[];
     doc.text(qLines, margin, y);
     y += qLines.length * 5 + 4;
+  }
+
+  // ── Chart image (above the stats table)
+  const chartImg = r.id ? chartImages[r.id] : undefined;
+  if (chartImg && (itemType === "Graph" || itemType === "Table")) {
+    const imgW = contentW;
+    const imgH = imgW * 0.55;
+    checkPage(imgH + 4);
+    try {
+      doc.addImage(chartImg, "PNG", margin, y, imgW, imgH);
+      y += imgH + 4;
+    } catch (imgErr) {
+      console.warn("[buildSingleResultPDF] addImage failed:", imgErr);
+    }
   }
 
   const tbl = r.editedTable ?? r.analysisResults?.results_table ?? [];
@@ -401,7 +483,7 @@ function buildSingleResultPDF(
     const colMetric = margin;
     const colValue = margin + 110;
     doc.setFillColor(241, 245, 249);
-    doc.rect(margin, y - 4, pageW - margin * 2, 7, "F");
+    doc.rect(margin, y - 4, contentW, 7, "F");
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
     (doc as any).setTextColor(51, 65, 85);
@@ -413,7 +495,7 @@ function buildSingleResultPDF(
       checkPage();
       if (idx % 2 === 0) {
         doc.setFillColor(248, 250, 252);
-        doc.rect(margin, y - 4, pageW - margin * 2, 7, "F");
+        doc.rect(margin, y - 4, contentW, 7, "F");
       }
       doc.setFontSize(8.5);
       doc.setFont("helvetica", "normal");
@@ -469,6 +551,7 @@ const FORMAT_MIME: Record<SaveFormat, string> = {
   csv: "text/csv",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pdf: "application/pdf",
+  png: "image/png",
   json: "application/json",
   sas: "text/csv",
   dta: "text/csv",
@@ -478,6 +561,7 @@ const FORMAT_EXT: Record<SaveFormat, string> = {
   csv: "csv",
   xlsx: "xlsx",
   pdf: "pdf",
+  png: "png",
   json: "json",
   sas: "sas7bdat",
   dta: "dta",
@@ -573,6 +657,57 @@ function buildStorageContent(
   return `${formatTag}\n${dataTag}\n\n${htmlPreview}`;
 }
 
+/**
+ * Capture the active chart from the DOM as a 2x PNG with title + watermark.
+ * Returns a base64-encoded PNG string (no data URI prefix).
+ */
+async function captureChartAsPNG(
+  resultId: string,
+  chartTitle: string
+): Promise<string> {
+  // Find the chart container in the DOM by data attribute
+  const chartEl = document.querySelector(
+    `[data-chart-export="${resultId}"]`
+  ) as HTMLElement | null;
+  if (!chartEl) throw new Error("Chart element not found in DOM");
+
+  // Create a temporary wrapper with white background, title, and watermark
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText =
+    "position:fixed;left:-9999px;top:0;background:#fff;padding:32px 24px 20px;font-family:system-ui,-apple-system,sans-serif;";
+
+  // Title
+  const titleEl = document.createElement("div");
+  titleEl.style.cssText = "font-size:16px;font-weight:600;color:#1f2937;margin-bottom:16px;text-align:center;";
+  titleEl.textContent = chartTitle;
+  wrapper.appendChild(titleEl);
+
+  // Clone chart content
+  const clone = chartEl.cloneNode(true) as HTMLElement;
+  clone.style.cssText = "background:#fff;";
+  wrapper.appendChild(clone);
+
+  // Watermark
+  const watermark = document.createElement("div");
+  watermark.style.cssText = "font-size:10px;color:#9ca3af;text-align:center;margin-top:12px;";
+  watermark.textContent = "Generated by NuPhorm Biostatistics Platform";
+  wrapper.appendChild(watermark);
+
+  document.body.appendChild(wrapper);
+
+  try {
+    const dataUrl = await toPng(wrapper, {
+      pixelRatio: 2,
+      backgroundColor: "#ffffff",
+      cacheBust: true,
+    });
+    // Strip the data URI prefix → return raw base64
+    return dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+  } finally {
+    document.body.removeChild(wrapper);
+  }
+}
+
 // ── small reusable UI pieces ──────────────────────────────────────────────────
 
 function Divider() {
@@ -665,7 +800,14 @@ function categoriseTabResults(
     return {
       tabId: tab.id,
       tabTitle: tab.title,
-      graphs: results.filter((r) => r.analysisResults?.chart_data),
+      graphs: results.filter((r) => {
+        // Explicit LLM-generated chart
+        if (r.analysisResults?.chart_data) return true;
+        // Auto-chart: no chart_data but results_table has ≥2 numeric rows
+        const table = r.editedTable ?? r.analysisResults?.results_table;
+        if (!Array.isArray(table) || table.length < 2) return false;
+        return table.filter((row: any) => row.value !== "" && !isNaN(Number(row.value))).length >= 2;
+      }),
       tables: results.filter(
         (r) =>
           (r.editedTable && r.editedTable.length > 0) ||
@@ -732,6 +874,12 @@ export default function SaveAnalysisModal({
     }
     return keys;
   }, [tabItems]);
+
+  // Check if any chart/graph results exist (for PNG availability)
+  const hasAnyCharts = useMemo(
+    () => tabItems.some(ti => ti.graphs.length > 0),
+    [tabItems]
+  );
 
   // ── state ──────────────────────────────────────────────────────────────────
   const [saveAs, setSaveAs] = useState(derivedTitle);
@@ -1036,8 +1184,57 @@ export default function SaveAnalysisModal({
       const itemFilename = (tabTitle: string, resultTitle: string, type: string) =>
         `${safe(tabTitle)} – ${safe(resultTitle)} – ${type} – ${dateStr}.pdf`;
 
+      // ── PNG export: chart images only ─────────────────────────────────────
+      if (saveFormat === "png") {
+        let pngCount = 0;
+        let firstDownloaded = false;
+        for (const { ti, graphs } of perTab) {
+          const tabPath = `${basePath} / ${ti.tabTitle}`;
+          for (let idx = 0; idx < graphs.length; idx++) {
+            const r = graphs[idx];
+            const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Chart ${idx + 1}`;
+            try {
+              const pngBase64 = await captureChartAsPNG(r.id, rTitle);
+              const fileName = `${tabPath} / ${safe(ti.tabTitle)} – ${safe(rTitle)} – ${dateStr}.png`;
+              const htmlPreview = `<p style="text-align:center;color:#6B7280;font-size:13px;">PNG chart image — open the downloaded file to view.</p>`;
+              const content = buildStorageContent("png", pngBase64, true, htmlPreview);
+              saveFile(fileName, content, ["filetype:graph", "filetype:png"]);
+              if (!firstDownloaded) {
+                triggerDownload(
+                  `${safe(ti.tabTitle)}_${safe(rTitle)}.png`,
+                  pngBase64,
+                  true,
+                  "image/png"
+                );
+                firstDownloaded = true;
+              }
+              pngCount++;
+            } catch (err) {
+              console.warn(`[PNG] Failed to capture chart "${rTitle}":`, err);
+              toast.error(`Could not export "${rTitle}" as PNG`);
+            }
+          }
+        }
+        if (pngCount === 0) {
+          toast.error("No charts could be exported as PNG");
+          setIsGenerating(false);
+          return;
+        }
+        toast.success(`Saved ${pngCount} PNG chart${pngCount !== 1 ? "s" : ""} → "${basePath}"`, {
+          description: "View under Saved Technical Files.",
+          duration: 5000,
+        });
+        onClose();
+        return;
+      }
+
       // Track first download (only trigger browser download for the first combined PDF)
       let firstDownloadDone = false;
+
+      // ── Pre-capture chart images from the live DOM ──────────────────────────
+      const allSelectedResults = perTab.flatMap((pt) => pt.allResults);
+      const chartImages = await captureChartImages(allSelectedResults);
+      console.log(`[SaveAnalysisModal] Captured ${Object.keys(chartImages).length} chart image(s) for PDF`);
 
       // ── Process each tab ────────────────────────────────────────────────────
       for (const { ti, graphs, tables, queries, allResults: tabAllResults } of perTab) {
@@ -1046,7 +1243,8 @@ export default function SaveAnalysisModal({
         // 1. ALWAYS: Combined "Full Results" PDF for this tab
         const fullResultsPDF = buildPDFExport(
           `${ti.tabTitle} – Full Results`,
-          tabAllResults
+          tabAllResults,
+          chartImages
         );
         const fullResultsHTML = tabAllResults
           .map((r) => buildHTML(
@@ -1081,7 +1279,7 @@ export default function SaveAnalysisModal({
           const useSubfolder = graphs.length > 2;
           graphs.forEach((r, idx) => {
             const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Graph ${idx + 1}`;
-            const pdf = buildSingleResultPDF(rTitle, "Graph", r);
+            const pdf = buildSingleResultPDF(rTitle, "Graph", r, chartImages);
             const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
             const content = buildStorageContent("pdf", pdf, true, html);
             const fileName = useSubfolder
@@ -1096,7 +1294,7 @@ export default function SaveAnalysisModal({
           const useSubfolder = tables.length > 2;
           tables.forEach((r, idx) => {
             const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Table ${idx + 1}`;
-            const pdf = buildSingleResultPDF(rTitle, "Table", r);
+            const pdf = buildSingleResultPDF(rTitle, "Table", r, chartImages);
             const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
             const content = buildStorageContent("pdf", pdf, true, html);
             const fileName = useSubfolder
@@ -1254,11 +1452,19 @@ export default function SaveAnalysisModal({
                 aria-required="true"
               >
                 <option value="" disabled>Choose a format…</option>
-                {FORMAT_OPTIONS.map((fmt) => (
-                  <option key={fmt.id} value={fmt.id}>
-                    {fmt.label} ({fmt.ext}) — {fmt.description}
-                  </option>
-                ))}
+                {FORMAT_OPTIONS.map((fmt) => {
+                  const pngDisabled = fmt.id === "png" && !hasAnyCharts;
+                  return (
+                    <option
+                      key={fmt.id}
+                      value={fmt.id}
+                      disabled={pngDisabled}
+                      title={pngDisabled ? "PNG export requires a chart — this result contains tables only" : undefined}
+                    >
+                      {fmt.label} ({fmt.ext}) — {fmt.description}{pngDisabled ? " (no charts)" : ""}
+                    </option>
+                  );
+                })}
               </select>
               <ChevronDown
                 className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4"
@@ -1281,6 +1487,7 @@ export default function SaveAnalysisModal({
                 {saveFormat === "csv" && "Precision-formatted rows (4 d.p.) — import into R, SAS, or Prism."}
                 {saveFormat === "xlsx" && "Multi-sheet workbook: metadata sheet + one sheet per result."}
                 {saveFormat === "pdf" && "Teal-branded report with tabular results and full AI interpretation."}
+                {saveFormat === "png" && "2x retina chart image — suitable for publications and presentations."}
                 {saveFormat === "json" && "Structured JSON payload with full table and analysis — ideal for APIs."}
                 {saveFormat === "sas" && "SAS-compatible CSV: uppercase column names, alphanumeric-only metrics."}
                 {saveFormat === "dta" && "Stata-compatible CSV with same safe-header rules as SAS."}

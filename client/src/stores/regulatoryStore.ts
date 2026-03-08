@@ -16,6 +16,16 @@ export interface Annotation {
   color: 'yellow' | 'blue' | 'green' | 'purple' | 'orange';
 }
 
+export interface AIReference {
+  id: string;
+  sourceName: string;
+  sourceType: string;
+  excerpt: string;
+  annotation: string;
+  citationKey: string;
+  color: 'yellow' | 'blue' | 'green' | 'purple' | 'orange';
+}
+
 export interface RegulatoryProject {
   id: string;
   name: string;
@@ -26,6 +36,7 @@ export interface RegulatoryProject {
   content: string;
   attachedFiles: string[];
   annotations: Annotation[];
+  references: AIReference[];
   generatedDocuments: GeneratedDocument[];
   createdAt: Date;
   updatedAt: Date;
@@ -50,8 +61,9 @@ interface RegulatoryStore {
   attachFile: (projectId: string, fileName: string) => void;
   detachFile: (projectId: string, fileName: string) => void;
   
-  // Annotations
+  // Annotations & References
   updateProjectAnnotations: (id: string, annotations: Annotation[]) => void;
+  updateProjectReferences: (id: string, references: AIReference[]) => void;
 
   // Generated documents
   addGeneratedDocuments: (documents: GeneratedDocument[]) => void;
@@ -68,9 +80,10 @@ export const useRegulatoryStore = create<RegulatoryStore>((set, get) => ({
       regulatoryStandard: 'US',
       paperLayout: 'eSTAR',
       referenceFormat: 'apa',
-      content: 'This is a sample regulatory document...',
+      content: '',
       attachedFiles: ['Clinical_Trial_Data.csv', 'Statistical_Analysis.xlsx'],
       annotations: [],
+      references: [],
       generatedDocuments: [],
       createdAt: new Date('2026-01-15'),
       updatedAt: new Date('2026-01-28'),
@@ -89,6 +102,7 @@ export const useRegulatoryStore = create<RegulatoryStore>((set, get) => ({
       content: '',
       attachedFiles: [],
       annotations: [],
+      references: [],
       generatedDocuments: [],
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -187,6 +201,14 @@ export const useRegulatoryStore = create<RegulatoryStore>((set, get) => ({
     set((state) => ({
       projects: state.projects.map((p) =>
         p.id === id ? { ...p, annotations, updatedAt: new Date() } : p
+      ),
+    }));
+  },
+
+  updateProjectReferences: (id: string, references: AIReference[]) => {
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === id ? { ...p, references, updatedAt: new Date() } : p
       ),
     }));
   },
