@@ -32,7 +32,7 @@ import { cn } from '@/lib/utils';
 function SourceFileIcon({ type }: { type: string }) {
   const ext = type?.toLowerCase();
   if (ext === 'csv' || ext === 'xlsx' || ext === 'xls')
-    return <FileSpreadsheet className="w-4 h-4 text-emerald-600 flex-shrink-0" />;
+    return <FileSpreadsheet className="w-4 h-4 text-blue-600 flex-shrink-0" />;
   if (ext === 'pdf')
     return <FileText className="w-4 h-4 text-rose-500 flex-shrink-0" />;
   return <File className="w-4 h-4 text-blue-500 flex-shrink-0" />;
@@ -214,7 +214,7 @@ export default function ProjectContextPanel({
               className="w-full text-sm resize-none rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-3 text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent leading-relaxed transition-colors"
             />
             <p className="text-[11px] text-gray-400 mt-1.5 flex items-center gap-1">
-              <span className="w-1 h-1 rounded-full bg-green-400 inline-block" />
+              <span className="w-1 h-1 rounded-full bg-blue-400 inline-block" />
               Saved automatically · Prepended to every AI query in this project
             </p>
           </section>
@@ -235,7 +235,7 @@ export default function ProjectContextPanel({
               {sourceCount > 0 && (
                 <Badge
                   variant="secondary"
-                  className="text-[10px] h-4 px-1.5 bg-emerald-100 text-emerald-700 border-0 ml-auto"
+                  className="text-[10px] h-4 px-1.5 bg-blue-100 text-blue-700 border-0 ml-auto"
                 >
                   {sourceCount} file{sourceCount !== 1 ? 's' : ''}
                 </Badge>

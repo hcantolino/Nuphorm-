@@ -164,7 +164,7 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
                   key={cs.id}
                   file={{ id: cs.id, name: cs.filename, size: `${cs.rowCount} rows` }}
                   badge={
-                    <span className="flex items-center gap-0.5 text-[10px] text-emerald-600 font-medium flex-shrink-0">
+                    <span className="flex items-center gap-0.5 text-[10px] text-blue-600 font-medium flex-shrink-0">
                       <CheckCircle2 className="w-3 h-3" />
                       Cleaned
                     </span>

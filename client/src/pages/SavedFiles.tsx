@@ -242,7 +242,7 @@ export default function SavedFiles() {
         return <FileText className="w-8 h-8 text-red-500" />;
       case "csv":
       case "xlsx":
-        return <FileSpreadsheet className="w-8 h-8 text-green-500" />;
+        return <FileSpreadsheet className="w-8 h-8 text-blue-500" />;
       default:
         return <File className="w-8 h-8 text-gray-500" />;
     }
@@ -511,7 +511,7 @@ export default function SavedFiles() {
                                     </button>
                                     <button
                                       onClick={() => handleExportChart(chart, 'csv')}
-                                      className="text-xs text-green-600 hover:text-green-800"
+                                      className="text-xs text-blue-600 hover:text-blue-800"
                                     >
                                       CSV
                                     </button>

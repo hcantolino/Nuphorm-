@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Lightbulb, AlignLeft, FileText, Edit3 } from 'lucide-react';
+import { Lightbulb, AlignLeft, FileText, Edit3, MessageSquarePlus } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { useRegulatoryStore } from '@/stores/regulatoryStore';
 import type { Annotation } from '@/stores/regulatoryStore';
@@ -72,9 +72,10 @@ function renderTextWithCitations(
 
 interface DocumentContentPanelProps {
   onCitationClick?: (citationKey: string) => void;
+  onAddToChat?: (content: string) => void;
 }
 
-export default function DocumentContentPanel({ onCitationClick }: DocumentContentPanelProps) {
+export default function DocumentContentPanel({ onCitationClick, onAddToChat }: DocumentContentPanelProps) {
   const activeProject = useRegulatoryStore((state) => state.getActiveProject());
   const updateProjectContent = useRegulatoryStore((state) => state.updateProjectContent);
 
@@ -174,6 +175,23 @@ export default function DocumentContentPanel({ onCitationClick }: DocumentConten
               >
                 <AlignLeft className="w-3.5 h-3.5" />
                 {annotations.length} notes
+              </button>
+            )}
+
+            {activeProject.content.trim() && onAddToChat && (
+              <button
+                onClick={() => {
+                  const text = activeProject.content;
+                  const formatted = text.length > 2000
+                    ? `[Document excerpt — ${text.length} chars total]\n\n${text.slice(0, 2000)}...\n\n(Truncated — refer to the full document in the editor)`
+                    : text;
+                  onAddToChat(formatted);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition bg-white border-slate-200 text-[#3b82f6] hover:bg-[#f8fafc] hover:border-[#3b82f6]/40"
+                title="Add document content to chat input"
+              >
+                <MessageSquarePlus className="w-3.5 h-3.5 text-[#94a3b8]" />
+                Add to Chat
               </button>
             )}
 

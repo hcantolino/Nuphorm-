@@ -68,7 +68,7 @@ export default function FileSelectionModal({
       case "CSV":
         return "bg-blue-100 text-blue-800";
       case "XLSX":
-        return "bg-green-100 text-green-800";
+        return "bg-indigo-100 text-indigo-800";
       case "JSON":
         return "bg-purple-100 text-purple-800";
       default:

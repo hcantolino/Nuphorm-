@@ -47,7 +47,7 @@ import type {
 // ── Palette definitions (exported so ChartRenderer can use them) ─────────
 
 export const PALETTES: Record<PaletteName, string[]> = {
-  finbox:       ["#14b8a6", "#3b82f6", "#64748b", "#8b5cf6", "#f59e0b", "#ec4899"],
+  finbox:       ["#3b82f6", "#1d4ed8", "#64748b", "#8b5cf6", "#f59e0b", "#ec4899"],
   viridis:      ["#440154", "#31688e", "#35b779", "#fde725", "#90d743", "#6fbe44"],
   pastel:       ["#8ecae6", "#219ebc", "#e9c46a", "#f4a261", "#e76f51", "#f8c8d4"],
   highContrast: ["#1a1a1a", "#e41a1c", "#377eb8", "#4daf4a", "#ff7f00", "#984ea3"],
@@ -109,7 +109,7 @@ function ToggleRow({
         checked={checked}
         onCheckedChange={onChange}
         disabled={disabled}
-        className="flex-shrink-0 data-[state=checked]:bg-[#14b8a6]"
+        className="flex-shrink-0 data-[state=checked]:bg-[#3b82f6]"
       />
     </div>
   );
@@ -177,8 +177,8 @@ function SliderRow({
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
         style={{
-          background: `linear-gradient(to right, #14b8a6 ${pct}%, #e2e8f0 ${pct}%)`,
-          accentColor: '#14b8a6',
+          background: `linear-gradient(to right, #3b82f6 ${pct}%, #e2e8f0 ${pct}%)`,
+          accentColor: '#3b82f6',
         }}
       />
     </div>
@@ -205,7 +205,7 @@ function BoundInput({
           onChange(isNaN(v as number) ? null : v);
         }}
         placeholder="auto"
-        className="flex-1 px-2 py-1 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#14b8a6] focus:border-[#14b8a6] text-[#0f172a] placeholder:text-[#94a3b8] min-w-0"
+        className="flex-1 px-2 py-1 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#3b82f6] focus:border-[#3b82f6] text-[#0f172a] placeholder:text-[#94a3b8] min-w-0"
       />
     </div>
   );
@@ -237,8 +237,8 @@ const ChartSection: React.FC<{
             className={cn(
               "flex flex-col items-center gap-1 py-2.5 px-1 rounded-lg border text-[10px] font-medium transition-all focus:outline-none",
               type === t
-                ? "bg-teal-50 border-[#14b8a6] text-[#14b8a6] shadow-sm"
-                : "bg-white border-[#e2e8f0] text-[#64748b] hover:border-[#14b8a6] hover:bg-teal-50 hover:text-[#0f172a]"
+                ? "bg-blue-50 border-[#3b82f6] text-[#3b82f6] shadow-sm"
+                : "bg-white border-[#e2e8f0] text-[#64748b] hover:border-[#3b82f6] hover:bg-blue-50 hover:text-[#0f172a]"
             )}
           >
             <Icon className="w-4 h-4" />
@@ -324,7 +324,7 @@ const ChartSection: React.FC<{
           <select
             value={customizations.trendlineType}
             onChange={(e) => onSet("trendlineType", e.target.value as TrendlineType)}
-            className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#14b8a6] text-[#0f172a] bg-white"
+            className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#3b82f6] text-[#0f172a] bg-white"
           >
             <option value="none">None</option>
             <option value="linear">Linear</option>
@@ -332,7 +332,7 @@ const ChartSection: React.FC<{
             <option value="exponential">Exponential</option>
           </select>
           {customizations.trendlineType !== "none" && (
-            <div className="mt-2 space-y-1.5 pl-3 border-l-2 border-teal-100">
+            <div className="mt-2 space-y-1.5 pl-3 border-l-2 border-blue-100">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -364,11 +364,11 @@ const ChartSection: React.FC<{
             onChange={(v) => onSet("showErrorBars", v)}
           />
           {customizations.showErrorBars && (
-            <div className="mt-2 pl-3 border-l-2 border-teal-100">
+            <div className="mt-2 pl-3 border-l-2 border-blue-100">
               <select
                 value={customizations.errorBarType}
                 onChange={(e) => onSet("errorBarType", e.target.value as ErrorBarType)}
-                className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#14b8a6] text-[#0f172a] bg-white"
+                className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#3b82f6] text-[#0f172a] bg-white"
               >
                 <option value="std">Standard Deviation</option>
                 <option value="se">Standard Error</option>
@@ -419,7 +419,7 @@ const TableSection: React.FC<{
             value={customizations.tableFilter}
             onChange={(e) => onSet("tableFilter", e.target.value)}
             placeholder="Filter by metric name…"
-            className="w-full pl-7 pr-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-100 focus:border-[#14b8a6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+            className="w-full pl-7 pr-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#3b82f6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
           />
         </div>
       </div>
@@ -435,8 +435,8 @@ const TableSection: React.FC<{
               className={cn(
                 "flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border transition-all focus:outline-none",
                 currentSortKey === key
-                  ? "bg-teal-50 border-[#14b8a6] text-[#14b8a6] font-medium"
-                  : "border-[#e2e8f0] text-[#64748b] hover:border-[#14b8a6] hover:bg-teal-50 hover:text-[#0f172a]"
+                  ? "bg-blue-50 border-[#3b82f6] text-[#3b82f6] font-medium"
+                  : "border-[#e2e8f0] text-[#64748b] hover:border-[#3b82f6] hover:bg-blue-50 hover:text-[#0f172a]"
               )}
             >
               {Icon && <Icon className="w-3 h-3" />}
@@ -484,14 +484,14 @@ const GraphSection: React.FC<{
           value={customizations.xLabel}
           onChange={(e) => onSet("xLabel", e.target.value)}
           placeholder="X-axis label…"
-          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-100 focus:border-[#14b8a6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#3b82f6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
         />
         <input
           type="text"
           value={customizations.yLabel}
           onChange={(e) => onSet("yLabel", e.target.value)}
           placeholder="Y-axis label…"
-          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-100 focus:border-[#14b8a6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#3b82f6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
         />
       </div>
     </div>
@@ -540,8 +540,8 @@ const GraphSection: React.FC<{
             className={cn(
               "px-2.5 py-1 rounded-lg text-xs border transition-all focus:outline-none",
               customizations.legendPosition === value
-                ? "bg-teal-50 border-[#14b8a6] text-[#14b8a6] font-medium"
-                : "border-[#e2e8f0] text-[#64748b] hover:border-[#14b8a6] hover:bg-teal-50 hover:text-[#0f172a]"
+                ? "bg-blue-50 border-[#3b82f6] text-[#3b82f6] font-medium"
+                : "border-[#e2e8f0] text-[#64748b] hover:border-[#3b82f6] hover:bg-blue-50 hover:text-[#0f172a]"
             )}
           >
             {label}
@@ -584,7 +584,7 @@ const ColorsSection: React.FC<{
   }, [customizations.customColors, onSet]);
 
   const isCustom = customizations.customColors.some(Boolean);
-  const wheelColor = effectiveColors[Math.min(selectedSeries, count - 1)] ?? "#14b8a6";
+  const wheelColor = effectiveColors[Math.min(selectedSeries, count - 1)] ?? "#3b82f6";
 
   return (
     <div className="space-y-4">
@@ -604,11 +604,11 @@ const ColorsSection: React.FC<{
                 className={cn(
                   "w-full flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all focus:outline-none",
                   active
-                    ? "border-[#14b8a6] bg-teal-50"
-                    : "border-[#e2e8f0] hover:border-[#14b8a6] hover:bg-teal-50"
+                    ? "border-[#3b82f6] bg-blue-50"
+                    : "border-[#e2e8f0] hover:border-[#3b82f6] hover:bg-blue-50"
                 )}
               >
-                <span className={cn("font-medium", active ? "text-[#14b8a6]" : "text-[#0f172a]")}>
+                <span className={cn("font-medium", active ? "text-[#3b82f6]" : "text-[#0f172a]")}>
                   {PALETTE_LABELS[name]}
                 </span>
                 <div className="flex gap-0.5">
@@ -629,7 +629,7 @@ const ColorsSection: React.FC<{
           {isCustom && (
             <button
               onClick={() => onSet("customColors", [])}
-              className="text-[10px] text-[#64748b] hover:text-[#14b8a6] transition-colors"
+              className="text-[10px] text-[#64748b] hover:text-[#3b82f6] transition-colors"
             >
               Reset custom
             </button>
@@ -645,8 +645,8 @@ const ColorsSection: React.FC<{
               className={cn(
                 "flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] border transition-all focus:outline-none",
                 selectedSeries === i
-                  ? "border-[#14b8a6] bg-teal-50 text-[#14b8a6] font-semibold"
-                  : "border-[#e2e8f0] text-[#64748b] hover:border-[#14b8a6]"
+                  ? "border-[#3b82f6] bg-blue-50 text-[#3b82f6] font-semibold"
+                  : "border-[#e2e8f0] text-[#64748b] hover:border-[#3b82f6]"
               )}
             >
               <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: effectiveColors[i] }} />
@@ -677,7 +677,7 @@ const ColorsSection: React.FC<{
               const v = e.target.value;
               if (/^#[0-9a-fA-F]{0,6}$/.test(v)) handleCustomColor(selectedSeries, v);
             }}
-            className="flex-1 px-2 py-1 text-xs font-mono border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#14b8a6]"
+            className="flex-1 px-2 py-1 text-xs font-mono border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#3b82f6]"
             maxLength={7}
             placeholder="#000000"
           />
@@ -822,7 +822,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       {/* Trigger button */}
       <button
         onClick={() => setOpen((p) => !p)}
-        className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium rounded-lg bg-[#14b8a6] hover:bg-[#0d9488] active:bg-[#0f766e] text-white shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 focus-visible:ring-offset-1"
+        className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium rounded-lg bg-[#3b82f6] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1"
         aria-label="Open customization panel"
         aria-expanded={open}
       >
@@ -852,7 +852,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={onReset}
-                  className="flex items-center gap-1 text-[10px] text-[#64748b] hover:text-[#14b8a6] transition-colors focus:outline-none"
+                  className="flex items-center gap-1 text-[10px] text-[#64748b] hover:text-[#3b82f6] transition-colors focus:outline-none"
                   title="Reset all customizations to defaults"
                 >
                   <RotateCcw className="w-3 h-3" />
@@ -877,7 +877,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   className={cn(
                     "flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors focus:outline-none",
                     section === key
-                      ? "text-[#14b8a6] border-b-2 border-[#14b8a6] bg-white"
+                      ? "text-[#3b82f6] border-b-2 border-[#3b82f6] bg-white"
                       : "text-[#64748b] hover:text-[#0f172a] hover:bg-white"
                   )}
                 >

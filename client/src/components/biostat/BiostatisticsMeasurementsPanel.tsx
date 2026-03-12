@@ -220,7 +220,7 @@ function InferentialPanel() {
           <div className="flex items-center justify-between">
             <p className="text-xs font-bold">{String(result.test ?? 'Results')}</p>
             {typeof result.significant === 'boolean' && (
-              <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded', result.significant ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500')}>
+              <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded', result.significant ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500')}>
                 {result.significant ? 'Significant' : 'Not significant'}
               </span>
             )}
@@ -229,7 +229,7 @@ function InferentialPanel() {
             {Object.entries(result).filter(([k]) => k !== 'test').map(([k, v]) => (
               <div key={k}>
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wide">{k.replace(/_/g, ' ')}</p>
-                <p className={cn('text-xs font-semibold', k === 'p_value' && typeof v === 'number' && v < 0.05 ? 'text-emerald-700' : '')}>{fmt(v)}</p>
+                <p className={cn('text-xs font-semibold', k === 'p_value' && typeof v === 'number' && v < 0.05 ? 'text-blue-700' : '')}>{fmt(v)}</p>
               </div>
             ))}
           </div>
@@ -324,14 +324,14 @@ function SampleSizePanel() {
       </button>
       {error && <div className="text-xs text-red-600 bg-red-50 rounded p-2 font-mono">{error}</div>}
       {result && (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 p-3 space-y-2">
-          <p className="text-xs font-bold text-emerald-800 dark:text-emerald-400">{String(result.test ?? 'Results')}</p>
+        <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 p-3 space-y-2">
+          <p className="text-xs font-bold text-blue-800 dark:text-blue-400">{String(result.test ?? 'Results')}</p>
           {result.note != null && <p className="text-[10px] text-amber-600 bg-amber-50 rounded p-1.5">{String(result.note)}</p>}
           <div className="grid grid-cols-2 gap-2">
             {Object.entries(result).filter(([k]) => !['test','note'].includes(k)).map(([k, v]) => (
-              <div key={k} className="bg-white dark:bg-emerald-900/30 rounded p-2 border border-emerald-100">
-                <p className="text-[10px] text-emerald-600 uppercase tracking-wide">{k.replace(/_/g, ' ')}</p>
-                <p className="text-sm font-bold text-emerald-900 dark:text-emerald-200">
+              <div key={k} className="bg-white dark:bg-blue-900/30 rounded p-2 border border-blue-100">
+                <p className="text-[10px] text-blue-600 uppercase tracking-wide">{k.replace(/_/g, ' ')}</p>
+                <p className="text-sm font-bold text-blue-900 dark:text-blue-200">
                   {typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(3)) : String(v)}
                 </p>
               </div>

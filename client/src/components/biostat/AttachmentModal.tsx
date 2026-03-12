@@ -72,6 +72,8 @@ export interface AttachmentModalProps {
   onSelectProjectOnly: () => void;
   /** Whether a project source has been used in queries (for lock icon) */
   isSourceUsedInQueries?: (sourceId: string) => boolean;
+  /** Called when user clicks "Load to Query" — confirms selections and closes */
+  onLoadToQuery?: () => void;
 }
 
 // ── File icon helper ──────────────────────────────────────────────────────────
@@ -79,7 +81,7 @@ export interface AttachmentModalProps {
 function FileTypeIcon({ type, className }: { type: string; className?: string }) {
   const ext = (type ?? "").toLowerCase();
   if (ext === "csv" || ext === "xlsx" || ext === "xls") {
-    return <FileSpreadsheet className={cn("w-4 h-4 text-emerald-600 flex-shrink-0", className)} />;
+    return <FileSpreadsheet className={cn("w-4 h-4 text-blue-600 flex-shrink-0", className)} />;
   }
   if (ext === "pdf") {
     return <FileText className={cn("w-4 h-4 text-rose-500 flex-shrink-0", className)} />;
@@ -131,12 +133,12 @@ function SourceRow({
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        className={cn(
-          "flex-shrink-0 w-4 h-4 rounded border mr-2.5 flex items-center justify-center transition-colors",
+        className="flex-shrink-0 w-4 h-4 rounded border mr-2.5 flex items-center justify-center transition-colors"
+        style={
           checked
-            ? "bg-[#2563eb] border-[#2563eb]"
-            : "bg-white border-slate-300 hover:border-slate-400"
-        )}
+            ? { backgroundColor: "#3b82f6", borderColor: "#3b82f6" }
+            : { backgroundColor: "#fff", borderColor: "#a0aec0" }
+        }
         aria-label={`${checked ? "Deselect" : "Select"} ${name}`}
       >
         {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
@@ -172,12 +174,12 @@ function SourceRow({
 
       {/* Status badge */}
       <span
-        className={cn(
-          "text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 mr-2",
+        className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 mr-2"
+        style={
           checked
-            ? "bg-emerald-100 text-emerald-700"
-            : "bg-slate-100 text-slate-400"
-        )}
+            ? { backgroundColor: "#dbeafe", color: "#1d4ed8" }
+            : { backgroundColor: "#fed7d7", color: "#f56565" }
+        }
       >
         {checked ? "Active" : "Inactive"}
       </span>
@@ -231,7 +233,7 @@ function SectionHeader({
         <span
           className={cn(
             "text-xs font-semibold uppercase tracking-wider",
-            accent === "teal" ? "text-teal-700" : "text-blue-700"
+            accent === "teal" ? "text-blue-700" : "text-blue-700"
           )}
         >
           {label}
@@ -240,7 +242,7 @@ function SectionHeader({
           className={cn(
             "text-[10px] font-bold px-1.5 py-0.5 rounded-full",
             accent === "teal"
-              ? "bg-teal-100 text-teal-700"
+              ? "bg-blue-100 text-blue-700"
               : "bg-blue-100 text-blue-700"
           )}
         >
@@ -307,6 +309,7 @@ export const AttachmentModal: React.FC<AttachmentModalProps> = ({
   onSelectTabOnly,
   onSelectProjectOnly,
   isSourceUsedInQueries,
+  onLoadToQuery,
 }) => {
   const [previewFile, setPreviewFile] = useState<FilePreviewFile | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -314,13 +317,17 @@ export const AttachmentModal: React.FC<AttachmentModalProps> = ({
   const [deleteGuard, setDeleteGuard] = useState<{ source: ProjectSource; isUsed: boolean } | null>(null);
 
   /** Open file preview — resolves type from extension */
-  const openPreview = (name: string, size?: string, uploadedDate?: string) => {
+  const openPreview = (name: string, size?: string, uploadedDate?: string, previewText?: string) => {
     const ext = name.split(".").pop()?.toLowerCase() ?? "";
-    const fileType: "txt" | "csv" | null =
-      ext === "csv" ? "csv" : ["txt", "tsv", "dat"].includes(ext) ? "txt" : null;
+    let fileType: "txt" | "csv" | "pdf" | "xlsx" | null = null;
+    if (ext === "csv") fileType = "csv";
+    else if (["txt", "tsv", "dat"].includes(ext)) fileType = "txt";
+    else if (ext === "pdf") fileType = previewText ? "txt" : "pdf"; // show extracted text as plaintext if available
+    else if (["xlsx", "xls"].includes(ext)) fileType = "xlsx";
+
     setPreviewFile({
       name,
-      content: "", // FilePreviewModal will fall back to MOCK_FILE_CONTENTS
+      content: previewText ?? "",
       type: fileType,
       size,
       uploadedDate,
@@ -368,19 +375,33 @@ export const AttachmentModal: React.FC<AttachmentModalProps> = ({
 
       {/* Modal panel */}
       <div
-        className="fixed z-[190] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-md"
+        className="fixed z-[190] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-xl w-full max-w-md"
+        style={{
+          backgroundColor: "#ffffff",
+          border: "1px solid #e2e8f0",
+          boxShadow: "0 8px 30px rgba(26, 32, 44, 0.12), 0 2px 8px rgba(26, 32, 44, 0.06)",
+        }}
         role="dialog"
         aria-modal="true"
         aria-label="Manage attached files"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Header ──────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#e2e8f0" }}>
           <div className="flex items-center gap-2">
-            <Paperclip className="w-4 h-4 text-[#2563eb]" />
-            <h2 className="text-sm font-semibold text-slate-900">Attached Sources</h2>
+            <Paperclip className="w-4 h-4" style={{ color: "#3b82f6" }} />
+            <h2 className="text-sm font-semibold" style={{ color: "#1a202c" }}>Attached Sources</h2>
             {totalCount > 0 && (
-              <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-full">
+              <span
+                className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                style={
+                  checkedCount === totalCount
+                    ? { backgroundColor: "#dbeafe", color: "#1d4ed8" }
+                    : checkedCount > 0
+                    ? { backgroundColor: "#e0edff", color: "#2563eb" }
+                    : { backgroundColor: "#f1f5f9", color: "#94a3b8" }
+                }
+              >
                 {checkedCount}/{totalCount}
               </span>
             )}
@@ -458,7 +479,7 @@ export const AttachmentModal: React.FC<AttachmentModalProps> = ({
           {(projectSources.length > 0 || true) && (
             <div>
               <SectionHeader
-                icon={<FolderOpen className="w-3.5 h-3.5 text-teal-600" />}
+                icon={<FolderOpen className="w-3.5 h-3.5 text-blue-600" />}
                 label="Project Sources"
                 count={filteredProjectSources.length}
                 accent="teal"
@@ -479,7 +500,7 @@ export const AttachmentModal: React.FC<AttachmentModalProps> = ({
                       checked={sourceSelection[src.id] !== false}
                       onToggle={() => onToggleSource(src.id)}
                       onRemove={() => handleRemoveProjectSource(src)}
-                      onPreview={() => openPreview(src.name, formatBytes(src.size))}
+                      onPreview={() => openPreview(src.name, formatBytes(src.size), undefined, src.preview)}
                       removeLabel={`Remove ${src.name} from project sources`}
                       isLocked={isSourceUsedInQueries?.(src.id)}
                     />
@@ -538,26 +559,57 @@ export const AttachmentModal: React.FC<AttachmentModalProps> = ({
           </div>
         )}
 
-        {/* ── Footer actions ───────────────────────────────────────── */}
-        <div className="px-5 py-3.5 border-t border-slate-100 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => { onAddFromLibrary(); onClose(); }}
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-[#2563eb] text-[#2563eb] hover:bg-blue-50 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-200"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add from Library
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { onUploadFromComputer(); onClose(); }}
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            Upload File
-          </button>
+        {/* ── Secondary actions ─────────────────────────────────── */}
+        <div className="px-5 pt-3 pb-2 border-t" style={{ borderColor: "#e2e8f0" }}>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { onAddFromLibrary(); onClose(); }}
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-blue-200"
+              style={{ borderColor: "#3b82f6", color: "#3b82f6" }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#eff6ff")}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "")}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add from Library
+            </button>
+            <button
+              type="button"
+              onClick={() => { onUploadFromComputer(); onClose(); }}
+              className="flex items-center justify-center gap-1 px-3 py-2 text-[10px] font-medium rounded-lg transition-colors focus:outline-none"
+              style={{ color: "#a0aec0" }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "#64748b"; e.currentTarget.style.backgroundColor = "#f1f5f9"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "#a0aec0"; e.currentTarget.style.backgroundColor = ""; }}
+            >
+              <Upload className="w-3 h-3" />
+              Upload
+            </button>
+          </div>
         </div>
+
+        {/* ── Load to Query (primary action) ─────────────────────── */}
+        {totalCount > 0 && (
+          <div className="px-5 pb-4 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                onLoadToQuery?.();
+                onClose();
+              }}
+              disabled={checkedCount === 0}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg transition-all focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{
+                backgroundColor: checkedCount > 0 ? "#3b82f6" : "#cbd5e1",
+                color: "#ffffff",
+              }}
+              onMouseEnter={(e) => { if (checkedCount > 0) e.currentTarget.style.backgroundColor = "#2563eb"; }}
+              onMouseLeave={(e) => { if (checkedCount > 0) e.currentTarget.style.backgroundColor = "#3b82f6"; }}
+            >
+              <Check className="w-3.5 h-3.5" />
+              Load {checkedCount} Source{checkedCount !== 1 ? "s" : ""} to Query
+            </button>
+          </div>
+        )}
       </div>
       </>}
 

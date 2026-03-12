@@ -156,7 +156,7 @@ export default function UnifiedDatasetManager() {
                 {currentDataset.rowCount.toLocaleString()} rows
               </span>
               {currentDataset.cleaned && (
-                <span className="flex items-center gap-0.5 bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded-full text-[10px] font-semibold whitespace-nowrap flex-shrink-0">
+                <span className="flex items-center gap-0.5 bg-blue-100 text-blue-700 px-1 py-0.5 rounded-full text-[10px] font-semibold whitespace-nowrap flex-shrink-0">
                   <CheckCircle2 className="w-2.5 h-2.5" />
                   Cleaned
                 </span>
@@ -195,7 +195,7 @@ export default function UnifiedDatasetManager() {
                     {currentDataset.filename}
                   </p>
                   {currentDataset.cleaned ? (
-                    <span className="flex items-center gap-0.5 bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0">
+                    <span className="flex items-center gap-0.5 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0">
                       <CheckCircle2 className="w-2.5 h-2.5" />
                       Cleaned
                     </span>

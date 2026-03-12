@@ -37,7 +37,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  MessageSquarePlus,
+  RefreshCw,
   Save,
+  ShieldCheck,
   Table2,
   Trash2,
   TrendingUp,
@@ -47,9 +50,13 @@ import { toPng, toJpeg, toSvg } from "html-to-image";
 import { jsPDF } from "jspdf";
 // BEFORE: import PharmaChartPanel, { type PharmaChartType } from "./PharmaChartPanel"
 // AFTER:  Charts tab removed — PharmaChartPanel no longer rendered as a separate view
+import PlotlyInteractiveChart, { isSurvivalChartData, isPlotlyChartData } from "./PlotlyInteractiveChart";
+import type { PlotlyChartConfig } from "./PlotlyInteractiveChart";
 import SaveAnalysisModal from "./SaveAnalysisModal";
 import { ControlPanel, PALETTES } from "./ControlPanel";
 import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
+import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
 
 // ─── Color resolution ────────────────────────────────────────────────────────
 
@@ -605,7 +612,7 @@ function MarkdownTable({ source }: { source: string }) {
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#f0fdfa] transition-colors">
+            <tr key={ri} className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#eff6ff] transition-colors">
               {row.map((cell, ci) => (
                 <td
                   key={ci}
@@ -1136,7 +1143,7 @@ const EditableCell: React.FC<EditableCellProps> = ({
 
   return (
     <span
-      className={`cursor-pointer hover:text-[#14b8a6] hover:underline transition-colors ${
+      className={`cursor-pointer hover:text-[#3b82f6] hover:underline transition-colors ${
         align === "right" ? "font-mono" : ""
       }`}
       title="Click to edit"
@@ -1168,6 +1175,9 @@ export const GraphTablePanel: React.FC = () => {
     setCustomization,
     resetCustomizations,
     getTabCustomizations,
+    selectedGraphId,
+    setSelectedGraph,
+    addToChat,
   } = useAIPanelStore();
 
   const results = (activeTabId ? resultsByTab[activeTabId] : null) ?? [];
@@ -1199,6 +1209,60 @@ export const GraphTablePanel: React.FC = () => {
   // Save modal
   const [saveModalOpen, setSaveModalOpen] = useState(false);
 
+  // ── Validate & Correct ──────────────────────────────────────────────────
+  const currentDataset = useCurrentDatasetStore((s) => s.currentDataset);
+  const [isValidating, setIsValidating] = useState(false);
+  const validateMutation = trpc.biostatistics.validateAndCorrect.useMutation();
+  const { updatePanelResult } = useAIPanelStore();
+
+  const handleValidateAndCorrect = useCallback(async () => {
+    if (!activeResult || !activeTabId || !currentDataset) {
+      toast.error("No data available for validation", {
+        style: { background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" },
+      });
+      return;
+    }
+    setIsValidating(true);
+    try {
+      const result = await validateMutation.mutateAsync({
+        originalQuery: activeResult.query ?? "",
+        analysisResults: activeResult.analysisResults,
+        fullData: currentDataset.rows as Record<string, any>[],
+        dataColumns: currentDataset.columns,
+        classifications: {},
+        conversationHistory: [],
+      });
+
+      if (result.corrected || result.requeried) {
+        updatePanelResult(activeTabId, activeResult.id, {
+          analysisResults: result.analysisResults,
+          ...(result.analysis ? { analysis: result.analysis } : {}),
+        });
+        toast.success(
+          result.requeried
+            ? `Re-queried AI with corrections — ${result.correctionsApplied} value(s) fixed`
+            : `Validated — ${result.correctionsApplied} value(s) corrected`,
+          {
+            style: { background: "#fffbeb", color: "#92400e", border: "1px solid #fde68a" },
+            duration: 4000,
+          }
+        );
+      } else {
+        toast.success("All values verified — no corrections needed", {
+          style: { background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" },
+          duration: 3000,
+        });
+      }
+    } catch (err) {
+      console.error("[validateAndCorrect] Error:", err);
+      toast.error("Validation failed — try again", {
+        style: { background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" },
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  }, [activeResult, activeTabId, currentDataset, validateMutation, updatePanelResult]);
+
   // Clean export ref — hidden off-screen render for publication-quality exports
   const cleanExportRef = useRef<HTMLDivElement>(null);
 
@@ -1206,6 +1270,15 @@ export const GraphTablePanel: React.FC = () => {
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const displayTitle = titleOverride ?? activeResult?.graphTitle ?? null;
   React.useEffect(() => { setTitleOverride(null); }, [activeResult?.id]);
+
+  // ── "Add to Chat" helper ──────────────────────────────────────────────────
+  const handleAddToChat = useCallback((content: string) => {
+    addToChat(content);
+    toast.success("Added to chat input", {
+      style: { background: '#eff6ff', color: '#1e40af', borderColor: '#93c5fd' },
+      duration: 1500,
+    });
+  }, [addToChat]);
 
   // Chart data
   const chartData = activeResult?.analysisResults?.chart_data;
@@ -1510,6 +1583,22 @@ export const GraphTablePanel: React.FC = () => {
             seriesCount={seriesCount}
           />
 
+          {/* Validate & Correct */}
+          <Button
+            size="sm"
+            className="h-7 gap-1.5 text-xs px-3 rounded-lg shadow-sm font-medium transition-colors"
+            style={{
+              backgroundColor: "#a0aec0",
+              color: "#1a202c",
+            }}
+            onClick={handleValidateAndCorrect}
+            disabled={!activeResult || !currentDataset || isValidating}
+            title="Validate output against original data and correct hallucinations"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            {isValidating ? "Validating…" : "Validate & Correct"}
+          </Button>
+
           {/* Save */}
           <Button
             size="sm"
@@ -1541,7 +1630,7 @@ export const GraphTablePanel: React.FC = () => {
         {/* Editable AI-generated title */}
         {displayTitle && (
           <h2
-            className="text-lg font-semibold text-[#0f172a] cursor-text outline-none hover:bg-[#f0fdfa] focus:bg-[#f0fdfa] rounded-lg px-2 py-1 -mx-2 transition-colors"
+            className="text-lg font-semibold text-[#0f172a] cursor-text outline-none hover:bg-[#eff6ff] focus:bg-[#eff6ff] rounded-lg px-2 py-1 -mx-2 transition-colors"
             contentEditable
             suppressContentEditableWarning
             title="Click to edit title"
@@ -1639,12 +1728,24 @@ export const GraphTablePanel: React.FC = () => {
               : "Chart"
           );
 
+          const isGraphSelected = selectedGraphId === activeResult?.id;
+
           return (
             // NEW: for viz results, chart is the primary output — render it first.
             // Container uses the exact Tailwind classes requested for production readiness.
+            // Clickable for graph-edit mode: click to highlight, click again to deselect.
             <Card
-              className="w-full bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col"
-              aria-label={`${headerLabel} — ${activeResult?.graphTitle ?? activeResult?.query ?? "analysis"}`}
+              className={`w-full bg-white rounded-xl shadow-sm overflow-hidden flex flex-col cursor-pointer transition-all duration-200 ${
+                isGraphSelected
+                  ? 'border-2 ring-2 ring-[#60a5fa]/40'
+                  : 'border border-slate-200 hover:border-slate-300'
+              }`}
+              style={isGraphSelected ? { borderColor: '#1a202c' } : undefined}
+              onClick={() => {
+                if (!activeResult?.id) return;
+                setSelectedGraph(isGraphSelected ? null : activeResult.id);
+              }}
+              aria-label={`${headerLabel} — ${activeResult?.graphTitle ?? activeResult?.query ?? "analysis"}${isGraphSelected ? ' (selected for editing)' : ''}`}
               role="img"
               data-chart-capture={activeResult?.id ?? ""}
               data-export-target=""
@@ -1652,23 +1753,41 @@ export const GraphTablePanel: React.FC = () => {
               <CardHeader className="flex-shrink-0 py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
                 <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                   <span className="flex items-center gap-2">
-                    <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
+                    <TrendingUp className="w-4 h-4 text-[#3b82f6]" />
                     {headerLabel}
                     <Badge className="text-[10px] h-4 bg-[#f1f5f9] text-[#64748b] border-0 capitalize font-normal">
                       {chartLabel}
                     </Badge>
                     {hasTableSync && (
-                      <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal ml-0.5">
+                      <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/30 font-normal ml-0.5">
                         Live
                       </Badge>
                     )}
                   </span>
-                  <ExportDropdown
-                    type="chart"
-                    title={displayTitle || activeResult?.graphTitle}
-                    query={activeResult?.query}
-                    cleanExportRef={cleanExportRef}
-                  />
+                  <span className="flex items-center gap-1.5">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const cd = activeResult?.analysisResults?.chart_data;
+                        const title = displayTitle || activeResult?.graphTitle || "Chart";
+                        const content = cd
+                          ? `**${title}**\n\`\`\`json\n${JSON.stringify(cd, null, 2)}\n\`\`\``
+                          : `Chart: ${title}`;
+                        handleAddToChat(content);
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-[#3b82f6] bg-white border border-[#e2e8f0] hover:bg-[#f8fafc] hover:border-[#3b82f6]/40 transition-colors"
+                      title="Add chart data to chat input"
+                    >
+                      <MessageSquarePlus className="w-3 h-3 text-[#94a3b8]" />
+                      Add to Chat
+                    </button>
+                    <ExportDropdown
+                      type="chart"
+                      title={displayTitle || activeResult?.graphTitle}
+                      query={activeResult?.query}
+                      cleanExportRef={cleanExportRef}
+                    />
+                  </span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="pb-4 pt-3" data-chart-export={activeResult?.id}>
@@ -1680,7 +1799,7 @@ export const GraphTablePanel: React.FC = () => {
                     </p>
                     <div className="flex gap-3">
                       <button
-                        className="text-xs text-[#14b8a6] underline underline-offset-2 hover:text-[#0d9488] transition-colors"
+                        className="text-xs text-[#3b82f6] underline underline-offset-2 hover:text-[#1d4ed8] transition-colors"
                         onClick={() => setChartError(false)}
                         aria-label="Retry chart render"
                       >
@@ -1700,15 +1819,42 @@ export const GraphTablePanel: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  // NEW: wrapped in ChartErrorBoundary so a crash doesn't take down the panel
+                  // Conditionally render Plotly for survival/pharma data, Recharts for standard
                   <ChartErrorBoundary onError={() => setChartError(true)}>
-                    <ChartRenderer
-                      // Use syncedChartData when table edits exist; falls back to original
-                      chartData={syncedChartData ?? chartData}
-                      customizations={customizations}
-                      colors={activeColors}
-                      preferredType={llmChartType}
-                    />
+                    {isPlotlyChartData(syncedChartData ?? chartData) ? (
+                      <PlotlyInteractiveChart
+                        config={{
+                          mode: (syncedChartData ?? chartData)?.pharma_type ?? 'auto',
+                          chartData: syncedChartData ?? chartData,
+                          title: activeResult?.graphTitle ?? activeResult?.title ?? undefined,
+                        }}
+                        onPointClick={(pt) => {
+                          console.log('[PlotlyChart] Point clicked:', pt);
+                        }}
+                        onEditAction={(action, ctx) => {
+                          if (!activeResult?.id) return;
+                          const actionDescriptions: Record<string, string> = {
+                            add_labels: 'Add data labels to all data points on the chart',
+                            bar_at_month_12: 'Add a vertical reference bar or annotation at Month 12',
+                            pairwise_table: 'Add a pairwise comparison table showing statistical differences between groups',
+                            percent_improvement: 'Calculate and annotate percent improvement between treatment groups',
+                            add_trendline: 'Add a linear trendline to each data series',
+                          };
+                          const editText = actionDescriptions[action] ?? action.replace(/_/g, ' ');
+                          const pointCtx = ctx ? ` (context: point at x=${ctx.x}, y=${ctx.y}, trace=${ctx.trace})` : '';
+                          useAIPanelStore.getState().queueGraphEdit(activeResult.id, editText + pointCtx);
+                        }}
+                        height={380}
+                      />
+                    ) : (
+                      <ChartRenderer
+                        // Use syncedChartData when table edits exist; falls back to original
+                        chartData={syncedChartData ?? chartData}
+                        customizations={customizations}
+                        colors={activeColors}
+                        preferredType={llmChartType}
+                      />
+                    )}
                   </ChartErrorBoundary>
                 )}
               </CardContent>
@@ -1717,6 +1863,14 @@ export const GraphTablePanel: React.FC = () => {
                 <p className="flex-shrink-0 text-xs italic text-[#94a3b8] px-4 pb-2.5 border-t border-[#e2e8f0] pt-2">
                   {String(activeResult?.analysisResults?.results_table?.[0]?.value ?? "")}
                 </p>
+              )}
+              {/* Graph-edit hint — visible when this chart is selected */}
+              {isGraphSelected && (
+                <div className="flex-shrink-0 px-4 py-2 border-t border-[#e2e8f0] bg-[#f0fdf4]">
+                  <p className="text-xs text-emerald-700 font-medium">
+                    Graph selected — type your edit in the chat below (e.g. "change to bar chart" or "add error bars")
+                  </p>
+                </div>
               )}
             </Card>
           );
@@ -1738,9 +1892,9 @@ export const GraphTablePanel: React.FC = () => {
               <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
                 <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                   <span className="flex items-center gap-2">
-                    <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                    <Table2 className="w-4 h-4 text-[#3b82f6]" />
                     Chart Source Data
-                    <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal">
+                    <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/30 font-normal">
                       auto-generated
                     </Badge>
                   </span>
@@ -1780,7 +1934,7 @@ export const GraphTablePanel: React.FC = () => {
                       {labels.map((label: string, rowIdx: number) => (
                         <tr
                           key={rowIdx}
-                          className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#f0fdfa] transition-colors"
+                          className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#eff6ff] transition-colors"
                           style={
                             customizations.zebraStriping && rowIdx % 2 === 0
                               ? { backgroundColor: "#f1f5f9" }
@@ -1810,28 +1964,50 @@ export const GraphTablePanel: React.FC = () => {
         {/* Auto-chart from table — rendered when no LLM chart_data exists but stats table  */}
         {/* has ≥2 numeric rows. Editing any VALUE cell instantly updates this chart because  */}
         {/* autoChartFromTable is derived from displayTable which reads from editedTable.      */}
-        {autoChartFromTable && !isNoteOnlyTable && !isVizResult && (
-          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
-            <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-              <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
-                Live Preview
-                <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/30 font-normal">
-                  synced from table
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pb-4 pt-3" data-chart-export={activeResult?.id}>
-              <ChartErrorBoundary onError={() => {}}>
-                <ChartRenderer
-                  chartData={autoChartFromTable}
-                  customizations={customizations}
-                  colors={activeColors}
-                />
-              </ChartErrorBoundary>
-            </CardContent>
-          </Card>
-        )}
+        {autoChartFromTable && !isNoteOnlyTable && !isVizResult && (() => {
+          const autoChartId = activeResult?.id ? `auto-${activeResult.id}` : null;
+          const isAutoSelected = selectedGraphId === autoChartId;
+          return (
+            <Card
+              className={`cursor-pointer transition-all duration-200 rounded-xl overflow-hidden ${
+                isAutoSelected
+                  ? 'border-2 ring-2 ring-[#60a5fa]/40'
+                  : 'border border-[#e2e8f0] shadow-sm hover:border-slate-300'
+              }`}
+              style={isAutoSelected ? { borderColor: '#1a202c' } : undefined}
+              onClick={() => {
+                if (!autoChartId) return;
+                setSelectedGraph(isAutoSelected ? null : autoChartId);
+              }}
+            >
+              <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
+                <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
+                  <TrendingUp className="w-4 h-4 text-[#3b82f6]" />
+                  Live Preview
+                  <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/30 font-normal">
+                    synced from table
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pb-4 pt-3" data-chart-export={activeResult?.id}>
+                <ChartErrorBoundary onError={() => {}}>
+                  <ChartRenderer
+                    chartData={autoChartFromTable}
+                    customizations={customizations}
+                    colors={activeColors}
+                  />
+                </ChartErrorBoundary>
+              </CardContent>
+              {isAutoSelected && (
+                <div className="flex-shrink-0 px-4 py-2 border-t border-[#e2e8f0] bg-[#f0fdf4]">
+                  <p className="text-xs text-emerald-700 font-medium">
+                    Graph selected — type your edit in the chat below
+                  </p>
+                </div>
+              )}
+            </Card>
+          );
+        })()}
 
         {/* Stats table */}
         {/* Shown when there are real data rows (not just a "Note" row).                       */}
@@ -1842,23 +2018,37 @@ export const GraphTablePanel: React.FC = () => {
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
               <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                 <span className="flex items-center gap-2">
-                  <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                  <Table2 className="w-4 h-4 text-[#3b82f6]" />
                   Statistics Summary
                   <span className="text-xs font-normal text-[#64748b]">
                     — click any cell to edit
                   </span>
                   {customizations.tableFilter && (
-                    <Badge className="text-[10px] h-4 bg-teal-50 text-[#14b8a6] border border-[#14b8a6]/20 ml-1">
+                    <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/20 ml-1">
                       filtered
                     </Badge>
                   )}
                 </span>
-                <ExportDropdown
-                  type="table"
-                  title={displayTitle || activeResult?.graphTitle}
-                  query={activeResult?.query}
-                  tableData={displayTable}
-                />
+                <span className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => {
+                      const rows = displayTable.map((r: any) => `| ${r.metric} | ${r.value} |`).join('\n');
+                      const md = `| Metric | Value |\n|--------|-------|\n${rows}`;
+                      handleAddToChat(md);
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-[#3b82f6] bg-white border border-[#e2e8f0] hover:bg-[#f8fafc] hover:border-[#3b82f6]/40 transition-colors"
+                    title="Add table data to chat input"
+                  >
+                    <MessageSquarePlus className="w-3 h-3 text-[#94a3b8]" />
+                    Add to Chat
+                  </button>
+                  <ExportDropdown
+                    type="table"
+                    title={displayTitle || activeResult?.graphTitle}
+                    query={activeResult?.query}
+                    tableData={displayTable}
+                  />
+                </span>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-0 pb-2">
@@ -1871,13 +2061,21 @@ export const GraphTablePanel: React.FC = () => {
                     <th className="text-right py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide">
                       Value
                     </th>
+                    {activeResult?.analysisResults?._dataValidation?.validated && (
+                      <th className="text-center py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide" style={{ width: 100 }}>
+                        Validation
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {displayTable.map((row: any, rowIdx: number) => (
+                  {displayTable.map((row: any, rowIdx: number) => {
+                    const validation = row._validation as string | undefined;
+                    const isValidated = activeResult?.analysisResults?._dataValidation?.validated;
+                    return (
                     <tr
                       key={rowIdx}
-                      className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#f0fdfa] transition-colors"
+                      className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#eff6ff] transition-colors"
                       style={
                         customizations.zebraStriping && rowIdx % 2 === 0
                           ? { backgroundColor: "#f1f5f9" }
@@ -1893,7 +2091,11 @@ export const GraphTablePanel: React.FC = () => {
                           align="left"
                         />
                       </td>
-                      <td className="py-1.5 px-4 text-right">
+                      <td
+                        className="py-1.5 px-4 text-right"
+                        style={validation === "corrected" ? { color: "#f59e0b" } : undefined}
+                        title={validation === "corrected" ? `Original AI value: ${row._originalLLMValue ?? "?"} — corrected` : undefined}
+                      >
                         <EditableCell
                           value={row.value}
                           resultId={activeResult!.id}
@@ -1902,20 +2104,187 @@ export const GraphTablePanel: React.FC = () => {
                           align="right"
                         />
                       </td>
+                      {isValidated && (
+                        <td className="py-1.5 px-4 text-center">
+                          {validation === "exact_match" && (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium" style={{ color: "#22c55e" }}>
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: "#22c55e" }} />
+                              Verified
+                            </span>
+                          )}
+                          {validation === "corrected" && (
+                            <span
+                              className="inline-flex items-center gap-1 text-xs font-medium cursor-help"
+                              style={{ color: "#f59e0b" }}
+                              title={`Original AI value: ${row._originalLLMValue ?? "?"} — corrected to match source data`}
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: "#f59e0b" }} />
+                              Corrected
+                            </span>
+                          )}
+                          {validation === "unmatched" && (
+                            <span className="text-xs text-[#94a3b8]">—</span>
+                          )}
+                          {!validation && (
+                            <span className="text-xs text-[#94a3b8]">—</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
+              {/* Validation footer — shown when data was cross-verified against original CSV */}
+              {activeResult?.analysisResults?._dataValidation?.validated && (
+                <div
+                  className="flex items-center gap-2 px-4 py-2 border-t border-[#e2e8f0]"
+                  style={{ backgroundColor: "#f0fdf4" }}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#22c55e" }} />
+                  <span className="text-xs" style={{ color: "#15803d" }}>
+                    Data validated against original CSV to prevent inaccuracies.
+                    {(activeResult.analysisResults._dataValidation.correctionsApplied ?? 0) > 0 && (
+                      <span className="font-medium" style={{ color: "#f59e0b" }}>
+                        {" "}{activeResult.analysisResults._dataValidation.correctionsApplied} value(s) corrected.
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
+
+        {/* Diff viewer: side-by-side original vs. generated — shown when corrections detected */}
+        {activeResult?.analysisResults?._dataValidation?.validated &&
+          (activeResult.analysisResults._dataValidation.correctionsApplied ?? 0) > 0 &&
+          activeResult.analysisResults._dataValidation.originalGroupData?.length > 0 && (() => {
+            const validation = activeResult.analysisResults._dataValidation;
+            const table = activeResult.analysisResults.results_table ?? [];
+            const groupData = validation.originalGroupData as Array<{ group: string; values: Record<string, number> }>;
+            // Pick the first numeric column for display
+            const displayCol = (validation.numericColumns as string[])?.[0] ?? "";
+
+            // Log mismatches to console for VS Code debugging
+            if (process.env.NODE_ENV !== "production") {
+              table.forEach((row: any) => {
+                if (row._validation === "corrected") {
+                  console.warn(
+                    `[DataValidation] Mismatch: "${row.metric}" — LLM: ${row._originalLLMValue}, Original: ${row.value}`,
+                    { displayCol, originalGroupData: groupData }
+                  );
+                }
+              });
+            }
+
+            return (
+              <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
+                <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
+                  <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
+                    <ShieldCheck className="w-4 h-4" style={{ color: "#f59e0b" }} />
+                    Data Integrity — Original vs. Generated
+                    <span className="text-xs font-normal text-[#64748b]">
+                      — {validation.correctionsApplied} correction(s)
+                    </span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="px-0 pb-0">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr style={{ backgroundColor: "#1a202c", color: "#ffffff" }}>
+                        <th className="text-left py-2 px-4 text-xs font-semibold uppercase tracking-wide">
+                          {validation.groupColumn ?? "Group"} (Original)
+                        </th>
+                        <th className="text-right py-2 px-4 text-xs font-semibold uppercase tracking-wide">
+                          Value (Original)
+                        </th>
+                        <th className="text-right py-2 px-4 text-xs font-semibold uppercase tracking-wide">
+                          Generated
+                        </th>
+                        <th className="text-center py-2 px-4 text-xs font-semibold uppercase tracking-wide">
+                          Status
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupData.map((origRow: any, idx: number) => {
+                        const matchedRow = table.find(
+                          (r: any) => String(r.metric ?? "").trim().toLowerCase() === origRow.group.trim().toLowerCase()
+                        );
+                        const originalVal = displayCol ? origRow.values[displayCol] : null;
+                        const generatedVal = matchedRow?._validation === "corrected"
+                          ? matchedRow._originalLLMValue
+                          : matchedRow?.value;
+                        const isMatch = matchedRow?._validation === "exact_match";
+                        const isCorrected = matchedRow?._validation === "corrected";
+
+                        return (
+                          <tr
+                            key={idx}
+                            className="border-b border-[#e2e8f0] last:border-0"
+                            style={{ backgroundColor: "#f1f5f9" }}
+                          >
+                            <td className="py-1.5 px-4 text-[#0f172a] font-medium">{origRow.group}</td>
+                            <td className="py-1.5 px-4 text-right font-mono text-xs text-[#0f172a]">
+                              {originalVal != null ? String(originalVal) : "—"}
+                            </td>
+                            <td className="py-1.5 px-4 text-right font-mono text-xs text-[#0f172a]">
+                              {generatedVal != null ? String(generatedVal) : "—"}
+                            </td>
+                            <td className="py-1.5 px-4 text-center">
+                              {isMatch && (
+                                <span className="text-xs font-medium" style={{ color: "#3b82f6" }}>Match</span>
+                              )}
+                              {isCorrected && (
+                                <span className="text-xs font-medium" style={{ color: "#f59e0b" }}>Corrected</span>
+                              )}
+                              {!isMatch && !isCorrected && (
+                                <span className="text-xs text-[#94a3b8]">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </CardContent>
+              </Card>
+            );
+          })()}
+
+        {/* Retry Analysis button — shown when hallucinations were corrected */}
+        {activeResult?.analysisResults?._dataValidation?.validated &&
+          (activeResult.analysisResults._dataValidation.correctionsApplied ?? 0) > 0 && (
+            <div className="flex justify-center">
+              <Button
+                variant="outline"
+                className="gap-2 text-sm font-medium border-[#e2e8f0] hover:bg-[#f8fafc] text-[#64748b] hover:text-[#0f172a]"
+                onClick={() => {
+                  const query = activeResult?.query;
+                  if (query) {
+                    // Dispatch a custom event for the chat component to pick up
+                    document.dispatchEvent(
+                      new CustomEvent("nuphorm-retry-analysis", { detail: { query } })
+                    );
+                    toast("Retrying analysis with stricter validation…", {
+                      style: { backgroundColor: "#64748b", color: "#fff", border: "none" },
+                    });
+                  }
+                }}
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Retry Analysis
+              </Button>
+            </div>
+          )}
 
         {/* Clean Dataset download — shown for data_cleaning results with a dataset */}
         {activeResult?.analysisResults?.analysis_type === "data_cleaning" &&
           activeResult?.tableData?.rows?.length > 0 && (
             <div className="flex justify-center">
               <Button
-                className="bg-[#14b8a6] hover:bg-[#0d9488] text-white shadow-sm gap-2 px-5 py-2.5 rounded-lg text-sm font-medium"
+                className="bg-[#3b82f6] hover:bg-[#1d4ed8] text-white shadow-sm gap-2 px-5 py-2.5 rounded-lg text-sm font-medium"
                 onClick={() => {
                   const headers = activeResult!.tableData.headers as string[];
                   const rows = activeResult!.tableData.rows as any[][];
@@ -1952,7 +2321,7 @@ export const GraphTablePanel: React.FC = () => {
               <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
                 <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                   <span className="flex items-center gap-2">
-                    <Table2 className="w-4 h-4 text-[#14b8a6]" />
+                    <Table2 className="w-4 h-4 text-[#3b82f6]" />
                     Dataset
                     <span className="text-xs font-normal text-[#64748b]">
                       — {totalRows} observation{totalRows !== 1 ? "s" : ""}
@@ -1995,7 +2364,7 @@ export const GraphTablePanel: React.FC = () => {
                       {pageRows.map((row: any[], rowIdx: number) => (
                         <tr
                           key={startIdx + rowIdx}
-                          className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#f0fdfa] transition-colors"
+                          className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#eff6ff] transition-colors"
                           style={
                             customizations.zebraStriping && rowIdx % 2 === 0
                               ? { backgroundColor: "#f1f5f9" }
@@ -2067,9 +2436,19 @@ export const GraphTablePanel: React.FC = () => {
           ) && (
             <Card className="border border-[#e2e8f0] shadow-sm rounded-xl">
               <CardHeader className="py-2 px-4 border-b border-[#e2e8f0] bg-white">
-                <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]">
-                  <TrendingUp className="w-4 h-4 text-[#14b8a6]" />
-                  Interpretation
+                <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
+                  <span className="flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-[#3b82f6]" />
+                    Interpretation
+                  </span>
+                  <button
+                    onClick={() => handleAddToChat(activeResult.analysis)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-[#3b82f6] bg-white border border-[#e2e8f0] hover:bg-[#f8fafc] hover:border-[#3b82f6]/40 transition-colors"
+                    title="Add interpretation to chat input"
+                  >
+                    <MessageSquarePlus className="w-3 h-3 text-[#94a3b8]" />
+                    Add to Chat
+                  </button>
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-4 pb-4">

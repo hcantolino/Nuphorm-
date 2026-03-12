@@ -27,12 +27,16 @@ interface RegulatoryProject {
   createdAt: Date;
 }
 
-interface SourceFile {
+export interface SourceFile {
   id: string;
   name: string;
   type: 'csv' | 'pdf' | 'xlsx';
   size: number;
   uploadedAt: Date;
+  /** Parsed text content — available once client-side parsing completes */
+  parsedContent?: string;
+  /** 'uploading' → 'parsing' → 'ready' → 'error' */
+  status: 'uploading' | 'parsing' | 'ready' | 'error';
 }
 
 interface RegulatorySidebarProps {
@@ -402,24 +406,90 @@ export default function RegulatorySidebar({
     [selectedProject, handleProjectSelect]
   );
 
+  /** Read file text content client-side (CSV/TXT as text, others as truncated base64 summary) */
+  const parseFileContent = useCallback(async (file: File): Promise<string> => {
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    // CSV and text files: read as text directly
+    if (['csv', 'txt', 'tsv', 'json'].includes(ext)) {
+      const text = await file.text();
+      // Truncate to ~2000 chars for LLM context
+      return text.length > 2000 ? text.slice(0, 2000) + '\n... [truncated]' : text;
+    }
+    // XLSX: read sheet as CSV text using the browser FileReader
+    if (['xlsx', 'xls'].includes(ext)) {
+      try {
+        const arrayBuf = await file.arrayBuffer();
+        // Dynamic import of xlsx if available, otherwise fall back
+        const XLSX = await import('xlsx');
+        const workbook = XLSX.read(arrayBuf, { type: 'array' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const csv = XLSX.utils.sheet_to_csv(firstSheet);
+        return csv.length > 2000 ? csv.slice(0, 2000) + '\n... [truncated]' : csv;
+      } catch {
+        return `[Excel file: ${file.name}, ${(file.size / 1024).toFixed(1)} KB — content extraction unavailable]`;
+      }
+    }
+    // PDF and others: return metadata placeholder (full parsing requires server-side)
+    return `[${ext.toUpperCase()} file: ${file.name}, ${(file.size / 1024).toFixed(1)} KB — upload to server for full content extraction]`;
+  }, []);
+
   const handleFileUpload = useCallback(
     (files: FileList) => {
-      const newSources: SourceFile[] = Array.from(files).map((file) => ({
-        id: Date.now().toString() + Math.random(),
+      const fileArray = Array.from(files);
+      // Create source entries immediately with 'uploading' status
+      const newSources: SourceFile[] = fileArray.map((file) => ({
+        id: Date.now().toString() + Math.random().toString(36).slice(2),
         name: file.name,
         type:
           (file.name.split('.').pop()?.toLowerCase() as 'csv' | 'pdf' | 'xlsx') ||
           'pdf',
         size: file.size,
         uploadedAt: new Date(),
+        status: 'uploading' as const,
       }));
+
       setSources((prev) => {
         const updated = [...prev, ...newSources];
         onSourcesChange?.(updated);
         return updated;
       });
+
+      // Auto-parse each file in background
+      fileArray.forEach(async (file, i) => {
+        const sourceId = newSources[i].id;
+
+        // Mark as parsing
+        setSources((prev) => {
+          const updated = prev.map((s) =>
+            s.id === sourceId ? { ...s, status: 'parsing' as const } : s
+          );
+          onSourcesChange?.(updated);
+          return updated;
+        });
+
+        try {
+          const parsedContent = await parseFileContent(file);
+          setSources((prev) => {
+            const updated = prev.map((s) =>
+              s.id === sourceId
+                ? { ...s, parsedContent, status: 'ready' as const }
+                : s
+            );
+            onSourcesChange?.(updated);
+            return updated;
+          });
+        } catch {
+          setSources((prev) => {
+            const updated = prev.map((s) =>
+              s.id === sourceId ? { ...s, status: 'error' as const } : s
+            );
+            onSourcesChange?.(updated);
+            return updated;
+          });
+        }
+      });
     },
-    [onSourcesChange]
+    [onSourcesChange, parseFileContent]
   );
 
   const handleDrag = useCallback((e: React.DragEvent) => {
@@ -643,9 +713,23 @@ export default function RegulatorySidebar({
                       <p className="text-xs font-medium truncate text-white">
                         {source.name}
                       </p>
-                      <p className="text-xs text-gray-500">
-                        {(source.size / 1024).toFixed(1)} KB
-                      </p>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <p className="text-xs text-gray-500">
+                          {(source.size / 1024).toFixed(1)} KB
+                        </p>
+                        {source.status === 'uploading' && (
+                          <span className="text-[10px] text-blue-400">Uploading...</span>
+                        )}
+                        {source.status === 'parsing' && (
+                          <span className="text-[10px] text-amber-400">Parsing...</span>
+                        )}
+                        {source.status === 'ready' && (
+                          <span className="text-[10px] text-emerald-400">Ready</span>
+                        )}
+                        {source.status === 'error' && (
+                          <span className="text-[10px] text-red-400">Error</span>
+                        )}
+                      </div>
                     </div>
                     <button
                       onClick={() => handleDeleteSource(source.id)}

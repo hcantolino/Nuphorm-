@@ -157,7 +157,7 @@ export default function DataFilesModal({
                       <FileText className="w-4 h-4 text-gray-400 flex-shrink-0" />
                       <p className="text-sm font-medium text-gray-900 truncate">{file.name}</p>
                       <span className={`px-2 py-0.5 text-xs font-medium rounded ${
-                        file.type === 'CSV' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'
+                        file.type === 'CSV' ? 'bg-blue-100 text-blue-700' : 'bg-indigo-100 text-indigo-700'
                       }`}>
                         {file.type}
                       </span>

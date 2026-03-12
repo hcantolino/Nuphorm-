@@ -379,7 +379,7 @@ export function BiostatisticsCompute() {
                     {stats.upregulated}
                   </td>
                 </tr>
-                <tr className="bg-green-50">
+                <tr className="bg-blue-50">
                   <td className="border px-3 py-2 font-medium">Downregulated</td>
                   <td className="border px-3 py-2 font-mono text-right">
                     {stats.downregulated}

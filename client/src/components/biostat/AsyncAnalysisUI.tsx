@@ -138,7 +138,7 @@ export function AsyncAnalysisUI({ onResultReceived, csvData }: AsyncAnalysisUIPr
       case "submitted":
         return <Loader2 className="w-5 h-5 animate-spin text-blue-500" />;
       case "completed":
-        return <CheckCircle className="w-5 h-5 text-green-500" />;
+        return <CheckCircle className="w-5 h-5 text-blue-500" />;
       case "failed":
       case "cancelled":
         return <AlertCircle className="w-5 h-5 text-red-500" />;
@@ -237,8 +237,8 @@ export function AsyncAnalysisUI({ onResultReceived, csvData }: AsyncAnalysisUIPr
 
             {/* Result Display */}
             {status === "completed" && result && (
-              <div className="space-y-3 bg-green-50 p-4 rounded-lg border border-green-200">
-                <h4 className="font-semibold text-green-900">Results</h4>
+              <div className="space-y-3 bg-blue-50 p-4 rounded-lg border border-blue-200">
+                <h4 className="font-semibold text-blue-900">Results</h4>
                 <div className="space-y-2 text-sm">
                   {result.statistic ? (
                     <div>

@@ -42,16 +42,29 @@ export interface RegulatoryProject {
   updatedAt: Date;
 }
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 interface RegulatoryStore {
   projects: RegulatoryProject[];
   activeProjectId: string | null;
-  
+
+  // Per-project conversation history for multi-turn LLM memory
+  conversationsByProject: Record<string, ConversationMessage[]>;
+
   // Project management
   createProject: (name: string, description: string) => void;
   deleteProject: (id: string) => void;
   setActiveProject: (id: string) => void;
   getActiveProject: () => RegulatoryProject | undefined;
-  
+
+  // Conversation history
+  addConversationMessage: (projectId: string, message: ConversationMessage) => void;
+  getConversationHistory: (projectId: string) => ConversationMessage[];
+  clearConversationHistory: (projectId: string) => void;
+
   // Project updates
   updateProjectName: (id: string, name: string) => void;
   updateProjectContent: (id: string, content: string) => void;
@@ -60,7 +73,7 @@ interface RegulatoryStore {
   updateReferenceFormat: (id: string, format: 'mla' | 'chicago' | 'apa') => void;
   attachFile: (projectId: string, fileName: string) => void;
   detachFile: (projectId: string, fileName: string) => void;
-  
+
   // Annotations & References
   updateProjectAnnotations: (id: string, annotations: Annotation[]) => void;
   updateProjectReferences: (id: string, references: AIReference[]) => void;
@@ -90,6 +103,29 @@ export const useRegulatoryStore = create<RegulatoryStore>((set, get) => ({
     },
   ],
   activeProjectId: '1',
+  conversationsByProject: {},
+
+  addConversationMessage: (projectId: string, message: ConversationMessage) => {
+    set((state) => ({
+      conversationsByProject: {
+        ...state.conversationsByProject,
+        [projectId]: [...(state.conversationsByProject[projectId] ?? []), message],
+      },
+    }));
+  },
+
+  getConversationHistory: (projectId: string) => {
+    return get().conversationsByProject[projectId] ?? [];
+  },
+
+  clearConversationHistory: (projectId: string) => {
+    set((state) => ({
+      conversationsByProject: {
+        ...state.conversationsByProject,
+        [projectId]: [],
+      },
+    }));
+  },
 
   createProject: (name: string, description: string) => {
     const newProject: RegulatoryProject = {
@@ -117,9 +153,11 @@ export const useRegulatoryStore = create<RegulatoryStore>((set, get) => ({
   deleteProject: (id: string) => {
     set((state) => {
       const filtered = state.projects.filter((p) => p.id !== id);
+      const { [id]: _removed, ...restConvos } = state.conversationsByProject;
       return {
         projects: filtered,
         activeProjectId: filtered.length > 0 ? filtered[0].id : null,
+        conversationsByProject: restConvos,
       };
     });
   },

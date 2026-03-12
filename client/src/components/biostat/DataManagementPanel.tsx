@@ -56,7 +56,7 @@ const BIOSTAT_API = '/api/v1';
 function FileIcon({ name }: { name: string }) {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   if (['csv', 'xlsx', 'xls', 'tsv'].includes(ext))
-    return <FileSpreadsheet className="w-4 h-4 text-emerald-600 flex-shrink-0" />;
+    return <FileSpreadsheet className="w-4 h-4 text-blue-600 flex-shrink-0" />;
   if (ext === 'pdf')
     return <FileText className="w-4 h-4 text-rose-500 flex-shrink-0" />;
   return <File className="w-4 h-4 text-blue-500 flex-shrink-0" />;

@@ -230,7 +230,7 @@ async function serverParse(
 const DTYPE_COLOR: Record<ColDtype, string> = {
   numeric:     'bg-blue-100 text-blue-700',
   date:        'bg-purple-100 text-purple-700',
-  categorical: 'bg-emerald-100 text-emerald-700',
+  categorical: 'bg-sky-100 text-sky-700',
   id:          'bg-gray-100 text-gray-600',
   mixed:       'bg-orange-100 text-orange-700',
 };
@@ -474,7 +474,7 @@ export default function DataUploadAI({ onReady }: DataUploadAIProps) {
               </span>
             )}
             {dataset.issues.length === 0 && (
-              <span className="ml-1 text-emerald-600">· no issues</span>
+              <span className="ml-1 text-blue-600">· no issues</span>
             )}
             <span className="ml-1 text-gray-300">via {dataset.source}</span>
           </p>
@@ -578,9 +578,9 @@ export default function DataUploadAI({ onReady }: DataUploadAIProps) {
       )}
 
       {issuesBySeverity.length === 0 && (
-        <div className="flex items-center gap-2 px-2.5 py-2 rounded-md bg-emerald-50 border border-emerald-100">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-          <p className="text-[11px] text-emerald-700">No data quality issues detected</p>
+        <div className="flex items-center gap-2 px-2.5 py-2 rounded-md bg-blue-50 border border-blue-100">
+          <CheckCircle2 className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+          <p className="text-[11px] text-blue-700">No data quality issues detected</p>
         </div>
       )}
 

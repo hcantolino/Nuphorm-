@@ -166,10 +166,10 @@ function FoldChangeStatsTable({ stats }: { stats: FoldChangeStats }) {
           <p className="text-lg font-bold text-blue-900">{stats.unchanged}</p>
           <p className="text-xs text-blue-600">{unchangedPercent}%</p>
         </div>
-        <div className="p-3 bg-green-50 border border-green-200 rounded">
-          <p className="text-xs font-medium text-green-700">Downregulated</p>
-          <p className="text-lg font-bold text-green-900">{stats.downregulated}</p>
-          <p className="text-xs text-green-600">{downPercent}%</p>
+        <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+          <p className="text-xs font-medium text-blue-700">Downregulated</p>
+          <p className="text-lg font-bold text-blue-900">{stats.downregulated}</p>
+          <p className="text-xs text-blue-600">{downPercent}%</p>
         </div>
       </div>
     </div>

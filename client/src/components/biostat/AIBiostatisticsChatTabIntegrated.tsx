@@ -43,6 +43,7 @@ import {
   CheckCircle2,
   RefreshCw,
   WifiOff,
+  Trash2,
 } from "lucide-react";
 import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
 import { formatDistanceToNow } from "date-fns";
@@ -61,6 +62,8 @@ import { useBiostatisticsStore } from "@/stores/biostatisticsStore";
 // NEW: paperclip modal for managing attached sources (replaces inline chip strip)
 import { AttachmentModal } from "./AttachmentModal";
 import { VoiceDictationButton } from "./VoiceDictationButton";
+import * as XLSX from "xlsx";
+import Papa from "papaparse";
 
 interface AIBiostatisticsChatProps {
   onMeasurementSelect?: (measurement: string) => void;
@@ -96,11 +99,36 @@ type PreviewEntry =
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+/**
+ * Robust CSV/TSV parser using PapaParse.
+ * Handles quoted fields, auto-detects delimiters, coerces numeric values.
+ * Falls back to manual line splitting only if PapaParse returns no data.
+ */
 function parseCSVData(csvContent: string): Array<Record<string, any>> {
+  if (!csvContent || csvContent.trim().length === 0) return [];
+
+  try {
+    const result = Papa.parse<Record<string, any>>(csvContent, {
+      header: true,
+      skipEmptyLines: true,
+      dynamicTyping: true,        // auto-coerces numbers, booleans
+      transformHeader: (h) => h.trim(),
+    });
+
+    if (result.data && result.data.length > 0) {
+      // Filter out rows that are entirely empty
+      return result.data.filter((row) =>
+        Object.values(row).some((v) => v !== null && v !== undefined && v !== "")
+      );
+    }
+  } catch (e) {
+    console.warn("PapaParse failed, attempting manual parse:", e);
+  }
+
+  // Fallback: manual delimiter detection + split (for edge cases)
   const lines = csvContent.split("\n").filter((line) => line.trim());
   if (lines.length < 2) return [];
 
-  // Auto-detect delimiter: compare tab vs comma count in the header row
   const firstLine = lines[0];
   const tabCount = (firstLine.match(/\t/g) ?? []).length;
   const commaCount = (firstLine.match(/,/g) ?? []).length;
@@ -177,10 +205,31 @@ function fileToText(f: File): Promise<string> {
   });
 }
 
+/** Parse XLSX/XLS file to array of row objects using the first sheet */
+function parseXLSXFile(file: File): Promise<Array<Record<string, any>>> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target!.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: "array" });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        if (!firstSheet) { resolve([]); return; }
+        const rows = XLSX.utils.sheet_to_json<Record<string, any>>(firstSheet, { defval: "" });
+        resolve(rows);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 function FileIcon({ type, className: cls }: { type: string; className?: string }) {
   const ext = type?.toLowerCase();
   if (ext === "csv" || ext === "xlsx" || ext === "xls") {
-    return <FileSpreadsheet className={cn("w-5 h-5 text-emerald-600 flex-shrink-0", cls)} />;
+    return <FileSpreadsheet className={cn("w-5 h-5 text-blue-600 flex-shrink-0", cls)} />;
   }
   if (ext === "pdf") {
     return <FileText className={cn("w-5 h-5 text-rose-500 flex-shrink-0", cls)} />;
@@ -328,7 +377,7 @@ function SourcesPanel({
           {projectSources.length > 0 && (
             <Badge
               variant="outline"
-              className="text-[10px] h-5 px-1.5 border-emerald-300 text-emerald-700 bg-emerald-50"
+              className="text-[10px] h-5 px-1.5 border-blue-300 text-blue-700 bg-blue-50"
             >
               {projectSources.length} project-wide
             </Badge>
@@ -386,7 +435,7 @@ function SourcesPanel({
                     {filteredProjectSources.map((src) => (
                       <div
                         key={src.id}
-                        className="group flex items-center gap-3 px-4 py-2.5 rounded-xl border border-emerald-100 bg-emerald-50/40 hover:bg-emerald-50 transition-all"
+                        className="group flex items-center gap-3 px-4 py-2.5 rounded-xl border border-blue-100 bg-blue-50/40 hover:bg-blue-50 transition-all"
                       >
                         <FileIcon type={src.type} />
                         <div className="flex-1 min-w-0">
@@ -491,7 +540,7 @@ function SourcesPanel({
                     {filteredProjectSources.map((src) => (
                       <div
                         key={src.id}
-                        className="rounded-xl border border-emerald-100 overflow-hidden bg-emerald-50/20"
+                        className="rounded-xl border border-blue-100 overflow-hidden bg-blue-50/20"
                       >
                         <div className="flex items-center gap-3 px-4 py-3">
                           <FileIcon type={src.type} />
@@ -503,7 +552,7 @@ function SourcesPanel({
                           </div>
                         </div>
                         {src.preview ? (
-                          <div className="border-t border-emerald-100/60 bg-emerald-50/10 px-4 py-3">
+                          <div className="border-t border-blue-100/60 bg-blue-50/10 px-4 py-3">
                             <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono leading-relaxed max-h-28 overflow-y-auto">
                               {src.preview}
                               {src.preview.length >= 600 && (
@@ -512,7 +561,7 @@ function SourcesPanel({
                             </pre>
                           </div>
                         ) : (
-                          <div className="border-t border-emerald-100/60 px-4 py-2">
+                          <div className="border-t border-blue-100/60 px-4 py-2">
                             <p className="text-xs text-muted-foreground italic">
                               No text preview for this file type.
                             </p>
@@ -929,7 +978,7 @@ function DatasetPill() {
 
   return (
     <div className="flex items-center gap-2 px-4 py-1.5 bg-muted/40 border-t border-border/40 flex-shrink-0">
-      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+      <FileSpreadsheet className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
       <span className="text-xs font-medium truncate max-w-[180px]">
         {currentDataset.filename}
       </span>
@@ -937,7 +986,7 @@ function DatasetPill() {
         · {currentDataset.rowCount.toLocaleString()} rows
       </span>
       {currentDataset.cleaned && (
-        <span className="flex items-center gap-0.5 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-semibold whitespace-nowrap flex-shrink-0">
+        <span className="flex items-center gap-0.5 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold whitespace-nowrap flex-shrink-0">
           <CheckCircle2 className="w-2.5 h-2.5" />
           Cleaned
         </span>
@@ -1090,6 +1139,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     Record<string, any>
   >({});
   const setPanelResult = useAIPanelStore((s) => s.setPanelResult);
+  const updatePanelResult = useAIPanelStore((s) => s.updatePanelResult);
+  const selectedGraphId = useAIPanelStore((s) => s.selectedGraphId);
+  const clearSelectedGraph = useAIPanelStore((s) => s.clearSelectedGraph);
+  const pendingEditAction = useAIPanelStore((s) => s.pendingEditAction);
+  const pendingChatContent = useAIPanelStore((s) => s.pendingChatContent);
 
   const [conversationHistory, setConversationHistory] = useState<
     Array<{ role: string; content: string }>
@@ -1104,6 +1158,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   const [attachScope, setAttachScope] = useState<'project' | 'tab'>('tab');
   // NEW: controls the AttachmentModal (paperclip) — replaces inline chip strip
   const [attachModalOpen, setAttachModalOpen] = useState(false);
+  // PDF warning modal — shown when sending with unparsable PDFs selected
+  const [pdfWarningOpen, setPdfWarningOpen] = useState(false);
+  const [pdfWarningPendingMessage, setPdfWarningPendingMessage] = useState<string | null>(null);
   // Per-source checked/unchecked state: Record<sourceId, boolean>
   // Default is true (checked) — only explicitly unchecked sources have `false`.
   const [sourceSelection, setSourceSelection] = useState<Record<string, boolean>>({});
@@ -1122,6 +1179,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   const uploadFileMutation = trpc.files.upload.useMutation({
     onError: (err) => toast.error(`Upload failed: ${err.message}`),
   });
+  const parsePdfMutation = trpc.files.parsePdf.useMutation();
 
   const { pendingMessage, pendingAutoSend, setPendingMessage } = useMeasurementTriggerStore();
   const trpcUtils = trpc.useUtils();
@@ -1493,51 +1551,187 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             uploadedDate: new Date().toLocaleDateString(),
           };
 
-          // CHANGED: route to project-level store or tab-level list based on attachScope.
-          // BEFORE: always called setAttachedFiles (tab-level only).
+          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+
+          // Route to project-level store or tab-level list based on attachScope.
           if (attachScope === 'project' && activeProjectId) {
-            // NEW: project-scoped upload — read full text as preview, store in projectStore
             addProjectSource(activeProjectId, {
               id: tempId,
               name: file.name,
-              size: file.size,              // bytes available from the real File object
-              type: (file.name.split('.').pop()?.toLowerCase()) ?? 'file',
+              size: file.size,
+              type: ext || 'file',
               uploadedAt: Date.now(),
-              preview: text.slice(0, 2 * 1024 * 1024), // up to 2 MB preview for AI context
+              preview: text.slice(0, 2 * 1024 * 1024),
             });
             toast.success(`"${file.name}" added to project sources (all tabs)`);
           } else {
             setAttachedFiles((prev) => [...prev, newFile]);
           }
 
-          // Auto-parse spreadsheet/text files for in-memory analysis
-          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+          // ── Auto-select the newly uploaded file ──
+          setSourceSelection((prev) => ({ ...prev, [tempId]: true }));
+
+          // ── Auto-parse by file type ──
           if (["csv", "tsv", "txt"].includes(ext)) {
-            const parsed = parseCSVData(text);
-            if (parsed.length > 0) {
-              setColumnClassifications(deriveColumnTypes(parsed));
-              setUploadedData({ filename: file.name, size: newFile.size });
-              setFullData(parsed);
-              onDataLoaded?.(parsed);
-
-              // Set global current dataset so all components see it
-              useCurrentDatasetStore.getState().setCurrentDataset({
-                filename: file.name,
-                rowCount: parsed.length,
-                columns: Object.keys(parsed[0] ?? {}),
-                rows: parsed as Record<string, unknown>[],
-                cleaned: false,
+            // CSV / TSV / TXT — robust parsing via PapaParse
+            try {
+              const parsed = parseCSVData(text);
+              if (parsed.length > 0) {
+                setColumnClassifications(deriveColumnTypes(parsed));
+                setUploadedData({ filename: file.name, size: newFile.size });
+                setFullData(parsed);
+                onDataLoaded?.(parsed);
+                useCurrentDatasetStore.getState().setCurrentDataset({
+                  filename: file.name,
+                  rowCount: parsed.length,
+                  columns: Object.keys(parsed[0] ?? {}),
+                  rows: parsed as Record<string, unknown>[],
+                  cleaned: false,
+                });
+                addChatMessage({
+                  id: `msg-${Date.now()}`,
+                  role: "assistant",
+                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${Object.keys(parsed[0] ?? {}).length} columns. Would you like me to clean it first?`,
+                  timestamp: Date.now(),
+                });
+              } else {
+                toast.success(`${file.name} attached (no data rows detected)`);
+              }
+            } catch (csvErr) {
+              console.error("CSV parse error:", csvErr);
+              toast(`Parsing issue for ${file.name}: using metadata only.`, {
+                style: { backgroundColor: "#a0aec0", color: "#1a202c" },
               });
-
-              // Auto-message in chat
-              addChatMessage({
-                id: `msg-${Date.now()}`,
-                role: "assistant",
-                content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${Object.keys(parsed[0] ?? {}).length} columns. Would you like me to clean it first?`,
-                timestamp: Date.now(),
-              });
-            } else {
               toast.success(`${file.name} attached`);
+            }
+          } else if (["xlsx", "xls"].includes(ext)) {
+            // XLSX / XLS — parse with xlsx.js
+            try {
+              const parsed = await parseXLSXFile(file);
+              if (parsed.length > 0) {
+                setColumnClassifications(deriveColumnTypes(parsed));
+                setUploadedData({ filename: file.name, size: newFile.size });
+                setFullData(parsed);
+                onDataLoaded?.(parsed);
+                useCurrentDatasetStore.getState().setCurrentDataset({
+                  filename: file.name,
+                  rowCount: parsed.length,
+                  columns: Object.keys(parsed[0] ?? {}),
+                  rows: parsed as Record<string, unknown>[],
+                  cleaned: false,
+                });
+                addChatMessage({
+                  id: `msg-${Date.now()}`,
+                  role: "assistant",
+                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${Object.keys(parsed[0] ?? {}).length} columns. Would you like me to clean it first?`,
+                  timestamp: Date.now(),
+                });
+              } else {
+                toast.success(`${file.name} attached (no rows found in first sheet)`);
+              }
+            } catch (xlsxErr) {
+              console.error("XLSX parse error:", xlsxErr);
+              toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid XLSX file.`, { style: { backgroundColor: "#f56565", color: "#fff" } });
+            }
+          } else if (ext === "pdf") {
+            // PDF — extract text via server-side pdf-parse, then attempt table extraction
+            try {
+              const result = await parsePdfMutation.mutateAsync({
+                fileData: base64,
+                fileName: file.name,
+              });
+              if (result.success && result.text) {
+                const pdfText = result.text.slice(0, 2 * 1024 * 1024);
+
+                // Store extracted text as preview for AI context
+                if (attachScope === 'project' && activeProjectId) {
+                  removeProjectSource(activeProjectId, tempId);
+                  addProjectSource(activeProjectId, {
+                    id: tempId,
+                    name: file.name,
+                    size: file.size,
+                    type: ext,
+                    uploadedAt: Date.now(),
+                    preview: pdfText,
+                  });
+                }
+
+                // Attempt to extract structured tabular data from the PDF text.
+                // Many PDF tables are rendered as lines with consistent delimiters
+                // (tabs, pipes, or multiple spaces) — try parsing as CSV/TSV first.
+                let pdfTableParsed = false;
+                const pdfLines = pdfText.split('\n').filter((l) => l.trim());
+                if (pdfLines.length >= 3) {
+                  // Try pipe-delimited (common in PDF table extraction)
+                  const pipeLines = pdfLines.filter((l) => l.includes('|'));
+                  if (pipeLines.length >= 3) {
+                    // Convert pipe-delimited to CSV
+                    const csvText = pipeLines
+                      .filter((l) => !l.match(/^[\s|:-]+$/)) // skip separator rows
+                      .map((l) => l.split('|').map((c) => c.trim()).filter(Boolean).join(','))
+                      .join('\n');
+                    const parsed = parseCSVData(csvText);
+                    if (parsed.length >= 1 && Object.keys(parsed[0]).length >= 2) {
+                      setColumnClassifications(deriveColumnTypes(parsed));
+                      setUploadedData({ filename: file.name, size: newFile.size });
+                      setFullData(parsed);
+                      onDataLoaded?.(parsed);
+                      useCurrentDatasetStore.getState().setCurrentDataset({
+                        filename: file.name,
+                        rowCount: parsed.length,
+                        columns: Object.keys(parsed[0] ?? {}),
+                        rows: parsed as Record<string, unknown>[],
+                        cleaned: false,
+                      });
+                      pdfTableParsed = true;
+                    }
+                  }
+                  // Try tab-delimited or comma-delimited within PDF text
+                  if (!pdfTableParsed) {
+                    const parsed = parseCSVData(pdfText);
+                    if (parsed.length >= 2 && Object.keys(parsed[0]).length >= 2) {
+                      setColumnClassifications(deriveColumnTypes(parsed));
+                      setUploadedData({ filename: file.name, size: newFile.size });
+                      setFullData(parsed);
+                      onDataLoaded?.(parsed);
+                      useCurrentDatasetStore.getState().setCurrentDataset({
+                        filename: file.name,
+                        rowCount: parsed.length,
+                        columns: Object.keys(parsed[0] ?? {}),
+                        rows: parsed as Record<string, unknown>[],
+                        cleaned: false,
+                      });
+                      pdfTableParsed = true;
+                    }
+                  }
+                }
+
+                if (pdfTableParsed) {
+                  const cols = Object.keys(useCurrentDatasetStore.getState().currentDataset?.rows?.[0] ?? {});
+                  addChatMessage({
+                    id: `msg-${Date.now()}`,
+                    role: "assistant",
+                    content: `✅ **${file.name}** attached — PDF with ${result.pages} page${result.pages === 1 ? "" : "s"}. Extracted **${useCurrentDatasetStore.getState().currentDataset?.rowCount ?? 0} rows** · ${cols.length} columns (${cols.slice(0, 5).join(', ')}${cols.length > 5 ? '...' : ''}). Ready for analysis.`,
+                    timestamp: Date.now(),
+                  });
+                  toast.success("Table extracted from PDF — structured data ready for analysis", {
+                    style: { background: '#f0fdf4', color: '#166534', borderColor: '#86efac' },
+                  });
+                } else {
+                  addChatMessage({
+                    id: `msg-${Date.now()}`,
+                    role: "assistant",
+                    content: `✅ **${file.name}** attached — PDF with ${result.pages} page${result.pages === 1 ? "" : "s"}, ${result.text.length.toLocaleString()} characters extracted. No structured table detected — AI will analyze the full text content.`,
+                    timestamp: Date.now(),
+                  });
+                }
+              } else {
+                toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid PDF with readable text/tables.`, { style: { backgroundColor: "#f56565", color: "#fff" } });
+                toast.success(`${file.name} attached (metadata only)`);
+              }
+            } catch (pdfErr) {
+              console.error("PDF extraction error:", pdfErr);
+              toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid PDF with readable text/tables.`, { style: { backgroundColor: "#f56565", color: "#fff" } });
             }
           } else {
             toast.success(`${file.name} attached`);
@@ -1549,15 +1743,17 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       }
       e.target.value = "";
     },
-    // CHANGED: added attachScope, activeProjectId, addProjectSource to deps so the
-    // handler always reads the current scope when the OS file picker resolves.
-    [uploadFileMutation, onDataLoaded, attachScope, activeProjectId, addProjectSource]
+    [uploadFileMutation, onDataLoaded, attachScope, activeProjectId, addProjectSource, removeProjectSource, parsePdfMutation]
   );
 
   // ── Send message ───────────────────────────────────────────────────────
   const handleSendMessage = useCallback(async (explicitText?: string) => {
     const userMessage = (explicitText ?? inputValue).trim();
     if (!userMessage) return;
+
+    // Snapshot graph-edit state before clearing input
+    const graphEditTargetId = selectedGraphId;
+    const isGraphEdit = !!graphEditTargetId;
 
     if (!explicitText) setInputValue("");
     lastUserQueryRef.current = userMessage;
@@ -1593,6 +1789,59 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           ? fullData
           : ((cdStore?.rows as Array<Record<string, any>>) ?? []);
 
+      // ── Text-CSV auto-detection ──────────────────────────────────────────────
+      // When no data is loaded and the user pastes CSV-like text directly into the
+      // chat, auto-parse it so the backend gets structured fullData instead of a raw
+      // string.  Detect by: (a) 2+ lines, (b) consistent comma/tab delimiters,
+      // (c) first line looks like a header (non-numeric tokens).
+      let pastedDataDetected = false;
+      if (effectiveData.length === 0) {
+        const lines = userMessage.split('\n').filter((l) => l.trim());
+        if (lines.length >= 2) {
+          const firstLine = lines[0];
+          const tabCount = (firstLine.match(/\t/g) ?? []).length;
+          const commaCount = (firstLine.match(/,/g) ?? []).length;
+          const delimCount = Math.max(tabCount, commaCount);
+          // At least 1 delimiter and row count > 1 → likely tabular data
+          if (delimCount >= 1) {
+            const sep = tabCount > commaCount ? '\t' : ',';
+            const headerTokens = firstLine.split(sep).map((h) => h.trim());
+            // Header check: at least 2 tokens, and at least half are non-numeric
+            const nonNumericHeaders = headerTokens.filter((t) => isNaN(Number(t)) && t.length > 0);
+            if (headerTokens.length >= 2 && nonNumericHeaders.length >= headerTokens.length * 0.5) {
+              // Looks like a CSV header — try parsing
+              const parsed = parseCSVData(userMessage);
+              if (parsed.length >= 1 && Object.keys(parsed[0]).length >= 2) {
+                effectiveData = parsed;
+                setFullData(parsed);
+                pastedDataDetected = true;
+                useCurrentDatasetStore.getState().setCurrentDataset({
+                  filename: 'pasted-data.csv',
+                  rowCount: parsed.length,
+                  columns: Object.keys(parsed[0]),
+                  rows: parsed as Record<string, unknown>[],
+                  cleaned: false,
+                });
+                console.log(`[TextCSV] Auto-detected pasted CSV: ${parsed.length} rows, ${Object.keys(parsed[0]).length} cols`);
+                // Store a structured data summary in conversation history so follow-up
+                // queries (including viz requests that normally clear history) can still
+                // reference the pasted data.  The [PASTED_DATA] marker is detected by
+                // the backend to re-inject the data context.
+                const cols = Object.keys(parsed[0]);
+                const previewRows = parsed.slice(0, 10).map((r) => JSON.stringify(r)).join("\n");
+                setConversationHistory((prev) => [
+                  ...prev,
+                  {
+                    role: "assistant",
+                    content: `[PASTED_DATA columns=${cols.join(",")} rows=${parsed.length}]\n${previewRows}${parsed.length > 10 ? "\n...[" + (parsed.length - 10) + " more rows]" : ""}`,
+                  },
+                ]);
+              }
+            }
+          }
+        }
+      }
+
       // Third fallback: parse project source preview (stored as full CSV text up to 2MB).
       // This covers files uploaded via ProjectContextPanel that never hit handleComputerUpload.
       // Falls back gracefully to column-names-only when the stored preview is too short to
@@ -1600,36 +1849,56 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       let projectSourceColumnsOnly: string[] = [];
       let projectSourcePreviewText = '';
       if (effectiveData.length === 0) {
+        // Try CSV/TSV sources first, then fall back to PDF text previews
         const csvSource = projectSettings.sources.find(
           (s) => ['csv', 'tsv', 'txt'].includes(s.type) && s.preview && s.preview.length > 0
         );
-        if (csvSource?.preview) {
-          const parsed = parseCSVData(csvSource.preview);
-          if (parsed.length > 0) {
-            effectiveData = parsed;
-            // Warm up both component state and global store for subsequent queries
-            setFullData(parsed);
-            useCurrentDatasetStore.getState().setCurrentDataset({
-              filename: csvSource.name,
-              rowCount: parsed.length,
-              columns: Object.keys(parsed[0] ?? {}),
-              rows: parsed as Record<string, unknown>[],
-              cleaned: false,
-            });
-          } else {
-            // Preview too short for full rows — extract column names from header at minimum
-            const firstLine = csvSource.preview.split('\n')[0] ?? '';
-            if (firstLine) {
-              const tabs = (firstLine.match(/\t/g) ?? []).length;
-              const commas = (firstLine.match(/,/g) ?? []).length;
-              const sep = tabs > commas ? '\t' : ',';
-              projectSourceColumnsOnly = firstLine
-                .split(sep)
-                .map((h) => h.trim().replace(/^"|"$/g, ''))
-                .filter(Boolean);
-              // Use whatever partial text we have so the LLM has context
-              projectSourcePreviewText = csvSource.preview.slice(0, 600);
+        // Also check for PDF sources with extracted text
+        const pdfSource = !csvSource
+          ? projectSettings.sources.find(
+              (s) => s.type === 'pdf' && s.preview && s.preview.length > 0
+            )
+          : null;
+
+        const textSource = csvSource ?? pdfSource;
+
+        if (textSource?.preview) {
+          try {
+            if (csvSource) {
+              // Parse CSV/TSV preview into structured data
+              const parsed = parseCSVData(textSource.preview);
+              if (parsed.length > 0) {
+                effectiveData = parsed;
+                setFullData(parsed);
+                useCurrentDatasetStore.getState().setCurrentDataset({
+                  filename: textSource.name,
+                  rowCount: parsed.length,
+                  columns: Object.keys(parsed[0] ?? {}),
+                  rows: parsed as Record<string, unknown>[],
+                  cleaned: false,
+                });
+              } else {
+                // Preview too short for full rows — extract column names from header at minimum
+                const firstLine = textSource.preview.split('\n')[0] ?? '';
+                if (firstLine) {
+                  const tabs = (firstLine.match(/\t/g) ?? []).length;
+                  const commas = (firstLine.match(/,/g) ?? []).length;
+                  const sep = tabs > commas ? '\t' : ',';
+                  projectSourceColumnsOnly = firstLine
+                    .split(sep)
+                    .map((h) => h.trim().replace(/^"|"$/g, ''))
+                    .filter(Boolean);
+                  projectSourcePreviewText = textSource.preview.slice(0, 600);
+                }
+              }
+            } else {
+              // PDF text — pass as-is for LLM context (not structured tabular data)
+              projectSourcePreviewText = textSource.preview.slice(0, 4000);
             }
+          } catch (parseErr) {
+            console.error("Source preview parse error:", parseErr);
+            // Graceful fallback — send raw preview text so the LLM has some context
+            projectSourcePreviewText = textSource.preview.slice(0, 600);
           }
         }
       }
@@ -1663,8 +1932,10 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       const checkedProjectSources = activeProjectSources;
       const projectSourceLines = checkedProjectSources.map((s) => {
         if (s.preview) {
-          const snippet = s.preview.slice(0, 250);
-          return `- ${s.name} (excerpt: ${snippet}${s.preview.length > 250 ? "…" : ""})`;
+          // Send up to 4000 chars of preview so the AI has enough context for
+          // tables extracted from PDFs (250 chars was too short for tabular data).
+          const snippet = s.preview.slice(0, 4000);
+          return `- ${s.name} (content:\n${snippet}${s.preview.length > 4000 ? "\n…[truncated]" : ""})`;
         }
         return `- ${s.name}`;
       });
@@ -1674,10 +1945,15 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           : "";
 
       // 3. Tab-specific attached files — only include CHECKED sources.
+      //    Include preview content so the AI can see PDF/text data.
       const checkedTabFiles = activeTabFiles;
-      const tabSourceLines = checkedTabFiles.map(
-        (f) => `- ${f.name} (${f.type})`
-      );
+      const tabSourceLines = checkedTabFiles.map((f) => {
+        if ((f as any).preview) {
+          const snippet = (f as any).preview.slice(0, 4000);
+          return `- ${f.name} (content:\n${snippet}${(f as any).preview.length > 4000 ? "\n…[truncated]" : ""})`;
+        }
+        return `- ${f.name} (${f.type})`;
+      });
       const tabSourceContext =
         tabSourceLines.length > 0
           ? `[Tab-Specific Sources (This Tab Only):\n${tabSourceLines.join("\n")}]\n\n`
@@ -1695,8 +1971,44 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         ? `[Current Dataset: in-memory data, ${effectiveData.length} rows, ${dataColumns.length} cols]\n\n`
         : "";
 
+      // Anti-hallucination guardrail: append strict data-use clause when sources are loaded
+      const hasDataContext = effectiveData.length > 0 || projectSourceColumnsOnly.length > 0;
+      const antiHallucinationClause = hasDataContext
+        ? `\n\n[STRICT: Use ONLY the uploaded data. Do not invent, fabricate, or extrapolate values, treatments, or groups beyond what exists in the attached sources. If data is insufficient, state what is missing rather than approximating.]`
+        : "";
+
+      // When pasted CSV was auto-detected, replace the raw CSV text in the query
+      // with a clean analysis instruction — the actual data goes via fullData/CSV block
+      const effectiveUserMessage = pastedDataDetected
+        ? `Analyze this pasted data (${effectiveData.length} rows, ${Object.keys(effectiveData[0] ?? {}).length} columns: ${Object.keys(effectiveData[0] ?? {}).join(', ')}). Provide summary statistics, key findings, and any significant patterns.`
+        : userMessage;
+
+      if (pastedDataDetected) {
+        toast.success(`Data parsed from paste and saved to history — ${effectiveData.length} rows, ${Object.keys(effectiveData[0] ?? {}).length} columns`, {
+          style: { background: '#f7fafc', color: '#1a202c', border: '1px solid #e2e8f0' },
+          duration: 3000,
+        });
+      }
+
+      // When a graph is selected for editing, prepend context so the AI modifies
+      // the chart configuration rather than creating a brand new analysis.
+      // Include the current chart_data so the AI knows exactly what to modify.
+      let graphEditPrefix = "";
+      if (isGraphEdit) {
+        let currentChartSnippet = "";
+        try {
+          const store = useAIPanelStore.getState();
+          const tabResults = activeTabIdMemo ? (store.resultsByTab[activeTabIdMemo] ?? []) : [];
+          const targetResult = tabResults.find((r) => r.id === graphEditTargetId || r.id === graphEditTargetId?.replace('auto-', ''));
+          if (targetResult?.analysisResults?.chart_data) {
+            currentChartSnippet = `\nCurrent chart_data:\n${JSON.stringify(targetResult.analysisResults.chart_data)}\n`;
+          }
+        } catch { /* ignore — best-effort */ }
+        graphEditPrefix = `[GRAPH EDIT MODE: The user has selected an existing graph and wants to modify it. Apply the following change to the CURRENT chart. Return updated chart_data (labels, datasets, type, pharma_type) in analysisResults. Keep the same data source — only change the visualization as requested. Do NOT create a new analysis from scratch.]${currentChartSnippet}\n\n`;
+      }
+
       const augmentedQuery =
-        datasetLine + instructionsPrefix + projectSourceContext + tabSourceContext + userMessage;
+        datasetLine + instructionsPrefix + projectSourceContext + tabSourceContext + graphEditPrefix + effectiveUserMessage + antiHallucinationClause;
 
       // NOTE: do NOT append the current user message here.
       // The server already adds the current turn (augmented with data context) as the
@@ -1827,7 +2139,24 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       });
 
       // Push analysis results (charts + tables) to this tab's Graph & Table panel
-      if (routeToPanel) {
+      // Graph-edit mode: update the existing result in-place instead of creating a new one
+      const realGraphResultId = graphEditTargetId?.startsWith('auto-')
+        ? graphEditTargetId.slice(5) // strip "auto-" prefix for auto-charts
+        : graphEditTargetId;
+
+      if (isGraphEdit && realGraphResultId && activeTabIdMemo) {
+        // Always run graph edit update — even if routeToPanel is false (partial AI response).
+        // The deep-merge in updatePanelResult preserves existing chart_data/results_table.
+        const editPatch: Record<string, any> = { analysis: content };
+        if (responseObj.analysisResults) editPatch.analysisResults = responseObj.analysisResults;
+        if (responseObj.graphTitle) editPatch.graphTitle = responseObj.graphTitle;
+        if (responseObj.chartConfig) editPatch.chartConfig = responseObj.chartConfig;
+        updatePanelResult(activeTabIdMemo, realGraphResultId, editPatch);
+        clearSelectedGraph();
+        toast.success("Graph updated successfully", {
+          style: { background: '#f0fdf4', color: '#166534', borderColor: '#86efac' },
+        });
+      } else if (routeToPanel) {
         setPanelResult(activeTabIdMemo, {
           query: userMessage,
           analysis: content,
@@ -1843,12 +2172,19 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       ]);
     } catch (err) {
       console.error("Error analyzing data:", err);
-      toast.error("Failed to analyze data. Please try again.");
+      if (isGraphEdit) {
+        toast.error("Failed to update graph. Please try again.", {
+          style: { background: '#fef2f2', color: '#991b1b', borderColor: '#fca5a5' },
+        });
+      } else {
+        toast.error("Failed to analyze data. Please try again.");
+      }
       addChatMessage({
         id: `msg-${Date.now()}`,
         role: "assistant",
-        content:
-          "Sorry, I encountered an error while analyzing your data. Please try again.",
+        content: isGraphEdit
+          ? "Sorry, I couldn't update the graph. Please try a different edit or re-run the analysis."
+          : "Sorry, I encountered an error while analyzing your data. Please try again.",
         timestamp: Date.now(),
       });
     } finally {
@@ -1869,7 +2205,89 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     projectSettings,
     activeProjectSources,
     activeTabFiles,
+    selectedGraphId,
+    updatePanelResult,
+    clearSelectedGraph,
   ]);
+
+  // ── Guard: check for unparsable PDF sources before sending ──
+  const trySendMessage = useCallback((explicitText?: string) => {
+    const msg = (explicitText ?? inputValue).trim();
+    if (!msg) return;
+
+    // Auto-select first source if sources exist but none are selected
+    const anySources = projectSettings.sources.length > 0 || attachedFiles.length > 0;
+    const anyActive = allActiveSourceNames.length > 0;
+    if (anySources && !anyActive) {
+      // Pick the first available source and select it
+      const firstSource = projectSettings.sources[0] ?? attachedFiles[0];
+      if (firstSource) {
+        const id = firstSource.id;
+        setSourceSelection(prev => ({ ...prev, [id]: true }));
+        toast.success("Auto-selected uploaded file for analysis", {
+          style: { backgroundColor: "#3b82f6", color: "#fff", border: "none" },
+        });
+      }
+    }
+
+    // Check if any active source is a PDF without extractable content
+    const unparsablePdfs = [
+      ...activeProjectSources.filter(s => s.type === 'pdf' && !s.preview),
+      ...activeTabFiles.filter(f => f.type === 'PDF' && !f.size), // tab files don't have preview but PDFs are at risk
+    ];
+    // For project sources, we can check preview; for tab PDFs, assume they went through parsePdf on upload
+    const projectPdfNoPreview = activeProjectSources.filter(
+      s => s.type === 'pdf' && (!s.preview || s.preview.trim().length === 0)
+    );
+
+    if (projectPdfNoPreview.length > 0) {
+      setPdfWarningPendingMessage(msg);
+      setPdfWarningOpen(true);
+      return;
+    }
+
+    handleSendMessage(explicitText);
+  }, [inputValue, activeProjectSources, activeTabFiles, handleSendMessage, projectSettings.sources, attachedFiles, allActiveSourceNames]);
+
+  // ── Listen for retry-analysis events dispatched from the Results panel ──
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const query = (e as CustomEvent).detail?.query;
+      if (query && typeof query === "string") {
+        handleSendMessage(query);
+      }
+    };
+    document.addEventListener("nuphorm-retry-analysis", handler);
+    return () => document.removeEventListener("nuphorm-retry-analysis", handler);
+  }, [handleSendMessage]);
+
+  // ── Auto-send pending graph edit actions from quick-action buttons ─────
+  useEffect(() => {
+    if (pendingEditAction && !isLoading) {
+      const action = useAIPanelStore.getState().consumePendingEdit();
+      if (action) {
+        handleSendMessage(action);
+      }
+    }
+  }, [pendingEditAction, isLoading, handleSendMessage]);
+
+  // ── Pre-fill chat input from "Add to Chat" buttons in results panel ───
+  useEffect(() => {
+    if (pendingChatContent) {
+      const content = useAIPanelStore.getState().consumePendingChat();
+      if (content) {
+        setInputValue(content);
+        // Focus and auto-resize the textarea
+        requestAnimationFrame(() => {
+          if (textareaRef.current) {
+            textareaRef.current.focus();
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+          }
+        });
+      }
+    }
+  }, [pendingChatContent]);
 
   // ── Restoring state ────────────────────────────────────────────────────
   if (isRestoring) {
@@ -1897,20 +2315,44 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               AI Biostatistics Assistant
             </h3>
           </div>
-          {selectedMeasurements.length > 0 && (
-            <div className="flex items-center gap-1 flex-wrap justify-end">
-              {selectedMeasurements.slice(0, 4).map((id) => (
-                <Badge key={id} variant="secondary" className="text-xs py-0 h-5">
-                  {id}
-                </Badge>
-              ))}
-              {selectedMeasurements.length > 4 && (
-                <Badge variant="secondary" className="text-xs py-0 h-5">
-                  +{selectedMeasurements.length - 4}
-                </Badge>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {selectedMeasurements.length > 0 && (
+              <>
+                {selectedMeasurements.slice(0, 4).map((id) => (
+                  <Badge key={id} variant="secondary" className="text-xs py-0 h-5">
+                    {id}
+                  </Badge>
+                ))}
+                {selectedMeasurements.length > 4 && (
+                  <Badge variant="secondary" className="text-xs py-0 h-5">
+                    +{selectedMeasurements.length - 4}
+                  </Badge>
+                )}
+              </>
+            )}
+            {conversationHistory.length > 0 && (
+              <button
+                onClick={() => {
+                  setConversationHistory([]);
+                  clearChatHistory();
+                  toast.success('Conversation history cleared');
+                }}
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
+                style={{
+                  background: '#a0aec0',
+                  color: '#1a202c',
+                  border: 'none',
+                  fontWeight: 500,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#e2e8f0'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#a0aec0'; }}
+                title="Clear conversation memory so AI starts fresh"
+              >
+                <Trash2 size={12} />
+                Clear History
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -2027,7 +2469,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                         input?.focus();
                       }}
                       disabled={isLoading}
-                      className="text-left text-xs px-3 py-1.5 rounded-full bg-white dark:bg-gray-700 border border-[#e2e8f0] dark:border-gray-600 text-[#374151] dark:text-gray-200 hover:bg-[#f0fdfa] hover:border-[#14b8a6] hover:text-[#0d9488] transition-colors disabled:opacity-40 shadow-sm"
+                      className="text-left text-xs px-3 py-1.5 rounded-full bg-white dark:bg-gray-700 border border-[#e2e8f0] dark:border-gray-600 text-[#374151] dark:text-gray-200 hover:bg-blue-50 hover:border-[#3b82f6] hover:text-[#1d4ed8] transition-colors disabled:opacity-40 shadow-sm"
                     >
                       {suggestion}
                     </button>
@@ -2094,28 +2536,49 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               </button>
             </div>
           )}
-          {/* No-sources warning — shown when files are attached but all are unchecked */}
-          {hasAnySources && !hasActiveSource && (
-            <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
-              <Paperclip className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
-              <span className="text-[11px] text-amber-700 dark:text-amber-300 leading-tight">
-                No sources selected — attach and select at least one file to run analysis
+          {/* No-sources hint — shown only when NO files are attached at all */}
+          {!hasAnySources && (
+            <div
+              className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg border"
+              style={{ backgroundColor: "#f3f4f6", borderColor: "#d1d5db" }}
+            >
+              <Paperclip className="w-3.5 h-3.5 flex-shrink-0 text-[#475569]" />
+              <span className="text-[11px] leading-tight text-[#1f2937]">
+                Attach a file to enable data analysis
               </span>
               <button
                 type="button"
                 onClick={() => setAttachModalOpen(true)}
-                className="text-[11px] font-medium text-[#2563eb] hover:underline flex-shrink-0 ml-auto"
+                className="text-[11px] font-semibold hover:underline flex-shrink-0 ml-auto text-[#3b82f6] hover:text-[#1d4ed8]"
               >
-                Open Sources
+                Attach File
+              </button>
+            </div>
+          )}
+          {/* Graph-edit mode banner */}
+          {selectedGraphId && (
+            <div className="flex items-center justify-between px-4 py-2 rounded-t-2xl bg-[#f0fdf4] border border-emerald-200 border-b-0">
+              <span className="text-xs text-emerald-700 font-medium">
+                Editing selected graph — your next message will modify the chart
+              </span>
+              <button
+                type="button"
+                onClick={clearSelectedGraph}
+                className="text-xs text-emerald-600 hover:text-emerald-800 font-medium underline underline-offset-2"
+              >
+                Cancel
               </button>
             </div>
           )}
           {/* Card-style input container */}
           <div className={cn(
-            "flex gap-3 rounded-2xl border-2 bg-background shadow-md px-4 transition-all duration-200",
+            "flex gap-3 bg-background shadow-md px-4 transition-all duration-200",
+            selectedGraphId ? "rounded-b-2xl border-2 border-emerald-300" : "rounded-2xl border-2",
             compact
               ? "items-end py-3 border-border/70 bg-[#f8fafc] focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 focus-within:bg-white"
-              : "items-end py-3 border-[#E5E7EB] focus-within:border-[#00B8A9] focus-within:shadow-[0_0_0_3px_rgba(0,184,169,0.14)]"
+              : selectedGraphId
+                ? "items-end py-3 border-emerald-300 focus-within:border-emerald-500 focus-within:shadow-[0_0_0_3px_rgba(16,185,129,0.14)]"
+                : "items-end py-3 border-[#E5E7EB] focus-within:border-[#3b82f6] focus-within:shadow-[0_0_0_3px_rgba(59,130,246,0.14)]"
           )}>
 
             {/* Left: Paperclip (manage sources) + Upload (computer).
@@ -2133,7 +2596,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 className={cn(
                   "h-9 w-9 rounded-xl transition-colors text-muted-foreground",
                   (attachedFiles.length > 0 || projectSettings.sources.length > 0)
-                    ? "hover:bg-teal-50 hover:text-[#00B8A9] text-[#00B8A9]"
+                    ? "hover:bg-blue-50 hover:text-[#3b82f6] text-[#3b82f6]"
                     : "hover:bg-accent/60 hover:text-foreground"
                 )}
                 aria-label="Attach files for analysis"
@@ -2175,7 +2638,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 inputValue={inputValue}
                 setInputValue={setInputValue}
                 textareaRef={textareaRef}
-                onSubmit={() => handleSendMessage()}
+                onSubmit={() => trySendMessage()}
               />
             </div>
 
@@ -2197,9 +2660,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 ta.style.overflowY = sh > 200 ? "auto" : "hidden";
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !isLoading && !(hasAnySources && !hasActiveSource)) {
+                if (e.key === "Enter" && !e.shiftKey && !isLoading) {
                   e.preventDefault();
-                  handleSendMessage();
+                  trySendMessage();
                   requestAnimationFrame(() => {
                     if (textareaRef.current) {
                       textareaRef.current.style.height = "80px";
@@ -2213,7 +2676,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               placeholder={
                 isLoading
                   ? "Thinking…"
-                  : "Paste your data or ask a question — no code needed"
+                  : selectedGraphId
+                    ? "Describe how to edit the selected graph (e.g. 'change to bar chart', 'add error bars')…"
+                    : "Paste your data or ask a question — no code needed"
               }
               disabled={isLoading}
               className="flex-1 min-w-0 bg-transparent outline-none placeholder:text-muted-foreground/55 caret-primary disabled:cursor-not-allowed resize-none overflow-hidden leading-6"
@@ -2241,7 +2706,10 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                   >
                     <Files className="h-5 w-5" />
                     {totalCount > 0 && (
-                      <span className="absolute -top-0.5 -right-0.5 bg-primary text-primary-foreground text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center leading-none pointer-events-none">
+                      <span
+                        className="absolute -top-0.5 -right-0.5 text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center leading-none pointer-events-none text-white"
+                        style={{ backgroundColor: hasActiveSource ? "#3b82f6" : "#94a3b8" }}
+                      >
                         {totalCount > 9 ? "9+" : totalCount}
                       </span>
                     )}
@@ -2252,7 +2720,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               {/* Send */}
               <Button
                 onClick={() => {
-                  handleSendMessage();
+                  trySendMessage();
                   requestAnimationFrame(() => {
                     if (textareaRef.current) {
                       textareaRef.current.style.height = "80px";
@@ -2260,14 +2728,15 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     }
                   });
                 }}
-                disabled={isLoading || !inputValue.trim() || (hasAnySources && !hasActiveSource)}
+                disabled={isLoading || !inputValue.trim()}
                 aria-label="Send message"
+                title={hasAnySources ? `${attachedFiles.length + projectSettings.sources.length} source${(attachedFiles.length + projectSettings.sources.length) !== 1 ? 's' : ''} ready — analysis will use attached data` : "Send message"}
                 className={cn(
-                  "rounded-full bg-[#0D6EFD] text-white transition-all p-0 flex-shrink-0",
-                  "hover:bg-[#2563EB] active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed",
+                  "rounded-full bg-[#0f172a] text-white transition-all p-0 flex-shrink-0",
+                  "hover:bg-[#1e293b] active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed",
                   compact
                     ? "h-11 w-11"
-                    : "h-12 w-12 shadow-[0_2px_6px_rgba(13,110,253,0.30)] hover:shadow-[0_4px_14px_rgba(13,110,253,0.42)] hover:scale-110"
+                    : "h-12 w-12 shadow-[0_2px_6px_rgba(15,23,42,0.30)] hover:shadow-[0_4px_14px_rgba(15,23,42,0.42)] hover:scale-110"
                 )}
               >
                 {isLoading ? (
@@ -2282,7 +2751,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           {/* "Enter to send" hint — fades in when textarea is focused (non-compact only) */}
           {!compact && inputFocused && (
             <div className="flex items-center justify-center mt-1.5 animate-in fade-in duration-200">
-              <span className="text-[11px] select-none" style={{ color: "#00B8A9", opacity: 0.75 }}>
+              <span className="text-[11px] select-none" style={{ color: "#3b82f6", opacity: 0.75 }}>
                 ↵ Enter to send · Shift+Enter for new line
               </span>
             </div>
@@ -2324,6 +2793,12 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         onSelectTabOnly={selectTabOnly}
         onSelectProjectOnly={selectProjectOnly}
         isSourceUsedInQueries={isSourceUsedInQueries}
+        onLoadToQuery={() => {
+          toast.success("Sources loaded and associated with your query.", {
+            style: { backgroundColor: "#3b82f6", color: "#ffffff", border: "none" },
+            duration: 2500,
+          });
+        }}
       />
 
       <FilePickerDialog
@@ -2360,6 +2835,54 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         className="hidden"
         onChange={handleComputerUpload}
       />
+
+      {/* ── PDF unparsable warning modal ─────────────────────────────── */}
+      {pdfWarningOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-[200] bg-black/30"
+            onClick={() => { setPdfWarningOpen(false); setPdfWarningPendingMessage(null); }}
+          />
+          <div
+            className="fixed z-[210] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-xl shadow-2xl border w-full max-w-sm p-6"
+            style={{ backgroundColor: "#1a202c", borderColor: "#2d3748" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold mb-3" style={{ color: "#ffffff" }}>
+              PDF Content Not Fully Extractable
+            </h3>
+            <p className="text-xs leading-relaxed mb-5" style={{ color: "#e2e8f0" }}>
+              One or more selected PDF sources could not be fully parsed for text content.
+              The AI will only have access to the file name and basic metadata.
+              Proceed with basic metadata?
+            </p>
+            <div className="flex items-center gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => { setPdfWarningOpen(false); setPdfWarningPendingMessage(null); }}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors"
+                style={{ borderColor: "#4a5568", color: "#a0aec0" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPdfWarningOpen(false);
+                  if (pdfWarningPendingMessage) {
+                    handleSendMessage(pdfWarningPendingMessage);
+                  }
+                  setPdfWarningPendingMessage(null);
+                }}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-colors"
+                style={{ backgroundColor: "#3b82f6", color: "#ffffff" }}
+              >
+                Proceed Anyway
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };

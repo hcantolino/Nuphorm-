@@ -177,7 +177,7 @@ export default defineConfig({
     // Without this, the CJS require('plotly.js/dist/plotly') call inside
     // react-plotly.js becomes a stub __require at runtime and throws
     // "Dynamic require of plotly.js/dist/plotly is not supported".
-    include: ['react-plotly.js'],
+    include: ['react-plotly.js', 'plotly.js/dist/plotly'],
   },
   server: {
     // hmr intentionally omitted here — server/_core/vite.ts overrides the entire

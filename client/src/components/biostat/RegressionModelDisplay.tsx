@@ -72,7 +72,7 @@ export function RegressionModelDisplay({ result, warnings = [] }: RegressionDisp
               </div>
             )}
             {result.modelStats.aic !== undefined && (
-              <div className="p-3 bg-green-50 rounded-lg">
+              <div className="p-3 bg-blue-50 rounded-lg">
                 <div className="text-sm text-gray-600">AIC</div>
                 <div className="text-lg font-semibold">
                   {(result.modelStats.aic as number).toFixed(2)}
@@ -80,7 +80,7 @@ export function RegressionModelDisplay({ result, warnings = [] }: RegressionDisp
               </div>
             )}
             {result.modelStats.bic !== undefined && (
-              <div className="p-3 bg-green-50 rounded-lg">
+              <div className="p-3 bg-blue-50 rounded-lg">
                 <div className="text-sm text-gray-600">BIC</div>
                 <div className="text-lg font-semibold">
                   {(result.modelStats.bic as number).toFixed(2)}

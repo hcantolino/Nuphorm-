@@ -27,8 +27,12 @@ import {
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// Lazy-load Plotly to keep the initial bundle light
-const Plot = lazy(() => import('react-plotly.js'));
+// Lazy-load react-plotly.js — wrapper ensures { default: ... } shape for React.lazy
+const Plot = lazy(() =>
+  import('react-plotly.js').then((mod) => ({
+    default: (mod as any).default ?? mod,
+  }))
+);
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -463,7 +467,7 @@ export default function PharmaChartPanel({ requestedChartType, onChartTypeChange
                 <ImageDown className="w-3.5 h-3.5 text-blue-500" /> Export PNG
               </button>
               <button onClick={() => exportImage('svg')} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 transition-colors">
-                <ImageDown className="w-3.5 h-3.5 text-green-500" /> Export SVG
+                <ImageDown className="w-3.5 h-3.5 text-blue-500" /> Export SVG
               </button>
               <button onClick={exportPDF} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 rounded-b-lg transition-colors">
                 <FileDown className="w-3.5 h-3.5 text-red-500" /> Export PDF

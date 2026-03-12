@@ -15,6 +15,9 @@ interface BottomChatBarProps {
   selectedProject?: string;
   isLoading?: boolean;
   inline?: boolean;
+  /** Pre-fill input from external "Add to Chat" buttons. Consumed once when set. */
+  pendingContent?: string | null;
+  onPendingContentConsumed?: () => void;
 }
 
 const DOCUMENT_TYPES: DocumentType[] = [
@@ -79,6 +82,8 @@ export default function BottomChatBar({
   selectedProject,
   isLoading = false,
   inline = false,
+  pendingContent,
+  onPendingContentConsumed,
 }: BottomChatBarProps) {
   const [message, setMessage] = useState('');
   const [showDocTypePanel, setShowDocTypePanel] = useState(false);
@@ -86,6 +91,21 @@ export default function BottomChatBar({
   const [searchDocType, setSearchDocType] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Consume "Add to Chat" content ──────────────────────────────────────
+  useEffect(() => {
+    if (pendingContent) {
+      setMessage(pendingContent);
+      onPendingContentConsumed?.();
+      requestAnimationFrame(() => {
+        if (inputRef.current) {
+          inputRef.current.focus();
+          inputRef.current.style.height = 'auto';
+          inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 200)}px`;
+        }
+      });
+    }
+  }, [pendingContent, onPendingContentConsumed]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {

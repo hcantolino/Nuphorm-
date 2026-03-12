@@ -32,7 +32,27 @@ import { TRPCError } from "@trpc/server";
 import { storagePut, storageGet, UPLOADS_DIR } from "./storage";
 import fs from "fs";
 import path from "path";
+import { PDFParse } from "pdf-parse";
 import { logUploadedFile } from "./db";
+
+// pdf-parse v2 wrapper — returns a v1-compatible result shape
+async function parsePdfBuffer(buffer: Buffer) {
+  const parser = new PDFParse({ data: new Uint8Array(buffer) });
+  const textResult = await parser.getText();
+  let info: any = {};
+  let numpages = textResult.pages?.length ?? 0;
+  try {
+    const infoResult = await parser.getInfo();
+    info = (infoResult as any).info ?? {};
+    numpages = (infoResult as any).numPages ?? numpages;
+  } catch {}
+  await parser.destroy();
+  return {
+    text: textResult.text ?? "",
+    numpages,
+    info,
+  };
+}
 
 const COOKIE_NAME = "session";
 
@@ -442,11 +462,12 @@ export const appRouter = router({
         }
 
         const contentType = getContentType(file.fileName, file.mimeType);
-        const isBinary = contentType.startsWith("image/") || contentType === "application/pdf";
+        const isImage = contentType.startsWith("image/");
+        const isPdf = contentType === "application/pdf";
 
-        // For binary files (images, PDFs), return URL only — no text content
-        if (isBinary) {
-          console.log('[Get File Content] Binary file, returning URL only:', { fileId: input.fileId, fileName: file.fileName, contentType });
+        // For image files, return URL only — no text content
+        if (isImage) {
+          console.log('[Get File Content] Image file, returning URL only:', { fileId: input.fileId, fileName: file.fileName, contentType });
           return {
             success: true,
             content: null,
@@ -456,6 +477,52 @@ export const appRouter = router({
             hasGraphs: false,
             fileUrl: file.fileUrl,
           };
+        }
+
+        // For PDFs, extract text using pdf-parse
+        if (isPdf) {
+          console.log('[Get File Content] PDF file, extracting text:', { fileId: input.fileId, fileName: file.fileName });
+          try {
+            let pdfBuffer: Buffer;
+            const normalizedKey = file.fileKey.replace(/^\/+/, '');
+            const fullPath = path.join(UPLOADS_DIR, normalizedKey);
+            try {
+              pdfBuffer = await fs.promises.readFile(fullPath);
+            } catch {
+              const { url } = await storageGet(file.fileKey);
+              const response = await fetch(url);
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              pdfBuffer = Buffer.from(await response.arrayBuffer());
+            }
+            const pdfData = await parsePdfBuffer(pdfBuffer);
+            const extractedText = pdfData.text?.trim() ?? "";
+            console.log('[Get File Content] PDF extracted:', { fileId: input.fileId, pages: pdfData.numpages, textLength: extractedText.length });
+            return {
+              success: true,
+              content: extractedText || null,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              contentType,
+              hasGraphs: false,
+              fileUrl: file.fileUrl,
+              pdfMeta: {
+                pages: pdfData.numpages,
+                info: pdfData.info,
+              },
+            };
+          } catch (pdfErr) {
+            console.error('[Get File Content] PDF extraction failed:', pdfErr);
+            return {
+              success: true,
+              content: null,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              contentType,
+              hasGraphs: false,
+              fileUrl: file.fileUrl,
+              pdfError: `PDF text extraction failed: ${pdfErr instanceof Error ? pdfErr.message : 'Unknown error'}`,
+            };
+          }
         }
 
         // Text-based files: read content
@@ -501,6 +568,34 @@ export const appRouter = router({
           hasGraphs,
           fileUrl: file.fileUrl,
         };
+      }),
+
+    /** Extract text from a PDF uploaded as base64 — used for inline preview and AI context */
+    parsePdf: publicProcedure
+      .input(z.object({
+        fileData: z.string(), // base64
+        fileName: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          const buffer = Buffer.from(input.fileData, 'base64');
+          const pdfData = await parsePdfBuffer(buffer);
+          const extractedText = pdfData.text?.trim() ?? "";
+          return {
+            success: true,
+            text: extractedText,
+            pages: pdfData.numpages,
+            info: pdfData.info,
+          };
+        } catch (err) {
+          console.error('[parsePdf] Extraction failed:', err);
+          return {
+            success: false,
+            text: null,
+            pages: 0,
+            error: `PDF extraction failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          };
+        }
       }),
 
     getFiles: protectedProcedure.query(async ({ ctx }) => {
@@ -966,6 +1061,10 @@ export const appRouter = router({
             type: z.string(),
             excerpt: z.string(),
           })).default([]),
+          conversationHistory: z.array(z.object({
+            role: z.enum(["user", "assistant"]),
+            content: z.string(),
+          })).default([]),
         })
       )
       .mutation(async ({ input }) => {
@@ -1018,29 +1117,102 @@ Rules for references:
 - citationKey format: "ShortName:Section" (e.g. "ClinicalTrial:Table3")
 - color must match the same source's annotation color`;
 
-          const result = await invokeLLM({
-            messages: [
-              {
-                role: "system",
-                content: `You are an expert regulatory document writer for medical devices and pharmaceuticals. Generate professional, complete regulatory documents that fully comply with FDA 21 CFR and EU MDR/IVDR standards. Write in formal regulatory language with numbered sections and clear headings.\n\n${jsonSchema}`,
-              },
-              {
-                role: "user",
-                content: `${input.message}${fileContext}\nDocument type: ${input.documentType || "General Regulatory Document"}\n\nGenerate a complete, detailed regulatory document (at least 8-10 paragraphs with numbered sections). Insert inline citations in the format [SourceName:Section] throughout the document text where claims are sourced. For each key sentence or claim derived from a source document, include an annotation entry. Also produce a references array listing each source used with an excerpt and annotation tooltip. Remember: respond with ONLY valid JSON matching the schema above.`,
-              },
-            ],
-            maxTokens: 16000,
-          });
+          // Build message array with conversation history for multi-turn memory.
+          // Prior assistant messages are summarized (not full JSON) to save tokens.
+          // Anthropic requires strict user/assistant alternation — dedupe consecutive same-role messages.
+          const rawHistory = (input.conversationHistory ?? []).map((msg) => ({
+            role: msg.role as "user" | "assistant",
+            content: msg.role === "assistant" && msg.content.length > 500
+              ? `[Previous document generation — summary: ${msg.content.slice(0, 400)}...]`
+              : msg.content,
+          }));
+
+          // Ensure strict alternation: merge consecutive same-role messages
+          const historyMessages: Array<{ role: "user" | "assistant"; content: string }> = [];
+          for (const msg of rawHistory) {
+            const last = historyMessages[historyMessages.length - 1];
+            if (last && last.role === msg.role) {
+              last.content += "\n\n" + msg.content; // merge
+            } else {
+              historyMessages.push({ ...msg });
+            }
+          }
+          // If history ends with a user message, the next user message would violate
+          // alternation — remove the trailing user message from history
+          if (historyMessages.length > 0 && historyMessages[historyMessages.length - 1].role === "user") {
+            historyMessages.pop();
+          }
+
+          const llmMessages = [
+            {
+              role: "system" as const,
+              content: `You are an expert regulatory document writer for medical devices and pharmaceuticals. Generate professional, complete regulatory documents that fully comply with FDA 21 CFR and EU MDR/IVDR standards. Write in formal regulatory language with numbered sections and clear headings.\n\nIMPORTANT: You have memory of previous conversations in this project. If the user references prior documents, data, or analyses, use that context to inform your response.\n\n${jsonSchema}`,
+            },
+            ...historyMessages,
+            {
+              role: "user" as const,
+              content: `${input.message}${fileContext}\nDocument type: ${input.documentType || "General Regulatory Document"}\n\nGenerate a complete, detailed regulatory document (at least 8-10 paragraphs with numbered sections). Insert inline citations in the format [SourceName:Section] throughout the document text where claims are sourced. For each key sentence or claim derived from a source document, include an annotation entry. Also produce a references array listing each source used with an excerpt and annotation tooltip. Remember: respond with ONLY valid JSON matching the schema above.`,
+            },
+          ];
+
+          // Retry with exponential backoff — network "fetch failed" errors are transient
+          let result;
+          let lastError: Error | null = null;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              console.log(`[regulatory] LLM attempt ${attempt}/3 (${llmMessages.length} messages, history: ${historyMessages.length})`);
+              result = await invokeLLM({
+                messages: llmMessages,
+                maxTokens: 16000,
+              });
+              break; // success
+            } catch (err: any) {
+              lastError = err;
+              const isFetchError = err?.message?.includes("fetch failed") || err?.cause?.code === "ECONNREFUSED";
+              console.error(`[regulatory] LLM attempt ${attempt} failed: ${err?.message}`);
+              if (attempt < 3 && isFetchError) {
+                const delay = attempt * 2000; // 2s, 4s
+                console.log(`[regulatory] Retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+              } else {
+                throw err;
+              }
+            }
+          }
+          if (!result) throw lastError ?? new Error("LLM call failed after retries");
 
           const raw = result.choices[0]?.message?.content;
           if (!raw) throw new Error("Empty LLM response");
 
-          const jsonStr =
-            typeof raw === "string"
-              ? raw.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim()
-              : JSON.stringify(raw);
+          // Robust JSON extraction — handles markdown fences, leading/trailing prose
+          let jsonStr =
+            typeof raw === "string" ? raw : JSON.stringify(raw);
 
-          const parsed = JSON.parse(jsonStr);
+          // Strip markdown code fences
+          jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+
+          // If the response doesn't start with '{', try to find the JSON object
+          if (!jsonStr.startsWith("{")) {
+            const firstBrace = jsonStr.indexOf("{");
+            const lastBrace = jsonStr.lastIndexOf("}");
+            if (firstBrace !== -1 && lastBrace > firstBrace) {
+              jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+            }
+          }
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(jsonStr);
+          } catch {
+            // Last resort: try to find a JSON block containing "content"
+            const jsonMatch = jsonStr.match(/\{[\s\S]*"content"\s*:\s*"[\s\S]*\}/);
+            if (jsonMatch) {
+              parsed = JSON.parse(jsonMatch[0]);
+            } else {
+              console.error("Failed to parse LLM JSON. Raw (first 500 chars):", jsonStr.slice(0, 500));
+              throw new Error("AI returned invalid format. Please try again.");
+            }
+          }
 
           return {
             content: (parsed.content as string) || "",
@@ -1067,11 +1239,19 @@ Rules for references:
             ),
           };
         } catch (error) {
+          const errMsg = error instanceof Error ? error.message : "Unknown error";
+          const isFetchError = errMsg.includes("fetch failed") || errMsg.includes("ECONNREFUSED");
+          const isTimeout = errMsg.includes("timed out") || errMsg.includes("abort");
+          const friendlyMsg = isFetchError
+            ? "Could not reach AI service — check your network connection and API key, then try again."
+            : isTimeout
+            ? "AI service timed out. Try with fewer sources or a shorter prompt."
+            : `Failed to generate document: ${errMsg}`;
+
+          console.error(`[regulatory] Generation error: ${errMsg}`);
           throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: `Failed to generate document: ${
-              error instanceof Error ? error.message : "Unknown error"
-            }`,
+            code: isFetchError ? "BAD_GATEWAY" : "INTERNAL_SERVER_ERROR",
+            message: friendlyMsg,
           });
         }
       }),
@@ -1137,6 +1317,41 @@ Rules for references:
         }
       }),
 
+    validateAndCorrect: publicProcedure
+      .input(
+        z.object({
+          originalQuery: z.string(),
+          analysisResults: z.any(),
+          fullData: z.array(z.record(z.string(), z.any())),
+          dataColumns: z.array(z.string()),
+          classifications: z.record(z.string(), z.any()),
+          conversationHistory: z.array(
+            z.object({
+              role: z.string(),
+              content: z.string(),
+            })
+          ),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const { validateAndCorrect } = await import("./biostatisticsAI");
+          const result = await validateAndCorrect(
+            input.originalQuery,
+            input.analysisResults,
+            input.fullData,
+            input.dataColumns,
+            input.classifications,
+            input.conversationHistory
+          );
+          return result;
+        } catch (error) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Validation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          });
+        }
+      }),
 
   }),
 });

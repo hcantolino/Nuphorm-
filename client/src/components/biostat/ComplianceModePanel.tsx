@@ -69,14 +69,14 @@ interface ComplianceModePanelProps {
 const API = '/api/v1/compliance';
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
-  PASS: <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />,
+  PASS: <CheckCircle2 className="w-4 h-4 text-blue-500 flex-shrink-0" />,
   FAIL: <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />,
   WARN: <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />,
   INFO: <Activity className="w-4 h-4 text-blue-400 flex-shrink-0" />,
 };
 
 const STATUS_BADGE: Record<string, string> = {
-  PASS: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+  PASS: 'bg-blue-50 text-blue-700 border border-blue-200',
   FAIL: 'bg-red-50 text-red-700 border border-red-200',
   WARN: 'bg-amber-50 text-amber-700 border border-amber-200',
   INFO: 'bg-blue-50 text-blue-700 border border-blue-200',
@@ -260,7 +260,7 @@ export default function ComplianceModePanel({
 
   // ── Compliance score colour ─────────────────────────────────────────────────
   const scoreColor = (score: number) => {
-    if (score >= 90) return 'text-emerald-600';
+    if (score >= 90) return 'text-blue-600';
     if (score >= 70) return 'text-amber-600';
     return 'text-red-600';
   };
@@ -430,7 +430,7 @@ export default function ComplianceModePanel({
                   {/* Score card */}
                   <div className={cn(
                     'rounded-xl border-2 p-4 flex items-center gap-4',
-                    validationResult.overall === 'PASS' ? 'border-emerald-200 bg-emerald-50' :
+                    validationResult.overall === 'PASS' ? 'border-blue-200 bg-blue-50' :
                     validationResult.overall === 'WARN' ? 'border-amber-200 bg-amber-50' :
                     'border-red-200 bg-red-50'
                   )}>
@@ -454,7 +454,7 @@ export default function ComplianceModePanel({
                     <div
                       className={cn(
                         'h-full rounded-full transition-all duration-700',
-                        validationResult.score >= 90 ? 'bg-emerald-500' :
+                        validationResult.score >= 90 ? 'bg-blue-500' :
                         validationResult.score >= 70 ? 'bg-amber-500' :
                         'bg-red-500'
                       )}
@@ -537,9 +537,9 @@ export default function ComplianceModePanel({
               </div>
 
               {/* TLF Excel */}
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4 space-y-3">
+              <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4 space-y-3">
                 <div className="flex items-start gap-3">
-                  <FileSpreadsheet className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  <FileSpreadsheet className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="text-sm font-semibold text-gray-800">TLF Excel Report</p>
                     <p className="text-xs text-gray-500 mt-0.5">
@@ -550,7 +550,7 @@ export default function ComplianceModePanel({
                 <button
                   onClick={generateExcel}
                   disabled={reportGenerating}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
                 >
                   <Download className={cn('w-4 h-4', reportGenerating && 'animate-bounce')} />
                   {reportGenerating ? 'Generating…' : 'Download TLF Excel (.xlsx)'}

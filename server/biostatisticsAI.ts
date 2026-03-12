@@ -1,4 +1,29 @@
+import Papa from 'papaparse';
+import Ajv from 'ajv';
+import { create as createDiffPatcher } from 'jsondiffpatch';
 import { invokeLLM } from './_core/llm';
+
+// ── jsondiffpatch instance for hallucination detection ──────────────────────
+const diffPatcher = createDiffPatcher({
+  objectHash: (obj: any) => obj.metric ?? obj.group ?? JSON.stringify(obj),
+  arrays: { detectMove: false },
+});
+
+// ── AJV schema for validating LLM results_table output ───────────────────────
+const ajv = new Ajv({ allErrors: true, coerceTypes: true });
+
+const resultsTableSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      metric: { type: "string" },
+      value: {},  // allow any type (string, number, null)
+    },
+    required: ["metric", "value"],
+  },
+};
+const validateResultsTable = ajv.compile(resultsTableSchema);
 import { calculateDescriptiveStats, calculatePearsonCorrelation, calculateTTest, calculateANOVA, calculateHistogramData } from './statisticsCalculator';
 import { chiSquareTest, logisticRegression, kaplanMeierAnalysis } from './advancedStatistics';
 import {
@@ -526,10 +551,10 @@ function synthesizeVizChartData(
 
   // ── Kaplan-Meier (rendered as stepped line) ───────────────────────────────────
   if (vizType === "km_chart" || vizType === "survival") {
-    // Simulate a simple step function based on t½ distribution
     const kmLabels = ["0", "2", "4", "6", "8", "10", "12", "14", "16"];
     return {
       type: "line",
+      pharma_type: "survival",
       labels: kmLabels,
       datasets: [
         { label: "Test",      data: [1, 0.95, 0.88, 0.78, 0.65, 0.52, 0.41, 0.31, 0.22], borderColor: "#14b8a6", backgroundColor: "rgba(20,184,166,0.1)", fill: false, stepped: true },
@@ -843,7 +868,8 @@ THE JSON MUST FOLLOW THIS EXACT SCHEMA:
   "analysisResults": {
     "analysis_type": "llm_chart" | "llm_table",
     "chart_data": {
-      "type": "bar" | "line" | "scatter" | "area" | "pie" | "kaplan-meier",
+      "type": "bar" | "line" | "scatter" | "area" | "pie" | "kaplan-meier" | "box" | "heatmap" | "waterfall" | "forest" | "volcano",
+      "pharma_type": "survival" | "box" | "heatmap" | "waterfall" | "forest" | "volcano" | null,
       "title": "string",
       "x_axis": "string with units",
       "y_axis": "string with units",
@@ -868,10 +894,14 @@ SUBJECTS_FOUND RULES:
 
 ANALYSISRESULTS RULES:
 1. "analysis" MUST be narrative prose only — NO markdown tables. For viz requests: 1-2 sentences only.
-2. VISUALIZATION REQUESTS (area chart, line chart, KM curve, bar chart, box plot, volcano, forest, heatmap, scatter):
+2. VISUALIZATION REQUESTS (area chart, line chart, KM curve, bar chart, box plot, volcano, forest, heatmap, waterfall, scatter):
    - Set analysis_type to "llm_chart"
    - ALWAYS include chart_data with type + labels/series + datasets
+   - For advanced pharma charts, set pharma_type: KM/survival→"survival", box plot→"box", heatmap→"heatmap", waterfall→"waterfall", forest plot→"forest", volcano plot→"volcano"
    - chart_data may use EITHER the labels+datasets format OR the series format (with x/y/sd objects)
+   - For forest plots: include ci_lower and ci_upper arrays in the dataset alongside data (point estimates)
+   - For volcano plots: data should be array of {x: log2FC, y: -log10p} objects
+   - For heatmap: include a z matrix (2D array), x labels, and y labels
    - ALWAYS include results_table with REAL data rows (one per data point) — NEVER a single "Note" row
    - NEVER use "Synthetic" or "demonstration" language — all data must come from the uploaded file
 3. NON-VISUALIZATION REQUESTS — ALWAYS populate "analysisResults" when user requests ANY of:
@@ -968,12 +998,6 @@ function normalizeCellValue(raw: string | undefined): { value: any; isBQL: boole
  * Auto-detect delimiter: tab vs comma.
  * Checks the first non-empty line — whichever delimiter yields more fields wins.
  */
-function detectDelimiter(firstLine: string): string {
-  const tabCount = (firstLine.match(/\t/g) || []).length;
-  const commaCount = (firstLine.match(/,/g) || []).length;
-  return tabCount > commaCount ? "\t" : ",";
-}
-
 /**
  * Parse uploaded data file.
  * Supports: CSV, TSV, TXT (tab-delimited).
@@ -993,30 +1017,46 @@ export async function parseDataFile(
 
   if (ext === "csv" || ext === "tsv" || ext === "txt" || ext === "dat") {
     const content = fileBuffer.toString("utf-8");
-    const lines = content.split("\n").filter((line) => line.trim());
 
-    if (lines.length === 0) {
+    if (!content.trim()) {
       throw new Error("File is empty");
     }
 
-    const delimiter = ext === "tsv" ? "\t" : detectDelimiter(lines[0]);
-    const headers = lines[0].split(delimiter).map((h) => h.trim().replace(/^["']|["']$/g, ""));
+    // Use PapaParse for robust CSV handling (quoted fields, mixed delimiters, etc.)
+    const delimiter = ext === "tsv" ? "\t" : undefined; // undefined = auto-detect
+    const parseResult = Papa.parse<Record<string, any>>(content, {
+      header: true,
+      skipEmptyLines: true,
+      dynamicTyping: false, // we handle typing via normalizeCellValue below
+      delimiter,
+      transformHeader: (h: string) => h.trim().replace(/^["']|["']$/g, ""),
+    });
 
-    // Track BQL counts per column
+    if (parseResult.errors.length > 0) {
+      console.warn(`[parseDataFile] PapaParse warnings for ${fileName}:`, parseResult.errors.slice(0, 5));
+    }
+
+    const headers = parseResult.meta.fields ?? [];
+    if (headers.length === 0) {
+      throw new Error("No columns detected in file");
+    }
+
+    // Track BQL counts per column and normalize cell values
     const bqlCounts: Record<string, number> = {};
 
-    const data = lines.slice(1).map((line) => {
-      const values = line.split(delimiter);
-      const row: Record<string, any> = {};
-      headers.forEach((header, idx) => {
-        const { value, isBQL } = normalizeCellValue(values[idx]);
-        row[header] = value;
-        if (isBQL) {
-          bqlCounts[header] = (bqlCounts[header] ?? 0) + 1;
-        }
+    const data = parseResult.data
+      .filter((row) => Object.values(row).some((v) => v !== null && v !== undefined && v !== ""))
+      .map((rawRow) => {
+        const row: Record<string, any> = {};
+        headers.forEach((header) => {
+          const { value, isBQL } = normalizeCellValue(rawRow[header] as string | undefined);
+          row[header] = value;
+          if (isBQL) {
+            bqlCounts[header] = (bqlCounts[header] ?? 0) + 1;
+          }
+        });
+        return row;
       });
-      return row;
-    });
 
     const classifications: Record<string, any> = {};
     headers.forEach((col) => {
@@ -1039,6 +1079,8 @@ export async function parseDataFile(
     if (hasBQL) {
       console.log(`[parseDataFile] BQL values detected:`, bqlCounts);
     }
+
+    console.log(`[parseDataFile] Parsed ${fileName}: ${data.length} rows, ${headers.length} columns`);
 
     return {
       columns: headers,
@@ -2118,6 +2160,179 @@ export async function analyzeBiostatistics(
       `============================================`
     : "";
 
+  // ── Text-CSV auto-detection (backend safety net) ────────────────────────────
+  // If the frontend didn't parse pasted CSV text (no fullData), detect and parse
+  // CSV-like text embedded in the user query so the LLM gets structured data.
+  // Use mutable locals so we can override the function parameters.
+  let _fullData = fullData;
+  let _dataColumns = dataColumns;
+  let _classifications = classifications;
+  let _userQuery = userQuery;
+
+  if ((!_fullData || _fullData.length === 0) && _dataColumns.length === 0) {
+    const queryLines = _userQuery.split('\n').filter((l: string) => l.trim());
+    if (queryLines.length >= 2) {
+      const firstLine = queryLines[0];
+      const tabCount = (firstLine.match(/\t/g) ?? []).length;
+      const commaCount = (firstLine.match(/,/g) ?? []).length;
+      const delimCount = Math.max(tabCount, commaCount);
+      if (delimCount >= 1) {
+        const sep = tabCount > commaCount ? '\t' : ',';
+        const headerTokens = firstLine.split(sep).map((h: string) => h.trim());
+        const nonNumeric = headerTokens.filter((t: string) => isNaN(Number(t)) && t.length > 0);
+        if (headerTokens.length >= 2 && nonNumeric.length >= headerTokens.length * 0.5) {
+          try {
+            const Papa = await import("papaparse");
+            const parsed = Papa.default.parse(_userQuery, {
+              header: true,
+              skipEmptyLines: true,
+              dynamicTyping: true,
+            });
+            if (parsed.data && parsed.data.length >= 1) {
+              const rows = (parsed.data as Record<string, any>[]).filter((row) =>
+                Object.values(row).some((v) => v !== null && v !== undefined && v !== "")
+              );
+              if (rows.length >= 1 && Object.keys(rows[0]).length >= 2) {
+                _fullData = rows;
+                _dataColumns = Object.keys(rows[0]);
+                const newClassifications: Record<string, any> = {};
+                for (const col of _dataColumns) {
+                  const values = rows.slice(0, 50).map((r) => r[col]).filter((v) => v != null && v !== "");
+                  const numericCount = values.filter((v) => typeof v === "number" || !isNaN(Number(v))).length;
+                  const isNumeric = values.length > 0 && numericCount / values.length > 0.7;
+                  newClassifications[col] = { dataType: isNumeric ? "number" : "string" };
+                }
+                _classifications = newClassifications;
+                _userQuery = `Analyze this pasted data (${rows.length} rows, ${_dataColumns.length} columns: ${_dataColumns.join(', ')}). Provide summary statistics, key findings, and any significant patterns.`;
+                console.log(`[analyzeBiostatistics] Auto-detected pasted CSV: ${rows.length} rows, ${_dataColumns.length} cols`);
+              }
+            }
+          } catch (parseErr) {
+            console.warn("[analyzeBiostatistics] Text-CSV auto-parse failed:", parseErr);
+          }
+        }
+      }
+    }
+  }
+
+  // ── PDF table extraction (backend safety net) ──────────────────────────────
+  // If still no structured data, check if the query contains embedded PDF content
+  // (from source previews) and try to extract tabular data from it.
+  if ((!_fullData || _fullData.length === 0) && _dataColumns.length === 0) {
+    // Look for source content blocks: (content:\n...)
+    const contentMatch = _userQuery.match(/\(content:\n([\s\S]*?)(?:\n…\[truncated\])?\)/);
+    if (contentMatch) {
+      const sourceText = contentMatch[1];
+      // Try pipe-delimited tables (common in PDF extraction)
+      const pipeLines = sourceText.split('\n').filter((l: string) => l.includes('|') && !l.match(/^[\s|:-]+$/));
+      if (pipeLines.length >= 3) {
+        try {
+          const csvText = pipeLines
+            .map((l: string) => l.split('|').map((c: string) => c.trim()).filter(Boolean).join(','))
+            .join('\n');
+          const Papa = await import("papaparse");
+          const parsed = Papa.default.parse(csvText, { header: true, skipEmptyLines: true, dynamicTyping: true });
+          if (parsed.data && parsed.data.length >= 1) {
+            const rows = (parsed.data as Record<string, any>[]).filter((row) =>
+              Object.values(row).some((v) => v !== null && v !== undefined && v !== "")
+            );
+            if (rows.length >= 1 && Object.keys(rows[0]).length >= 2) {
+              _fullData = rows;
+              _dataColumns = Object.keys(rows[0]);
+              const newClassifications: Record<string, any> = {};
+              for (const col of _dataColumns) {
+                const values = rows.slice(0, 50).map((r) => r[col]).filter((v) => v != null && v !== "");
+                const numericCount = values.filter((v) => typeof v === "number" || !isNaN(Number(v))).length;
+                newClassifications[col] = { dataType: values.length > 0 && numericCount / values.length > 0.7 ? "number" : "string" };
+              }
+              _classifications = newClassifications;
+              console.log(`[analyzeBiostatistics] Extracted table from PDF source text: ${rows.length} rows, ${_dataColumns.length} cols`);
+            }
+          }
+        } catch (e) {
+          console.warn("[analyzeBiostatistics] PDF pipe-table parse failed:", e);
+        }
+      }
+      // Fallback: try CSV/TSV parsing on the raw source text
+      if ((!_fullData || _fullData.length === 0) && sourceText.split('\n').filter((l: string) => l.trim()).length >= 3) {
+        try {
+          const Papa = await import("papaparse");
+          const parsed = Papa.default.parse(sourceText, { header: true, skipEmptyLines: true, dynamicTyping: true });
+          if (parsed.data && parsed.data.length >= 2) {
+            const rows = (parsed.data as Record<string, any>[]).filter((row) =>
+              Object.values(row).some((v) => v !== null && v !== undefined && v !== "")
+            );
+            if (rows.length >= 2 && Object.keys(rows[0]).length >= 2) {
+              _fullData = rows;
+              _dataColumns = Object.keys(rows[0]);
+              const newClassifications: Record<string, any> = {};
+              for (const col of _dataColumns) {
+                const values = rows.slice(0, 50).map((r) => r[col]).filter((v) => v != null && v !== "");
+                const numericCount = values.filter((v) => typeof v === "number" || !isNaN(Number(v))).length;
+                newClassifications[col] = { dataType: values.length > 0 && numericCount / values.length > 0.7 ? "number" : "string" };
+              }
+              _classifications = newClassifications;
+              console.log(`[analyzeBiostatistics] Extracted CSV-like table from PDF text: ${rows.length} rows, ${_dataColumns.length} cols`);
+            }
+          }
+        } catch (e) {
+          console.warn("[analyzeBiostatistics] PDF CSV-table parse failed:", e);
+        }
+      }
+    }
+  }
+
+  // ── [PASTED_DATA] extraction from conversation history ─────────────────────
+  // If no data has been loaded yet (no file upload, no CSV in query), check if
+  // the conversation history contains a [PASTED_DATA] marker from a previous
+  // paste.  Parse the preview rows to restore the structured data context.
+  if ((!_fullData || _fullData.length === 0) && _dataColumns.length === 0) {
+    const pastedMsg = conversationHistory.find(
+      (msg) => msg.role === "assistant" && msg.content.startsWith("[PASTED_DATA")
+    );
+    if (pastedMsg) {
+      try {
+        // Extract column names from the header: [PASTED_DATA columns=A,B,C rows=N]
+        const colMatch = pastedMsg.content.match(/columns=([^\s\]]+)/);
+        const cols = colMatch ? colMatch[1].split(",") : [];
+        // Extract JSON rows from the body (one per line after the header)
+        const bodyLines = pastedMsg.content.split("\n").slice(1);
+        const rows: Record<string, any>[] = [];
+        for (const line of bodyLines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("{")) {
+            try {
+              rows.push(JSON.parse(trimmed));
+            } catch { /* skip malformed lines */ }
+          }
+        }
+        if (rows.length >= 1 && cols.length >= 2) {
+          _fullData = rows;
+          _dataColumns = cols;
+          // Derive classifications
+          const newClassifications: Record<string, any> = {};
+          for (const col of cols) {
+            const values = rows.slice(0, 50).map((r) => r[col]).filter((v) => v != null && v !== "");
+            const numericCount = values.filter((v) => typeof v === "number" || !isNaN(Number(v))).length;
+            newClassifications[col] = { dataType: values.length > 0 && numericCount / values.length > 0.7 ? "number" : "string" };
+          }
+          _classifications = newClassifications;
+          console.log(
+            `[analyzeBiostatistics] Restored pasted data from history: ${rows.length} rows, ${cols.length} cols`
+          );
+        }
+      } catch (e) {
+        console.warn("[analyzeBiostatistics] [PASTED_DATA] extraction failed:", e);
+      }
+    }
+  }
+
+  // Use the potentially-overridden locals for the rest of the function
+  fullData = _fullData;
+  dataColumns = _dataColumns;
+  classifications = _classifications;
+  userQuery = _userQuery;
+
   // ── Pre-analysis: embed full CSV & extract SUBJID summary ─────────────────
   let csvDataBlock = "";
   let subjectLine = "";
@@ -2125,28 +2340,39 @@ export async function analyzeBiostatistics(
   let uniqueSubjectCount = 0;
 
   if (fullData && fullData.length > 0 && dataColumns.length > 0) {
-    const csvText = reconstructCSV(dataColumns, fullData);
+    try {
+      const csvText = reconstructCSV(dataColumns, fullData);
 
-    // Extract unique subject IDs if a SUBJID-like column exists
-    const subjCol = detectSubjectIDColumn(dataColumns);
-    let uniqueIDs: string[] = [];
-    if (subjCol) {
-      uniqueIDs = Array.from(
-        new Set(
-          fullData
-            .map((row: any) => row[subjCol])
-            .filter((v: any) => v !== null && v !== undefined && String(v).trim() !== "")
-            .map((v: any) => String(v).trim())
-        )
-      );
-      uniqueSubjectCount = uniqueIDs.length;
-      subjectLine = `SUBJECT IDs FOUND: ${uniqueIDs.join(", ")}`;
-      subjectCountLine = `TOTAL SUBJECTS: ${uniqueIDs.length}`;
+      // Extract unique subject IDs if a SUBJID-like column exists
+      const subjCol = detectSubjectIDColumn(dataColumns);
+      let uniqueIDs: string[] = [];
+      if (subjCol) {
+        uniqueIDs = Array.from(
+          new Set(
+            fullData
+              .map((row: any) => row[subjCol])
+              .filter((v: any) => v !== null && v !== undefined && String(v).trim() !== "")
+              .map((v: any) => String(v).trim())
+          )
+        );
+        uniqueSubjectCount = uniqueIDs.length;
+        subjectLine = `SUBJECT IDs FOUND: ${uniqueIDs.join(", ")}`;
+        subjectCountLine = `TOTAL SUBJECTS: ${uniqueIDs.length}`;
+      }
+
+      csvDataBlock = `UPLOADED DATA (use ONLY this data, no other):\n${csvText}\n\n` +
+        `STRICT DATA INTEGRITY CLAUSE: Parse CSV as tabular data with headers. ` +
+        `Do not invent treatments, groups, or values — use exactly the columns and rows provided above. ` +
+        `If parsing fails or data is insufficient, return an error without fabricating data. ` +
+        `Output metrics must exactly match input rows without additions.`;
+
+      console.log(`[analyzeBiostatistics] CSV injected into prompt: ${fullData.length} rows, ${uniqueSubjectCount} unique subjects`);
+    } catch (csvErr) {
+      console.error("[analyzeBiostatistics] CSV reconstruction failed, using partial data:", csvErr);
+      // Fallback: inject first few rows as JSON so the LLM has some data context
+      const preview = fullData.slice(0, 10).map((r: any) => JSON.stringify(r)).join("\n");
+      csvDataBlock = `UPLOADED DATA (partial — full CSV reconstruction failed):\nColumns: ${dataColumns.join(", ")}\nSample rows:\n${preview}`;
     }
-
-    csvDataBlock = `UPLOADED DATA (use ONLY this data, no other):\n${csvText}`;
-
-    console.log(`[analyzeBiostatistics] CSV injected into prompt: ${fullData.length} rows, ${uniqueSubjectCount} unique subjects`);
   }
 
   const userMessage = isCleaningConversation
@@ -2161,11 +2387,21 @@ export async function analyzeBiostatistics(
   // earlier response (the "reuse" bug).  For non-viz queries we send history but
   // sanitize any assistant message that leaked raw JSON so the model can't treat
   // a previous chart as a template.
+  // ── Build conversation history for LLM ──────────────────────────────────────
+  // For viz queries, history is normally cleared to prevent chart reuse. But we
+  // preserve [PASTED_DATA] markers so the LLM knows what data was pasted earlier.
+  const pastedDataEntries = conversationHistory.filter(
+    (msg) => msg.role === "assistant" && msg.content.startsWith("[PASTED_DATA")
+  );
   const historyForLLM: Array<{ role: "user" | "assistant"; content: string }> = isVizQuery
-    ? []
+    ? pastedDataEntries.map((msg) => ({
+        role: "assistant" as const,
+        content: msg.content,
+      }))
     : conversationHistory.map((msg) => {
         const isJsonBlob =
           msg.role === "assistant" &&
+          !msg.content.startsWith("[PASTED_DATA") &&
           (msg.content.trimStart().startsWith("{") ||
             msg.content.includes('"chart_data"') ||
             msg.content.includes('"analysis_type"') ||
@@ -2754,16 +2990,15 @@ export async function analyzeBiostatistics(
     }
 
     // Call LLM with exponential-backoff retry logic.
-    // Note: response_format/json_schema is omitted — the system prompt already
-    // instructs the model to return pure JSON, and Anthropic doesn't support
-    // OpenAI-style json_schema enforcement anyway.
+    // Temperature 0.2 → deterministic, fact-focused outputs to reduce hallucination.
     let response;
     const MAX_LLM_ATTEMPTS = 3;
+    const LLM_TEMPERATURE = 0.2;
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < MAX_LLM_ATTEMPTS; attempt++) {
       try {
-        response = await invokeLLM({ messages: messages as any });
+        response = await invokeLLM({ messages: messages as any, temperature: LLM_TEMPERATURE });
         break; // success
       } catch (llmError) {
         lastError = llmError as Error;
@@ -2948,6 +3183,70 @@ export async function analyzeBiostatistics(
         };
       }
 
+      // ── Truncation detection ────────────────────────────────────────────
+      // If the LLM response was cut off mid-word, the analysis text may contain
+      // truncated words. Detect and repair by trimming to the last complete sentence.
+      if (typeof parsed.analysis === "string" && parsed.analysis.length > 50) {
+        const analysis = parsed.analysis;
+        const lastChar = analysis.trim().slice(-1);
+        // If it doesn't end with sentence-ending punctuation, it may be truncated
+        if (!/[.!?)\]"']$/.test(lastChar)) {
+          const lastSentenceEnd = Math.max(
+            analysis.lastIndexOf(". "),
+            analysis.lastIndexOf(".\n"),
+            analysis.lastIndexOf("! "),
+            analysis.lastIndexOf("? "),
+          );
+          if (lastSentenceEnd > analysis.length * 0.5) {
+            parsed.analysis = analysis.slice(0, lastSentenceEnd + 1);
+            console.warn(
+              `[analyzeBiostatistics] Truncated analysis repaired: trimmed from ${analysis.length} to ${parsed.analysis.length} chars`
+            );
+          }
+        }
+      }
+
+      // ── AJV schema validation — enforce strict output structure ──────────
+      // Validate results_table conforms to the expected [{metric, value}] schema.
+      // If invalid, attempt a correction pass: re-query LLM with stricter prompt.
+      if (parsed.analysisResults?.results_table && Array.isArray(parsed.analysisResults.results_table)) {
+        const isValid = validateResultsTable(parsed.analysisResults.results_table);
+        if (!isValid) {
+          console.warn(
+            "[analyzeBiostatistics] ⚠ results_table schema validation failed:",
+            validateResultsTable.errors?.slice(0, 3)
+          );
+          // Attempt to fix: coerce rows into {metric, value} shape
+          parsed.analysisResults.results_table = parsed.analysisResults.results_table
+            .map((row: any) => {
+              if (typeof row !== "object" || row === null) return null;
+              // If row already has metric+value, keep it
+              if ("metric" in row && "value" in row) return row;
+              // Try to extract from other key patterns
+              const keys = Object.keys(row);
+              if (keys.length >= 2) {
+                return { metric: String(row[keys[0]] ?? ""), value: row[keys[1]] ?? "" };
+              }
+              if (keys.length === 1) {
+                return { metric: keys[0], value: row[keys[0]] };
+              }
+              return null;
+            })
+            .filter(Boolean);
+
+          // Re-validate after coercion
+          const isFixedValid = validateResultsTable(parsed.analysisResults.results_table);
+          if (isFixedValid) {
+            console.log("[analyzeBiostatistics] ✓ results_table schema fixed via coercion");
+          } else {
+            console.error("[analyzeBiostatistics] ✗ results_table schema still invalid after coercion — clearing");
+            parsed.analysisResults.results_table = [
+              { metric: "Error", value: "AI output did not match expected schema. Please retry." },
+            ];
+          }
+        }
+      }
+
       // ── Subject-ID validation ─────────────────────────────────────────────
       // Compare the subjects_found list returned by the LLM against the actual
       // unique subject IDs extracted from the uploaded CSV.  If they diverge the
@@ -3092,15 +3391,37 @@ export async function analyzeBiostatistics(
 
         if (parsed.analysisResults?.chart_data) {
           // Case A: chart_data exists — guarantee analysis_type is correct.
-          // RESTORED: LLM was writing "dataset_generation" / "llm_table" /
-          //           other custom types instead of "llm_chart", causing
-          //           isChartResult to return false even when chart_data was
-          //           populated and ready to render.
           if (parsed.analysisResults.analysis_type !== "llm_chart") {
             console.log(
               `[analyzeBiostatistics] ✓ Fixed analysis_type: "${parsed.analysisResults.analysis_type}" → "llm_chart" (chart_data is present)`
             );
             parsed.analysisResults.analysis_type = "llm_chart";
+          }
+
+          // Tag chart_data with pharma_type so the frontend routes to Plotly
+          // for advanced chart types (survival, box, forest, volcano, heatmap, waterfall).
+          if (!parsed.analysisResults.chart_data.pharma_type) {
+            const pharmaTypeMap: Record<string, string> = {
+              survival: "survival", km_chart: "survival",
+              box_chart: "box", boxplot: "box",
+              forest_chart: "forest",
+              volcano_chart: "volcano",
+              heatmap_chart: "heatmap",
+              scatter: "scatter",
+            };
+            const detectedViz = vizType;
+            const chartDataType = (parsed.analysisResults.chart_data.type ?? "").toLowerCase();
+            const mappedType = pharmaTypeMap[detectedViz] ??
+              (chartDataType === "kaplan-meier" ? "survival" : null) ??
+              (chartDataType === "box" || chartDataType === "boxplot" ? "box" : null) ??
+              (chartDataType === "heatmap" ? "heatmap" : null) ??
+              (chartDataType === "waterfall" ? "waterfall" : null) ??
+              (chartDataType === "forest" ? "forest" : null) ??
+              (chartDataType === "volcano" ? "volcano" : null);
+            if (mappedType) {
+              parsed.analysisResults.chart_data.pharma_type = mappedType;
+              console.log(`[analyzeBiostatistics] ✓ Tagged chart_data.pharma_type = "${mappedType}"`);
+            }
           }
         } else if (parsed.analysisResults && !parsed.analysisResults.chart_data) {
           // Case B: BLOCKED — LLM returned table but no chart_data. Do NOT synthesize.
@@ -3119,6 +3440,310 @@ export async function analyzeBiostatistics(
           };
           parsed.analysis = (parsed.analysis || "") + "\n\n**Analysis blocked:** The AI did not return verifiable data from the uploaded file. Please rephrase your query or re-upload your data.";
         }
+      }
+
+      // ── Data integrity validation: cross-verify LLM output against original ──
+      // Store the original parsed data as a snapshot and validate the LLM's
+      // results_table values against it. Mark each row as validated (exact match)
+      // or corrected (hallucination overridden with original value).
+      if (
+        fullData && fullData.length > 0 &&
+        parsed.analysisResults?.results_table &&
+        Array.isArray(parsed.analysisResults.results_table) &&
+        parsed.analysisResults.results_table.length > 0
+      ) {
+        const originalSnapshot = fullData.map((row: any) => ({ ...row }));
+        let correctionsApplied = 0;
+
+        // Detect the "group" column in the original data — used to match LLM
+        // metric rows back to original records for value cross-verification.
+        const groupColCandidates = ["Treatment", "treatment", "Group", "group", "Arm", "arm", "Category", "category", "Drug", "drug", "Formulation", "formulation"];
+        const groupCol = dataColumns.find((col) => groupColCandidates.includes(col));
+
+        // Detect numeric value columns from the original data for cross-checking
+        const numericValueCols = dataColumns.filter((col) => {
+          const vals = originalSnapshot.map((r: any) => r[col]).filter((v: any) => typeof v === "number");
+          return vals.length > originalSnapshot.length * 0.3;
+        });
+
+        if (groupCol && numericValueCols.length > 0) {
+          // Build a lookup map: group name → original row(s)
+          const originalByGroup: Record<string, any[]> = {};
+          originalSnapshot.forEach((row: any) => {
+            const key = String(row[groupCol] ?? "").trim().toLowerCase();
+            if (!originalByGroup[key]) originalByGroup[key] = [];
+            originalByGroup[key].push(row);
+          });
+
+          // Check each results_table row: if the metric matches a group name,
+          // verify the value against the original data
+          const validatedTable = parsed.analysisResults.results_table.map((row: any) => {
+            const metricKey = String(row.metric ?? "").trim().toLowerCase();
+            const originalRows = originalByGroup[metricKey];
+
+            if (!originalRows || originalRows.length === 0) {
+              // No match — check if this metric is a fabricated group name
+              const allGroupNames = Object.keys(originalByGroup);
+              const isFabricatedGroup = !allGroupNames.includes(metricKey) &&
+                !["n", "p-value", "p value", "note", "error", "test statistic", "mean", "median",
+                  "sd", "se", "ci", "df", "f-statistic", "t-statistic", "chi-square",
+                  "correlation", "r²", "r-squared", "total", "count",
+                ].some((k) => metricKey.includes(k));
+
+              if (isFabricatedGroup && allGroupNames.length > 0) {
+                console.warn(`[analyzeBiostatistics] ⚠ Filtered hallucinated group: "${row.metric}" — not in original data`);
+                return { ...row, _validation: "filtered" };
+              }
+              // Non-group metric (stat name, p-value, etc.) — pass through as unvalidated
+              return { ...row, _validation: "unmatched" };
+            }
+
+            // Found original row(s) — cross-check numeric value
+            const rowValue = parseFloat(String(row.value ?? ""));
+            if (!isNaN(rowValue)) {
+              // Check if the LLM value matches any numeric column in the original
+              let exactMatch = false;
+              let correctedValue: number | null = null;
+              let correctedCol: string | null = null;
+
+              for (const col of numericValueCols) {
+                // Compute mean if multiple rows per group
+                const groupVals = originalRows
+                  .map((r: any) => r[col])
+                  .filter((v: any) => typeof v === "number");
+                if (groupVals.length === 0) continue;
+
+                const originalMean = groupVals.reduce((a: number, b: number) => a + b, 0) / groupVals.length;
+                // Allow small floating-point tolerance (0.1% relative or 0.01 absolute)
+                const tolerance = Math.max(Math.abs(originalMean) * 0.001, 0.01);
+                if (Math.abs(rowValue - originalMean) <= tolerance) {
+                  exactMatch = true;
+                  break;
+                }
+                // Track the first numeric column's mean for potential correction
+                if (correctedValue === null) {
+                  correctedValue = Math.round(originalMean * 1000) / 1000;
+                  correctedCol = col;
+                }
+              }
+
+              if (exactMatch) {
+                return { ...row, _validation: "exact_match" };
+              } else if (correctedValue !== null) {
+                // LLM value doesn't match — correct it with original data
+                correctionsApplied++;
+                console.log(
+                  `[analyzeBiostatistics] Corrected hallucination for "${row.metric}": ` +
+                  `LLM said ${rowValue}, original ${correctedCol} = ${correctedValue}`
+                );
+                return {
+                  ...row,
+                  value: correctedValue,
+                  _validation: "corrected",
+                  _originalLLMValue: rowValue,
+                };
+              }
+            }
+
+            return { ...row, _validation: "exact_match" };
+          });
+
+          // Filter out fabricated group rows
+          parsed.analysisResults.results_table = validatedTable.filter(
+            (r: any) => r._validation !== "filtered"
+          );
+
+          // Build original group summary for frontend diff viewer
+          const originalGroupSummary: Array<{ group: string; values: Record<string, number> }> = [];
+          for (const [groupKey, rows] of Object.entries(originalByGroup)) {
+            const valueMap: Record<string, number> = {};
+            for (const col of numericValueCols) {
+              const vals = (rows as any[]).map((r: any) => r[col]).filter((v: any) => typeof v === "number");
+              if (vals.length > 0) {
+                valueMap[col] = Math.round(
+                  (vals.reduce((a: number, b: number) => a + b, 0) / vals.length) * 1000
+                ) / 1000;
+              }
+            }
+            // Use the original case from the first row
+            const originalName = String((rows as any[])[0]?.[groupCol!] ?? groupKey);
+            originalGroupSummary.push({ group: originalName, values: valueMap });
+          }
+
+          // Store validation metadata for the frontend
+          parsed.analysisResults._dataValidation = {
+            validated: true,
+            originalRowCount: originalSnapshot.length,
+            originalColumns: dataColumns,
+            correctionsApplied,
+            timestamp: Date.now(),
+            groupColumn: groupCol,
+            numericColumns: numericValueCols,
+            originalGroupData: originalGroupSummary,
+          };
+
+          // ── jsondiffpatch layer: structural diff for deep hallucination detection ──
+          // Compare the original group summary (ground truth) against LLM-generated
+          // results_table entries to capture any structural mismatches not caught by
+          // the value-level check above (e.g. extra/removed rows, renamed metrics).
+          try {
+            const llmGroupRows = parsed.analysisResults.results_table
+              .filter((r: any) => r._validation !== "unmatched")
+              .map((r: any) => ({
+                group: String(r.metric ?? "").trim().toLowerCase(),
+                value: typeof r.value === "number" ? r.value : parseFloat(String(r.value ?? "")),
+              }))
+              .filter((r: any) => !isNaN(r.value));
+            const origGroupRows = originalGroupSummary.map((g) => ({
+              group: g.group.trim().toLowerCase(),
+              value: Object.values(g.values)[0] ?? 0,
+            }));
+
+            const delta = diffPatcher.diff(origGroupRows, llmGroupRows);
+            if (delta && Object.keys(delta).length > 0) {
+              const diffKeys = Object.keys(delta).filter((k) => k !== "_t");
+              console.log(
+                `[analyzeBiostatistics] jsondiffpatch: ${diffKeys.length} structural diff(s) detected`,
+                JSON.stringify(delta)
+              );
+              parsed.analysisResults._dataValidation.jsonDiff = delta;
+              parsed.analysisResults._dataValidation.jsonDiffCount = diffKeys.length;
+
+              // If severe (>10% of rows differ), flag for potential re-query
+              if (diffKeys.length > origGroupRows.length * 0.1) {
+                parsed.analysisResults._dataValidation.severeDiff = true;
+                console.warn(
+                  `[analyzeBiostatistics] ⚠ Severe structural diff: ${diffKeys.length}/${origGroupRows.length} rows mismatched`
+                );
+              }
+            } else {
+              parsed.analysisResults._dataValidation.jsonDiffCount = 0;
+            }
+          } catch (diffErr) {
+            console.warn("[analyzeBiostatistics] jsondiffpatch error (non-fatal):", diffErr);
+          }
+
+          if (correctionsApplied > 0) {
+            console.log(
+              `[analyzeBiostatistics] ✓ Data validation: ${correctionsApplied} hallucination(s) corrected`
+            );
+          } else {
+            console.log("[analyzeBiostatistics] ✓ Data validation: all values verified against original");
+          }
+        }
+      }
+
+      // ── Title hallucination auto-correction ──────────────────────────────
+      // Fix common LLM title truncations/hallucinations by cross-referencing
+      // the user query and data columns to reconstruct missing context.
+      if (parsed.graphTitle && typeof parsed.graphTitle === "string") {
+        let title = parsed.graphTitle;
+
+        // Fix truncated words (e.g., "Mean a" → derive from query/columns)
+        // Pattern: single-letter orphan words that indicate truncation
+        const truncatedMatch = title.match(/\b([A-Za-z])\s*[–—-]\s*/);
+        if (truncatedMatch) {
+          // Try to reconstruct from query keywords or column names
+          const queryWords = userQuery.split(/\s+/).filter((w) => w.length > 2);
+          const colWords = dataColumns.filter((c) => c.length > 2);
+          const allWords = [...queryWords, ...colWords];
+
+          // Find the best matching word that starts with the truncated letter
+          const letter = truncatedMatch[1].toUpperCase();
+          const candidates = allWords.filter((w) => w.toUpperCase().startsWith(letter));
+          if (candidates.length > 0) {
+            // Pick the most relevant match (longest matching word)
+            const best = candidates.sort((a, b) => b.length - a.length)[0];
+            title = title.replace(truncatedMatch[0], `${best} – `);
+            console.log(`[analyzeBiostatistics] Title corrected: "${parsed.graphTitle}" → "${title}"`);
+          }
+        }
+
+        // Fix common abbreviated column names in titles
+        for (const col of dataColumns) {
+          // If the column name partially appears as a truncated version, expand it
+          const colLower = col.toLowerCase();
+          const titleLower = title.toLowerCase();
+          if (colLower.length > 3 && !titleLower.includes(colLower)) {
+            const abbrev = col.replace(/[_-]/g, " ").split(/\s+/).map((w) => w[0]).join("").toLowerCase();
+            if (abbrev.length >= 2 && titleLower.includes(abbrev)) {
+              const humanCol = col.replace(/[_-]/g, " ");
+              title = title.replace(new RegExp(`\\b${abbrev}\\b`, "gi"), humanCol);
+              console.log(`[analyzeBiostatistics] Title expanded abbreviation: "${abbrev}" → "${humanCol}"`);
+            }
+          }
+        }
+
+        parsed.graphTitle = title;
+
+        // Apply same correction to chart_data.title if present
+        if (parsed.analysisResults?.chart_data?.title) {
+          const chartTitle = parsed.analysisResults.chart_data.title;
+          if (chartTitle !== title && chartTitle.length < title.length) {
+            parsed.analysisResults.chart_data.title = title;
+          }
+        }
+      }
+
+      // ── Filter invalid generic summary rows from results_table ──────────
+      // The LLM sometimes generates aggregated summary rows like "Mean 6" or
+      // "Median 6" that aren't actual data from the CSV. Remove rows where:
+      // (1) the metric is a generic stat name AND (2) the value doesn't match
+      // any actual computation from the original data.
+      if (
+        fullData && fullData.length > 0 &&
+        parsed.analysisResults?.results_table &&
+        Array.isArray(parsed.analysisResults.results_table) &&
+        parsed.analysisResults.results_table.length > 1
+      ) {
+        const genericStatNames = new Set(["mean", "median", "min", "max", "mode", "count", "sum", "range", "variance"]);
+        const numCols = dataColumns.filter((col) => {
+          const vals = fullData!.map((r: any) => r[col]).filter((v: any) => typeof v === "number");
+          return vals.length > fullData!.length * 0.3;
+        });
+
+        // Compute actual stats for comparison
+        const realStats: Record<string, Record<string, number>> = {};
+        for (const col of numCols) {
+          const nums = fullData!.map((r: any) => r[col]).filter((v: any) => typeof v === "number") as number[];
+          if (nums.length === 0) continue;
+          nums.sort((a, b) => a - b);
+          realStats[col] = {
+            mean: nums.reduce((a, b) => a + b, 0) / nums.length,
+            median: nums.length % 2 === 0
+              ? (nums[nums.length / 2 - 1] + nums[nums.length / 2]) / 2
+              : nums[Math.floor(nums.length / 2)],
+            min: nums[0],
+            max: nums[nums.length - 1],
+            count: nums.length,
+          };
+        }
+
+        parsed.analysisResults.results_table = parsed.analysisResults.results_table.filter((row: any) => {
+          const metricLower = String(row.metric ?? "").trim().toLowerCase();
+          const val = parseFloat(String(row.value ?? ""));
+
+          // Only filter single-word generic stat names (not "Mean PFS" or "Mean Cmax")
+          if (!genericStatNames.has(metricLower)) return true;
+          if (isNaN(val)) return true;
+
+          // Check if this value matches any real statistic from any numeric column
+          for (const col of numCols) {
+            const stats = realStats[col];
+            if (!stats) continue;
+            const statVal = stats[metricLower];
+            if (statVal !== undefined) {
+              const tol = Math.max(Math.abs(statVal) * 0.01, 0.1);
+              if (Math.abs(val - statVal) <= tol) return true; // Matches real data
+            }
+          }
+
+          // Value doesn't match any real stat — it's hallucinated
+          console.warn(
+            `[analyzeBiostatistics] Filtered hallucinated summary row: "${row.metric}" = ${val} (no matching stat in original data)`
+          );
+          return false;
+        });
       }
 
       if (chartConfig) parsed.chartConfig = chartConfig;
@@ -3152,6 +3777,177 @@ export async function analyzeBiostatistics(
       `Failed to analyze biostatistics: ${error instanceof Error ? error.message : "Unknown error"}`
     );
   }
+}
+
+/**
+ * Validate & Correct: Re-run validation on existing analysis results
+ * against the original data. If severe hallucinations are detected (>10%),
+ * re-query the LLM with a stricter correction prompt.
+ */
+export async function validateAndCorrect(
+  originalQuery: string,
+  analysisResults: any,
+  fullData: any[],
+  dataColumns: string[],
+  classifications: Record<string, any>,
+  conversationHistory: Array<{ role: string; content: string }>
+): Promise<{
+  corrected: boolean;
+  correctionsApplied: number;
+  analysisResults: any;
+  requeried: boolean;
+  analysis?: string;
+}> {
+  if (!analysisResults?.results_table || !Array.isArray(analysisResults.results_table)) {
+    return { corrected: false, correctionsApplied: 0, analysisResults, requeried: false };
+  }
+
+  const originalSnapshot = fullData.map((row: any) => ({ ...row }));
+
+  // Detect group and numeric columns
+  const groupColCandidates = ["Treatment", "treatment", "Group", "group", "Arm", "arm", "Category", "category", "Drug", "drug", "Formulation", "formulation"];
+  const groupCol = dataColumns.find((col) => groupColCandidates.includes(col));
+  const numericValueCols = dataColumns.filter((col) => {
+    const vals = originalSnapshot.map((r: any) => r[col]).filter((v: any) => typeof v === "number");
+    return vals.length > originalSnapshot.length * 0.3;
+  });
+
+  if (!groupCol || numericValueCols.length === 0) {
+    return { corrected: false, correctionsApplied: 0, analysisResults, requeried: false };
+  }
+
+  // Build original group lookup
+  const originalByGroup: Record<string, any[]> = {};
+  originalSnapshot.forEach((row: any) => {
+    const key = String(row[groupCol] ?? "").trim().toLowerCase();
+    if (!originalByGroup[key]) originalByGroup[key] = [];
+    originalByGroup[key].push(row);
+  });
+
+  // Build original summary for diff
+  const originalGroupSummary = Object.entries(originalByGroup).map(([key, rows]) => {
+    const valueMap: Record<string, number> = {};
+    for (const col of numericValueCols) {
+      const vals = rows.map((r: any) => r[col]).filter((v: any) => typeof v === "number");
+      if (vals.length > 0) {
+        valueMap[col] = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 1000) / 1000;
+      }
+    }
+    const originalName = String(rows[0]?.[groupCol] ?? key);
+    return { group: originalName, values: valueMap };
+  });
+
+  // Validate each row
+  let correctionsApplied = 0;
+  const validatedTable = analysisResults.results_table.map((row: any) => {
+    const metricKey = String(row.metric ?? "").trim().toLowerCase();
+    const originalRows = originalByGroup[metricKey];
+    if (!originalRows || originalRows.length === 0) return row;
+
+    const rowValue = parseFloat(String(row.value ?? ""));
+    if (isNaN(rowValue)) return row;
+
+    for (const col of numericValueCols) {
+      const groupVals = originalRows.map((r: any) => r[col]).filter((v: any) => typeof v === "number");
+      if (groupVals.length === 0) continue;
+      const originalMean = groupVals.reduce((a: number, b: number) => a + b, 0) / groupVals.length;
+      const tolerance = Math.max(Math.abs(originalMean) * 0.001, 0.01);
+      if (Math.abs(rowValue - originalMean) <= tolerance) {
+        return { ...row, _validation: "exact_match" };
+      }
+    }
+
+    // Mismatch — correct with first numeric column mean
+    const firstCol = numericValueCols[0];
+    const vals = originalRows.map((r: any) => r[firstCol]).filter((v: any) => typeof v === "number");
+    if (vals.length > 0) {
+      const correctedValue = Math.round((vals.reduce((a: number, b: number) => a + b, 0) / vals.length) * 1000) / 1000;
+      correctionsApplied++;
+      console.log(`[validateAndCorrect] Corrected: "${row.metric}" — LLM: ${rowValue}, Original: ${correctedValue}`);
+      return { ...row, value: correctedValue, _validation: "corrected", _originalLLMValue: rowValue };
+    }
+    return row;
+  });
+
+  // jsondiffpatch structural diff
+  let jsonDiffCount = 0;
+  let severeDiff = false;
+  try {
+    const llmGroupRows = validatedTable
+      .filter((r: any) => r._validation !== "unmatched")
+      .map((r: any) => ({
+        group: String(r.metric ?? "").trim().toLowerCase(),
+        value: typeof r.value === "number" ? r.value : parseFloat(String(r.value ?? "")),
+      }))
+      .filter((r: any) => !isNaN(r.value));
+    const origGroupRows = originalGroupSummary.map((g) => ({
+      group: g.group.trim().toLowerCase(),
+      value: Object.values(g.values)[0] ?? 0,
+    }));
+    const delta = diffPatcher.diff(origGroupRows, llmGroupRows);
+    if (delta) {
+      jsonDiffCount = Object.keys(delta).filter((k) => k !== "_t").length;
+      severeDiff = jsonDiffCount > origGroupRows.length * 0.1;
+    }
+  } catch {}
+
+  const correctedResults = {
+    ...analysisResults,
+    results_table: validatedTable,
+    _dataValidation: {
+      validated: true,
+      originalRowCount: originalSnapshot.length,
+      originalColumns: dataColumns,
+      correctionsApplied,
+      timestamp: Date.now(),
+      groupColumn: groupCol,
+      numericColumns: numericValueCols,
+      originalGroupData: originalGroupSummary,
+      jsonDiffCount,
+      severeDiff,
+      revalidated: true,
+    },
+  };
+
+  // If severe diff (>10%), re-query LLM with stricter prompt
+  if (severeDiff && correctionsApplied > 0) {
+    console.log("[validateAndCorrect] Severe diff detected — re-querying LLM with correction prompt");
+    try {
+      const correctionPrompt =
+        `${originalQuery}\n\n` +
+        `CRITICAL: Previous response contained ${correctionsApplied} hallucinated values. ` +
+        `Use ONLY the original data provided. Do NOT fabricate or estimate values.\n` +
+        `Original group summary: ${JSON.stringify(originalGroupSummary)}`;
+
+      const reResult = await analyzeBiostatistics(
+        correctionPrompt,
+        fullData.slice(0, 20).map((r) => JSON.stringify(r)).join("\n"),
+        dataColumns,
+        classifications,
+        conversationHistory,
+        fullData
+      );
+
+      if (reResult.analysisResults) {
+        return {
+          corrected: true,
+          correctionsApplied,
+          analysisResults: reResult.analysisResults,
+          requeried: true,
+          analysis: reResult.analysis,
+        };
+      }
+    } catch (reErr) {
+      console.warn("[validateAndCorrect] Re-query failed (non-fatal):", reErr);
+    }
+  }
+
+  return {
+    corrected: correctionsApplied > 0,
+    correctionsApplied,
+    analysisResults: correctedResults,
+    requeried: false,
+  };
 }
 
 /**

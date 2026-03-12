@@ -67,6 +67,7 @@ export type InvokeParams = {
   output_schema?: OutputSchema;
   responseFormat?: ResponseFormat;
   response_format?: ResponseFormat;
+  temperature?: number;
 };
 
 export type ToolCall = {
@@ -387,7 +388,7 @@ function fromAnthropicResponse(raw: any): InvokeResult {
 }
 
 async function invokeAnthropicLLM(params: InvokeParams): Promise<InvokeResult> {
-  const { messages, tools, toolChoice, tool_choice, maxTokens, max_tokens } = params;
+  const { messages, tools, toolChoice, tool_choice, maxTokens, max_tokens, temperature } = params;
 
   const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
 
@@ -398,6 +399,7 @@ async function invokeAnthropicLLM(params: InvokeParams): Promise<InvokeResult> {
   };
 
   if (system) payload.system = system;
+  if (typeof temperature === "number") payload.temperature = temperature;
 
   if (tools && tools.length > 0) {
     payload.tools = toAnthropicTools(tools);
@@ -452,6 +454,7 @@ async function invokeOpenAICompatibleLLM(params: InvokeParams): Promise<InvokeRe
     output_schema,
     responseFormat,
     response_format,
+    temperature,
   } = params;
 
   const resolvedUrl = resolveApiUrl();
@@ -466,6 +469,8 @@ async function invokeOpenAICompatibleLLM(params: InvokeParams): Promise<InvokeRe
     model,
     messages: messages.map(normalizeMessage),
   };
+
+  if (typeof temperature === "number") payload.temperature = temperature;
 
   if (tools && tools.length > 0) payload.tools = tools;
 

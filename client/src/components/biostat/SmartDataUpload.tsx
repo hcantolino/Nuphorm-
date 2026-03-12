@@ -163,7 +163,7 @@ function IssueCard({
             <div className="flex items-center gap-1">
               <div className="w-16 h-1.5 rounded-full bg-gray-200 overflow-hidden">
                 <div
-                  className={cn('h-full rounded-full', conf >= 80 ? 'bg-emerald-500' : conf >= 60 ? 'bg-yellow-400' : 'bg-red-400')}
+                  className={cn('h-full rounded-full', conf >= 80 ? 'bg-blue-500' : conf >= 60 ? 'bg-yellow-400' : 'bg-red-400')}
                   style={{ width: `${conf}%` }}
                 />
               </div>
@@ -188,8 +188,8 @@ function IssueCard({
           )}
           {issue.gcp_note && (
             <div className="flex items-start gap-1.5 mt-1">
-              <ShieldCheck className="w-3 h-3 text-emerald-600 flex-shrink-0 mt-0.5" />
-              <p className="text-[10px] text-emerald-700">{issue.gcp_note}</p>
+              <ShieldCheck className="w-3 h-3 text-blue-600 flex-shrink-0 mt-0.5" />
+              <p className="text-[10px] text-blue-700">{issue.gcp_note}</p>
             </div>
           )}
           {issue.rows_affected.length > 0 && (
@@ -253,7 +253,7 @@ function DiffGrid({
                     {changed ? (
                       <div className="space-y-0.5">
                         <span className="line-through text-red-400">{beforeVal}</span>
-                        <span className="text-emerald-700 font-medium block">{afterVal}</span>
+                        <span className="text-blue-700 font-medium block">{afterVal}</span>
                       </div>
                     ) : (
                       <span>{beforeVal}</span>
@@ -536,7 +536,7 @@ export default function SmartDataUpload({ onDataReady }: SmartDataUploadProps) {
               'GxP audit trail',
               'Per-fix approval',
             ].map((b) => (
-              <span key={b} className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">
+              <span key={b} className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
                 {b}
               </span>
             ))}
@@ -563,7 +563,7 @@ export default function SmartDataUpload({ onDataReady }: SmartDataUploadProps) {
           <p className="text-[10px] text-gray-400">
             {result.shape[0].toLocaleString()} rows × {result.shape[1]} cols
             {' · '}
-            <span className={cn(totalIssues > 0 ? 'text-orange-600 font-medium' : 'text-emerald-600')}>
+            <span className={cn(totalIssues > 0 ? 'text-orange-600 font-medium' : 'text-blue-600')}>
               {totalIssues} issue{totalIssues !== 1 ? 's' : ''}
             </span>
             {critCount > 0 && <span className="text-red-600 font-semibold ml-1">({critCount} critical)</span>}
@@ -580,9 +580,9 @@ export default function SmartDataUpload({ onDataReady }: SmartDataUploadProps) {
 
       {/* No issues */}
       {totalIssues === 0 && (
-        <div className="flex items-center gap-2 px-3 py-3 rounded-lg bg-emerald-50 border border-emerald-100">
-          <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-          <p className="text-emerald-700 font-medium">No data quality issues detected</p>
+        <div className="flex items-center gap-2 px-3 py-3 rounded-lg bg-blue-50 border border-blue-100">
+          <CheckCircle2 className="w-4 h-4 text-blue-500 flex-shrink-0" />
+          <p className="text-blue-700 font-medium">No data quality issues detected</p>
         </div>
       )}
 
@@ -665,7 +665,7 @@ export default function SmartDataUpload({ onDataReady }: SmartDataUploadProps) {
       {auditEntries.length > 0 && (
         <div className="space-y-1">
           <div className="flex items-center gap-1.5">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+            <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
             <span className="font-semibold text-[11px] text-gray-700">GxP Audit Trail</span>
             <span className="text-[10px] text-gray-400">({auditEntries.length} entries)</span>
           </div>
@@ -681,7 +681,7 @@ export default function SmartDataUpload({ onDataReady }: SmartDataUploadProps) {
                   <span className="text-gray-400">
                     <span className="line-through text-red-400">{String(e.before)}</span>
                     {' → '}
-                    <span className="text-emerald-600">{String(e.after)}</span>
+                    <span className="text-blue-600">{String(e.after)}</span>
                   </span>
                 )}
               </div>
@@ -709,7 +709,7 @@ export default function SmartDataUpload({ onDataReady }: SmartDataUploadProps) {
         {phase === 'done' && (
           <button
             onClick={handleUseInAnalysis}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors"
           >
             <Sparkles className="w-3 h-3" />
             Use in Analysis

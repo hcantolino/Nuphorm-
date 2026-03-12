@@ -103,6 +103,12 @@ interface AIPanelState {
   activeResultIdByTab: Record<string, string | null>;
   /** Per-tab visualization customizations */
   customizationsByTab: Record<string, TabCustomizations>;
+  /** Currently selected (highlighted) graph result ID for graph-edit mode */
+  selectedGraphId: string | null;
+  /** Pending edit action text from quick-action buttons — auto-sent by chat */
+  pendingEditAction: string | null;
+  /** Pending content to pre-fill in chat input — set by "Add to Chat" buttons */
+  pendingChatContent: string | null;
 
   // Actions — all scoped to a tabId
   setPanelResult: (
@@ -118,8 +124,20 @@ interface AIPanelState {
     newValue: string
   ) => void;
   clearResults: (tabId: string) => void;
+  /** Update an existing result in-place (for graph edits). */
+  updatePanelResult: (tabId: string, resultId: string, patch: Partial<Pick<PanelResult, 'analysisResults' | 'chartConfig' | 'graphTitle' | 'analysis'>>) => void;
   /** Called when a tab is closed — frees all stored results for that tab. */
   removeTab: (tabId: string) => void;
+
+  // Graph selection for edit mode
+  setSelectedGraph: (resultId: string | null) => void;
+  clearSelectedGraph: () => void;
+  /** Queue a graph edit action — auto-selects the graph and sets the edit text */
+  queueGraphEdit: (resultId: string, actionText: string) => void;
+  consumePendingEdit: () => string | null;
+  /** Queue content to pre-fill in the chat input (Add to Chat feature) */
+  addToChat: (content: string) => void;
+  consumePendingChat: () => string | null;
 
   // Customization actions
   setCustomization: <K extends keyof TabCustomizations>(
@@ -139,6 +157,9 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
   resultsByTab: {},
   activeResultIdByTab: {},
   customizationsByTab: {},
+  selectedGraphId: null,
+  pendingEditAction: null,
+  pendingChatContent: null,
 
   setPanelResult: (tabId, result) => {
     const id = `result-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -198,6 +219,39 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
     }));
   },
 
+  updatePanelResult: (tabId, resultId, patch) => {
+    set((state) => ({
+      resultsByTab: {
+        ...state.resultsByTab,
+        [tabId]: (state.resultsByTab[tabId] ?? []).map((r) => {
+          if (r.id !== resultId) return r;
+          // Deep-merge analysisResults so partial AI edit responses don't
+          // wipe fields like analysis_type, results_table, or chart_data.
+          const mergedAnalysis = patch.analysisResults
+            ? {
+                ...(r.analysisResults ?? {}),
+                ...patch.analysisResults,
+                // Deep-merge chart_data: keep original datasets/labels/type
+                // and overlay the AI's modifications on top.
+                chart_data: patch.analysisResults.chart_data
+                  ? {
+                      ...(r.analysisResults?.chart_data ?? {}),
+                      ...patch.analysisResults.chart_data,
+                    }
+                  : r.analysisResults?.chart_data,
+              }
+            : r.analysisResults;
+          return {
+            ...r,
+            ...patch,
+            analysisResults: mergedAnalysis,
+            timestamp: Date.now(),
+          };
+        }),
+      },
+    }));
+  },
+
   removeTab: (tabId) => {
     set((state) => {
       const { [tabId]: _r, ...restResults } = state.resultsByTab;
@@ -209,6 +263,34 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
         customizationsByTab: restCustom,
       };
     });
+  },
+
+  setSelectedGraph: (resultId) => {
+    set({ selectedGraphId: resultId });
+  },
+
+  clearSelectedGraph: () => {
+    set({ selectedGraphId: null, pendingEditAction: null });
+  },
+
+  queueGraphEdit: (resultId, actionText) => {
+    set({ selectedGraphId: resultId, pendingEditAction: actionText });
+  },
+
+  consumePendingEdit: () => {
+    const action = get().pendingEditAction;
+    if (action) set({ pendingEditAction: null });
+    return action;
+  },
+
+  addToChat: (content) => {
+    set({ pendingChatContent: content });
+  },
+
+  consumePendingChat: () => {
+    const content = get().pendingChatContent;
+    if (content) set({ pendingChatContent: null });
+    return content;
   },
 
   setCustomization: (tabId, key, value) => {
