@@ -1515,14 +1515,32 @@ export default function DataUploaded() {
 
   // ── Handlers ──────────────────────────────────────────────────────────
 
-  const handleDelete = useCallback((id: string | number) => {
+  const removeFromUI = useCallback((id: string | number) => {
     const sid = String(id);
     setDatasets((p) => p.filter((d) => d.id !== sid));
     setSelectedDataset((p) => (p?.id === sid ? null : p));
     setSelectedFileIds((p) => { const s = new Set(p); s.delete(sid); return s; });
-    setDeleteTarget(null);
-    toast.success("File deleted");
   }, []);
+
+  const handleDelete = useCallback(async (id: string | number) => {
+    const numericId = Number(id);
+    setDeleteTarget(null);
+    if (!Number.isNaN(numericId) && numericId > 0) {
+      try {
+        await deleteFilesMutation.mutateAsync({ fileIds: [numericId] });
+        removeFromUI(id);
+        toast.success("File deleted");
+        utils.files.list.invalidate();
+      } catch (e) {
+        console.error("[Delete Error]", e);
+        toast.error("Failed to delete file. Please try again.");
+      }
+    } else {
+      // Sample/demo data — just remove from local state
+      removeFromUI(id);
+      toast.success("File deleted");
+    }
+  }, [deleteFilesMutation, removeFromUI, utils.files.list]);
 
   const handleDeleteConfirm = useCallback((id: string) => {
     const dataset = datasets.find((d) => d.id === id);
@@ -1542,15 +1560,30 @@ export default function DataUploaded() {
   const handlePreview = useCallback((d: UploadedDataset) => setPreviewFile(d), []);
 
   const handleBulkDelete = useCallback(async () => {
-    const ids = Array.from(selectedFileIds).map((id) => parseInt(id, 10));
+    const stringIds = Array.from(selectedFileIds);
+    const numericIds = stringIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n) && n > 0);
+    const sampleIds = stringIds.filter((id) => { const n = parseInt(id, 10); return Number.isNaN(n) || n <= 0; });
+    setBulkDeleteConfirm(false);
     try {
-      await deleteFilesMutation.mutateAsync({ fileIds: ids });
-      ids.forEach(handleDelete);
+      if (numericIds.length > 0) {
+        await deleteFilesMutation.mutateAsync({ fileIds: numericIds });
+      }
+      // Remove all from UI
+      stringIds.forEach(removeFromUI);
       setSelectedFileIds(new Set());
-      setBulkDeleteConfirm(false);
-      toast.success(`Deleted ${ids.length} file(s)`);
-    } catch (e) { console.error(e); }
-  }, [selectedFileIds, deleteFilesMutation, handleDelete]);
+      toast.success(`Deleted ${stringIds.length} file(s)`);
+      utils.files.list.invalidate();
+    } catch (e) {
+      console.error("[Bulk Delete Error]", e);
+      // Remove sample data that doesn't need backend
+      sampleIds.forEach(removeFromUI);
+      if (sampleIds.length > 0 && numericIds.length > 0) {
+        toast.error(`Deleted ${sampleIds.length} of ${stringIds.length} files. Some files could not be deleted.`);
+      } else {
+        toast.error("Failed to delete files. Please try again.");
+      }
+    }
+  }, [selectedFileIds, deleteFilesMutation, removeFromUI, utils.files.list]);
 
   const handleSelectFile = useCallback((id: string, sel: boolean) => {
     setSelectedFileIds((p) => { const s = new Set(p); sel ? s.add(id) : s.delete(id); return s; });

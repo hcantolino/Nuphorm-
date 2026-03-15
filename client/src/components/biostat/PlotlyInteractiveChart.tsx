@@ -428,14 +428,14 @@ function buildForestPlotTraces(
       hovertemplate: '<b>%{y}</b><br>HR: %{x:.2f}<extra></extra>',
     },
     // Reference line at x=1
-    {
+    ...(labels.length > 0 ? [{
       x: [1, 1],
       y: [labels[0], labels[labels.length - 1]],
       mode: 'lines' as const,
       line: { color: '#9ca3af', dash: 'dot' as const, width: 1.5 },
       showlegend: false,
       type: 'scatter' as const,
-    },
+    }] : []),
   ];
 
   return {
@@ -465,7 +465,7 @@ function buildVolcanoTraces(
   let logFC: number[] = [];
   let negLogP: number[] = [];
 
-  if (ds.data && Array.isArray(ds.data) && typeof ds.data[0] === 'object') {
+  if (ds.data && Array.isArray(ds.data) && ds.data.length > 0 && typeof ds.data[0] === 'object') {
     logFC = ds.data.map((d: any) => d.x ?? 0);
     negLogP = ds.data.map((d: any) => d.y ?? 0);
   } else {
@@ -473,7 +473,7 @@ function buildVolcanoTraces(
     negLogP = ds.data ?? [];
   }
 
-  const sig = logFC.map((fc, i) => Math.abs(fc) > 2 && negLogP[i] > -Math.log10(0.05));
+  const sig = logFC.map((fc: number, i: number) => Math.abs(fc) > 2 && (negLogP[i] ?? 0) > -Math.log10(0.05));
 
   const plotData: Plotly.Data[] = [{
     x: logFC,
@@ -520,7 +520,7 @@ function buildScatterTraces(
     let xVals: number[] = [];
     let yVals: number[] = [];
 
-    if (ds.data && Array.isArray(ds.data) && typeof ds.data[0] === 'object') {
+    if (ds.data && Array.isArray(ds.data) && ds.data.length > 0 && typeof ds.data[0] === 'object') {
       xVals = ds.data.map((d: any) => d.x ?? 0);
       yVals = ds.data.map((d: any) => d.y ?? 0);
     } else {
@@ -819,6 +819,11 @@ export default function PlotlyInteractiveChart({
   const { plotData, layout } = useMemo(() => {
     const mode = config.mode ?? 'auto';
     const chartData = config.chartData;
+
+    // Guard: if chartData is missing or empty, return empty traces
+    if (!chartData || (typeof chartData === 'object' && !chartData.datasets && !chartData.labels && !chartData.z)) {
+      return { plotData: [] as Plotly.Data[], layout: { ...LAYOUT_BASE } };
+    }
 
     // ── Resolve pharma_type for advanced charts ───────────────────────
     const pharmaType = resolvePharmaType(chartData);

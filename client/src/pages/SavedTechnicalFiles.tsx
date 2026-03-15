@@ -148,9 +148,10 @@ function getFolderType(raw: any): FolderType {
 
 function matchesViewFilter(raw: any, vf: ViewFilter): boolean {
   if (vf === 'all') return true;
-  const ms: string[] = Array.isArray(raw.measurements) ? raw.measurements : [];
-  const isProj = ms.includes('foldertype:project');
-  if (vf === 'projects') return isProj;
+  // "Projects" view shows ALL files grouped by their folder — not just those
+  // tagged with foldertype:project.  Files derive their folder from the title
+  // prefix (e.g. "Project Name / filename"), so every file belongs to a folder.
+  if (vf === 'projects') return true;
   return true;
 }
 
@@ -324,6 +325,13 @@ export default function SavedTechnicalFiles() {
 
   const tree       = useMemo(() => buildTree(rawFiles, search, viewFilter), [rawFiles, search, viewFilter]);
   const folderKeys = useMemo(() => Array.from(tree.keys()).sort(), [tree]);
+
+  // Stable project/folder count — always derived from ALL files (not filtered by viewFilter)
+  // so the badge never shows a stale or mismatched count.
+  const projectCount = useMemo(() => {
+    const allTree = buildTree(rawFiles, search, 'all');
+    return allTree.size;
+  }, [rawFiles, search]);
 
   // Flat list of all files for "All Files" tab — sorted by date descending
   const allFlatFiles = useMemo(() => {
@@ -874,7 +882,7 @@ export default function SavedTechnicalFiles() {
             <div style={{ flexShrink: 0, marginRight: 8 }}>
               <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0, lineHeight: 1.3 }}>Technical Files</h1>
               <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
-                {rawFiles.length} file{rawFiles.length !== 1 ? 's' : ''} across {folderKeys.length} folder{folderKeys.length !== 1 ? 's' : ''}
+                {rawFiles.length} file{rawFiles.length !== 1 ? 's' : ''} across {projectCount} folder{projectCount !== 1 ? 's' : ''}
               </p>
             </div>
 
@@ -975,7 +983,7 @@ export default function SavedTechnicalFiles() {
         <div style={{ maxWidth: 1440, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', borderTop: '1px solid #f3f4f6' }}>
           {([
             { key: 'all' as ViewFilter, label: 'All Files', count: allFlatFiles.length },
-            { key: 'projects' as ViewFilter, label: 'Projects', count: folderKeys.length },
+            { key: 'projects' as ViewFilter, label: 'Projects', count: projectCount },
           ]).map(({ key, label, count }) => {
             const active = viewFilter === key;
             return (
@@ -1825,12 +1833,41 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
   const [copied, setCopied] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const exportRef = useRef<HTMLDivElement>(null);
+  const isScrollingRef = useRef(false);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Navigate to a specific page — used by thumbnails, arrows, and keyboard
+  const goToPage = useCallback((pageIndex: number) => {
+    const clamped = Math.max(0, Math.min(pageIndex, pages.length - 1));
+    setActivePage(clamped);
+    // Prevent scroll-sync from fighting with programmatic scroll
+    isScrollingRef.current = true;
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => { isScrollingRef.current = false; }, 800);
+    // Scroll main content to the target page
+    const container = contentRef.current;
+    const el = pageRefs.current[clamped];
+    if (container && el) {
+      container.scrollTo({ top: el.offsetTop - container.offsetTop, behavior: 'smooth' });
+    }
+    // Scroll thumbnail sidebar so active thumb is visible
+    const thumb = thumbRefs.current[clamped];
+    if (thumb) thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [pages.length]);
 
   useEffect(() => { if (!exportOpen) return; const h = (e: MouseEvent) => { if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false); }; document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h); }, [exportOpen]);
-  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); if (e.key === 'PageDown' || (e.key === 'ArrowDown' && e.altKey)) { e.preventDefault(); setActivePage(p => Math.min(p + 1, pages.length - 1)); } if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.altKey)) { e.preventDefault(); setActivePage(p => Math.max(p - 1, 0)); } }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose, pages.length]);
-  useEffect(() => { const el = pageRefs.current[activePage]; if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [activePage]);
-  useEffect(() => { const container = contentRef.current; if (!container) return; const h = () => { const scrollTop = container.scrollTop; let current = 0; for (let i = 0; i < pageRefs.current.length; i++) { const el = pageRefs.current[i]; if (el && el.offsetTop - container.offsetTop <= scrollTop + 100) current = i; } setActivePage(current); }; container.addEventListener('scroll', h, { passive: true }); return () => container.removeEventListener('scroll', h); }, [pages.length]);
+
+  // Keyboard navigation — read activePage from ref to avoid stale closures
+  const activePageRef = useRef(activePage);
+  activePageRef.current = activePage;
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { onClose(); return; } if (e.key === 'PageDown' || e.key === 'ArrowDown') { e.preventDefault(); goToPage(activePageRef.current + 1); } else if (e.key === 'PageUp' || e.key === 'ArrowUp') { e.preventDefault(); goToPage(activePageRef.current - 1); } else if (e.key === 'Home') { e.preventDefault(); goToPage(0); } else if (e.key === 'End') { e.preventDefault(); goToPage(pages.length - 1); } }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [onClose, pages.length, goToPage]);
+
+  // Scroll-sync: detect which page is visible when user manually scrolls
+  useEffect(() => { const container = contentRef.current; if (!container) return; const h = () => { if (isScrollingRef.current) return; const scrollTop = container.scrollTop; let current = 0; for (let i = 0; i < pageRefs.current.length; i++) { const el = pageRefs.current[i]; if (el && el.offsetTop - container.offsetTop <= scrollTop + 100) current = i; } setActivePage(current); const thumb = thumbRefs.current[current]; if (thumb) thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }; container.addEventListener('scroll', h, { passive: true }); return () => container.removeEventListener('scroll', h); }, [pages.length]);
+
+  // Ctrl+scroll zoom
   useEffect(() => { const container = contentRef.current; if (!container) return; const h = (e: WheelEvent) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); setZoom(z => Math.max(50, Math.min(200, z + (e.deltaY < 0 ? 25 : -25)))); }; container.addEventListener('wheel', h, { passive: false }); return () => container.removeEventListener('wheel', h); }, []);
 
   const downloadFile = useCallback((fmt: 'pdf' | 'csv' | 'html') => {
@@ -1867,7 +1904,11 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 12, color: C.textSub, fontWeight: 500, whiteSpace: 'nowrap' }}>{activePage + 1} of {pages.length}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <ToolbarBtn title="Previous page" onClick={() => goToPage(activePage - 1)} disabled={activePage === 0}>{'\u2039'}</ToolbarBtn>
+            <span style={{ fontSize: 12, color: C.textSub, fontWeight: 500, whiteSpace: 'nowrap' }}>{activePage + 1} of {pages.length}</span>
+            <ToolbarBtn title="Next page" onClick={() => goToPage(activePage + 1)} disabled={activePage === pages.length - 1}>{'\u203a'}</ToolbarBtn>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 8 }}>
             <ToolbarBtn title="Zoom out" onClick={() => setZoom(z => Math.max(50, z - 25))} disabled={zoom <= 50}>{'\u2212'}</ToolbarBtn>
             <span style={{ fontSize: 11, color: C.textSub, fontWeight: 500, minWidth: 36, textAlign: 'center' }}>{zoom}%</span>
@@ -1900,7 +1941,7 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <div style={{ width: 160, flexShrink: 0, background: C.card, borderRight: `1px solid ${C.border}`, overflowY: 'auto', padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {pages.map((pageHtml, i) => (
-            <button key={i} onClick={() => setActivePage(i)} style={{ width: '100%', aspectRatio: '8.5/11', borderRadius: 4, overflow: 'hidden', cursor: 'pointer', border: i === activePage ? `2px solid ${C.blue}` : `1px solid ${C.border}`, background: C.card, position: 'relative', transition: 'border-color 0.15s', boxShadow: i === activePage ? `0 0 0 2px ${C.blueBorder}` : 'none' }}>
+            <button key={i} ref={el => { thumbRefs.current[i] = el; }} onClick={() => goToPage(i)} style={{ width: '100%', aspectRatio: '8.5/11', borderRadius: 4, overflow: 'hidden', cursor: 'pointer', border: i === activePage ? `2px solid ${C.blue}` : `1px solid ${C.border}`, background: C.card, position: 'relative', transition: 'border-color 0.15s, box-shadow 0.15s', boxShadow: i === activePage ? `0 0 0 2px ${C.blueBorder}` : 'none' }}>
               <div style={{ transform: 'scale(0.18)', transformOrigin: 'top left', width: '555%', height: '555%', pointerEvents: 'none', overflow: 'hidden' }}>
                 <div dangerouslySetInnerHTML={{ __html: pageHtml }} style={{ padding: 24, fontSize: 14, fontFamily: FONT, color: C.text }} />
               </div>

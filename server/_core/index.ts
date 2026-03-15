@@ -210,51 +210,68 @@ async function startServer() {
 
   // GET /api/demo/check-usage
   app.get("/api/demo/check-usage", (req, res) => {
+    // TODO: REMOVE BEFORE PRODUCTION — reset bypass via ?reset=true
+    if (req.query.reset === "true") {
+      res.clearCookie(DEMO_COOKIE, { path: "/" });
+      res.clearCookie(DEMO_FP_COOKIE, { path: "/" });
+      const ip = getDemoIp(req);
+      demoIpLog.delete(ip); // TODO: REMOVE BEFORE PRODUCTION
+      return res.json({ used: false, reset: true });
+    }
     const used = req.cookies?.[DEMO_COOKIE] === "true";
     res.json({ used });
   });
 
   // POST /api/demo/analyze
   app.post("/api/demo/analyze", express.json({ limit: "2mb" }), (req, res) => {
-    resetDailyIfNeeded();
-    const ip = getDemoIp(req);
+    // TODO: REMOVE BEFORE PRODUCTION — test_mode bypass skips all demo limits
+    const testMode = req.body?.test_mode === true;
 
-    // Check cookie
-    if (req.cookies?.[DEMO_COOKIE] === "true") {
-      return res.status(403).json({ error: "Demo already used" });
-    }
+    if (!testMode) { // TODO: REMOVE BEFORE PRODUCTION — conditional wrapping
+      resetDailyIfNeeded();
+      const ip = getDemoIp(req);
 
-    // Check fingerprint cookie
-    const fp = req.cookies?.[DEMO_FP_COOKIE];
-    if (fp && demoFpLog.has(fp)) {
-      return res.status(403).json({ error: "Demo already used" });
-    }
+      // Check cookie
+      if (req.cookies?.[DEMO_COOKIE] === "true") {
+        return res.status(403).json({ error: "Demo already used" });
+      }
 
-    // Check IP rate limit (1 per 24h)
-    const lastUse = demoIpLog.get(ip);
-    if (lastUse && Date.now() - lastUse < DAY_MS) {
-      return res.status(429).json({ error: "Demo limit reached. Please sign up for full access." });
-    }
+      // Check fingerprint cookie
+      const fp = req.cookies?.[DEMO_FP_COOKIE];
+      if (fp && demoFpLog.has(fp)) {
+        return res.status(403).json({ error: "Demo already used" });
+      }
 
-    // Global daily cap
-    if (demoDailyCount >= DEMO_DAILY_CAP) {
-      return res.status(503).json({ error: "Demo capacity reached for today. Please try again tomorrow or sign up for immediate access." });
-    }
+      // Check IP rate limit (1 per 24h)
+      const lastUse = demoIpLog.get(ip);
+      if (lastUse && Date.now() - lastUse < DAY_MS) {
+        return res.status(429).json({ error: "Demo limit reached. Please sign up for full access." });
+      }
+
+      // Global daily cap
+      if (demoDailyCount >= DEMO_DAILY_CAP) {
+        return res.status(503).json({ error: "Demo capacity reached for today. Please try again tomorrow or sign up for immediate access." });
+      }
+    } // TODO: REMOVE BEFORE PRODUCTION — end of test_mode bypass
 
     // All checks passed — mark as used
-    const isProduction = process.env.NODE_ENV === "production";
-    res.cookie(DEMO_COOKIE, "true", {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: "strict",
-      maxAge: 365 * DAY_MS,
-      path: "/",
-    });
+    if (!testMode) { // TODO: REMOVE BEFORE PRODUCTION — skip marking in test_mode
+      const isProduction = process.env.NODE_ENV === "production";
+      const ip = getDemoIp(req);
+      const fp = req.cookies?.[DEMO_FP_COOKIE];
+      res.cookie(DEMO_COOKIE, "true", {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: "strict",
+        maxAge: 365 * DAY_MS,
+        path: "/",
+      });
 
-    // Track IP + fingerprint + global count
-    demoIpLog.set(ip, Date.now());
-    if (fp) demoFpLog.add(fp);
-    demoDailyCount++;
+      // Track IP + fingerprint + global count
+      demoIpLog.set(ip, Date.now());
+      if (fp) demoFpLog.add(fp);
+      demoDailyCount++;
+    } // TODO: REMOVE BEFORE PRODUCTION
 
     res.json({ ok: true });
   });

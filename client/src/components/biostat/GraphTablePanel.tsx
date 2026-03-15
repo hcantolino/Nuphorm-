@@ -1924,7 +1924,7 @@ export const GraphTablePanel: React.FC = () => {
         {/* When the backend blocks a synthetic/fabricated chart, it returns an     */}
         {/* "Error" row in results_table. Show a red error card instead of chart.   */}
         {activeResult?.analysisResults?.results_table?.[0]?.metric === "Error" && (() => {
-          const errorValue = activeResult.analysisResults.results_table[0].value ?? "";
+          const errorValue = activeResult?.analysisResults?.results_table?.[0]?.value ?? "";
           const isSubjectMismatch = errorValue.includes("subject mismatch");
           return (
             <div
