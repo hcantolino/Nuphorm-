@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Lightbulb, AlignLeft, FileText, Edit3, MessageSquarePlus } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { useRegulatoryStore } from '@/stores/regulatoryStore';
@@ -76,7 +76,12 @@ interface DocumentContentPanelProps {
 }
 
 export default function DocumentContentPanel({ onCitationClick, onAddToChat }: DocumentContentPanelProps) {
-  const activeProject = useRegulatoryStore((state) => state.getActiveProject());
+  const projects = useRegulatoryStore((state) => state.projects);
+  const activeProjectId = useRegulatoryStore((state) => state.activeProjectId);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId),
+    [projects, activeProjectId]
+  );
   const updateProjectContent = useRegulatoryStore((state) => state.updateProjectContent);
 
   const [showAnnotations, setShowAnnotations] = useState(false);

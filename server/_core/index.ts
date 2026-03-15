@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import cookieParser from "cookie-parser";
 import { createServer } from "http";
 import net from "net";
 import path from "path";
@@ -81,6 +82,9 @@ async function startServer() {
     optionsSuccessStatus: 200,
   }));
   
+  // Parse cookies for all routes (needed for demo anti-abuse + session auth)
+  app.use(cookieParser());
+
   // Cookie debugging middleware — only log actual API calls, not Vite static assets
   app.use((req, _res, next) => {
     const isApi = req.path.startsWith('/api/');
@@ -160,6 +164,100 @@ async function startServer() {
   const uploadsDir = path.resolve(process.cwd(), "uploads");
   fs.mkdirSync(uploadsDir, { recursive: true });
   app.use("/uploads", express.static(uploadsDir));
+
+  // ── Beacon endpoint for reliable last-chance save on page unload ──────────
+  // sendBeacon sends a POST with Content-Type text/plain, so we parse it manually.
+  app.post("/api/regulatory-save-beacon", express.text({ type: "*/*", limit: "5mb" }), (req, res) => {
+    try {
+      const data = JSON.parse(req.body as string);
+      const stateDir = path.join(uploadsDir, ".regulatory-state");
+      fs.mkdirSync(stateDir, { recursive: true });
+      const filePath = path.join(stateDir, `project-${data.projectId}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(data.state, null, 2), "utf-8");
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      console.error("[beacon] save failed:", err);
+      res.status(500).json({ ok: false });
+    }
+  });
+
+  // ── Demo API routes ─────────────────────────────────────────────────────
+  // Anti-abuse: in-memory tracking for IP + fingerprint + global daily cap
+  const DEMO_COOKIE = "nuphorm_demo_used";
+  const DEMO_FP_COOKIE = "nuphorm_demo_fp";
+  const demoIpLog = new Map<string, number>(); // IP → timestamp
+  const demoFpLog = new Set<string>(); // fingerprint UUIDs that have been used
+  let demoDailyCount = 0;
+  let demoDayStart = Date.now();
+  const DAY_MS = 86_400_000;
+  const DEMO_DAILY_CAP = 100;
+
+  function getDemoIp(req: express.Request): string {
+    return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
+  }
+
+  function resetDailyIfNeeded() {
+    if (Date.now() - demoDayStart > DAY_MS) {
+      demoDailyCount = 0;
+      demoDayStart = Date.now();
+      // Also purge IPs older than 24h
+      const cutoff = Date.now() - DAY_MS;
+      demoIpLog.forEach((ts, ip) => {
+        if (ts < cutoff) demoIpLog.delete(ip);
+      });
+    }
+  }
+
+  // GET /api/demo/check-usage
+  app.get("/api/demo/check-usage", (req, res) => {
+    const used = req.cookies?.[DEMO_COOKIE] === "true";
+    res.json({ used });
+  });
+
+  // POST /api/demo/analyze
+  app.post("/api/demo/analyze", express.json({ limit: "2mb" }), (req, res) => {
+    resetDailyIfNeeded();
+    const ip = getDemoIp(req);
+
+    // Check cookie
+    if (req.cookies?.[DEMO_COOKIE] === "true") {
+      return res.status(403).json({ error: "Demo already used" });
+    }
+
+    // Check fingerprint cookie
+    const fp = req.cookies?.[DEMO_FP_COOKIE];
+    if (fp && demoFpLog.has(fp)) {
+      return res.status(403).json({ error: "Demo already used" });
+    }
+
+    // Check IP rate limit (1 per 24h)
+    const lastUse = demoIpLog.get(ip);
+    if (lastUse && Date.now() - lastUse < DAY_MS) {
+      return res.status(429).json({ error: "Demo limit reached. Please sign up for full access." });
+    }
+
+    // Global daily cap
+    if (demoDailyCount >= DEMO_DAILY_CAP) {
+      return res.status(503).json({ error: "Demo capacity reached for today. Please try again tomorrow or sign up for immediate access." });
+    }
+
+    // All checks passed — mark as used
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie(DEMO_COOKIE, "true", {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: "strict",
+      maxAge: 365 * DAY_MS,
+      path: "/",
+    });
+
+    // Track IP + fingerprint + global count
+    demoIpLog.set(ip, Date.now());
+    if (fp) demoFpLog.add(fp);
+    demoDailyCount++;
+
+    res.json({ ok: true });
+  });
 
   // tRPC API
   app.use(

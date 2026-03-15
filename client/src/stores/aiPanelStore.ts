@@ -7,6 +7,9 @@ export type PaletteName = 'finbox' | 'viridis' | 'pastel' | 'highContrast' | 'pu
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 export type ErrorBarType = 'std' | 'se' | 'ci95';
 export type TrendlineType = 'none' | 'linear' | 'polynomial' | 'exponential';
+export type TrendlineDashPattern = 'solid' | 'dashed' | 'dotted';
+export type DataLabelFormat = 'decimal' | 'percentage' | 'integer';
+export type ChartTheme = 'light' | 'dark';
 
 export interface TableSortConfig {
   column: 'metric' | 'value';
@@ -47,6 +50,23 @@ export interface TabCustomizations {
   showTrendlineEquation: boolean;
   showTrendlineR2: boolean;
   showDropLines: boolean;
+  // Trendline styling
+  trendlineThickness: number;
+  trendlineDashPattern: TrendlineDashPattern;
+  trendlineGlow: boolean;
+  trendlineOpacity: number;
+  showConfidenceBands: boolean;
+  // Data label formatting
+  dataLabelFormat: DataLabelFormat;
+  dataLabelDecimals: number;
+  // Axis rotation & step
+  xAxisRotation: number;
+  xAxisStepSize: number | null;
+  yAxisStepSize: number | null;
+  // Chart title (editable from panel)
+  chartTitle: string;
+  // Theme
+  chartTheme: ChartTheme;
   // Accessibility
   altText: string;
 }
@@ -80,6 +100,18 @@ export const DEFAULT_CUSTOMIZATIONS: TabCustomizations = {
   showTrendlineEquation: false,
   showTrendlineR2: false,
   showDropLines: false,
+  trendlineThickness: 2,
+  trendlineDashPattern: 'dashed',
+  trendlineGlow: false,
+  trendlineOpacity: 1,
+  showConfidenceBands: false,
+  dataLabelFormat: 'decimal',
+  dataLabelDecimals: 2,
+  xAxisRotation: 0,
+  xAxisStepSize: null,
+  yAxisStepSize: null,
+  chartTitle: '',
+  chartTheme: 'light',
   altText: '',
 };
 

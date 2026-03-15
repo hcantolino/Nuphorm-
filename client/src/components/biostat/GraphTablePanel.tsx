@@ -53,17 +53,32 @@ import { jsPDF } from "jspdf";
 import PlotlyInteractiveChart, { isSurvivalChartData, isPlotlyChartData } from "./PlotlyInteractiveChart";
 import type { PlotlyChartConfig } from "./PlotlyInteractiveChart";
 import SaveAnalysisModal from "./SaveAnalysisModal";
-import { ControlPanel, PALETTES } from "./ControlPanel";
+import { PALETTES } from "./ControlPanel";
+import { CustomizeSidebar } from "./CustomizeSidebar";
+import { DataPointsTable } from "./DataPointsTable";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
+import { Settings2 } from "lucide-react";
 
 // ─── Color resolution ────────────────────────────────────────────────────────
+
+/** Default KM/survival colors: black for Experimental, pink for Control */
+const KM_DEFAULT_COLORS = ["#0F172A", "#EC4899"];
+/** Default trendline color: dashed gray */
+const TRENDLINE_DEFAULT_COLOR = "#D1D5DB";
 
 function resolveColors(customizations: TabCustomizations): string[] {
   const palette = PALETTES[customizations.palette];
   return Array.from({ length: 6 }, (_, i) =>
     customizations.customColors[i] || palette[i % palette.length]
+  );
+}
+
+/** Resolve colors for KM/survival charts — uses black/pink defaults unless custom */
+function resolveKMColors(customizations: TabCustomizations, seriesCount: number): string[] {
+  return Array.from({ length: Math.max(seriesCount, 2) }, (_, i) =>
+    customizations.customColors[i] || KM_DEFAULT_COLORS[i] || PALETTES[customizations.palette][i % PALETTES[customizations.palette].length]
   );
 }
 
@@ -682,15 +697,103 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
+// ─── Auto-fit title component ────────────────────────────────────────────────
+
+function AutoFitTitle({ title, className }: { title: string; className?: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [fontSize, setFontSize] = useState(1.5); // rem
+
+  useEffect(() => {
+    if (!containerRef.current || !textRef.current || !title) return;
+    const measure = () => {
+      const container = containerRef.current;
+      const text = textRef.current;
+      if (!container || !text) return;
+      let size = 1.5;
+      text.style.fontSize = `${size}rem`;
+      // Scale down if text wraps to more than 2 lines
+      const lineH = parseFloat(getComputedStyle(text).lineHeight) || size * 16 * 1.3;
+      while (text.scrollHeight > lineH * 2.2 && size > 1) {
+        size -= 0.05;
+        text.style.fontSize = `${size}rem`;
+      }
+      setFontSize(size);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [title]);
+
+  return (
+    <div ref={containerRef} className={className} style={{ overflow: "hidden" }}>
+      <span
+        ref={textRef}
+        className="block font-bold leading-tight"
+        style={{
+          fontSize: `${fontSize}rem`,
+          color: "#194CFF",
+          wordBreak: "break-word",
+        }}
+      >
+        {title}
+      </span>
+    </div>
+  );
+}
+
+// ─── Data label formatter ────────────────────────────────────────────────────
+
+function formatDataLabel(value: any, customizations: TabCustomizations): string {
+  if (typeof value !== "number") return String(value ?? "");
+  switch (customizations.dataLabelFormat) {
+    case "percentage":
+      return `${(value * 100).toFixed(customizations.dataLabelDecimals)}%`;
+    case "integer":
+      return Math.round(value).toString();
+    case "decimal":
+    default:
+      return value.toFixed(customizations.dataLabelDecimals);
+  }
+}
+
+// ─── Trendline dash array helper ─────────────────────────────────────────────
+
+function getTrendlineDashArray(pattern: string): string | undefined {
+  if (pattern === "dashed") return "5 5";
+  if (pattern === "dotted") return "2 2";
+  return undefined; // solid
+}
+
+// ─── Confidence band calculator ──────────────────────────────────────────────
+
+function calcConfidenceBand(
+  points: { x: number; y: number }[],
+  reg: { slope: number; intercept: number }
+): { x: number; upper: number; lower: number }[] {
+  const n = points.length;
+  if (n < 3) return [];
+  const residuals = points.map((p) => p.y - (reg.slope * p.x + reg.intercept));
+  const se = Math.sqrt(residuals.reduce((s, r) => s + r * r, 0) / (n - 2));
+  const meanX = points.reduce((s, p) => s + p.x, 0) / n;
+  const ssX = points.reduce((s, p) => s + (p.x - meanX) ** 2, 0);
+  const t = 1.96; // ~95% CI
+
+  const xs = points.map((p) => p.x).sort((a, b) => a - b);
+  return xs.map((x) => {
+    const yHat = reg.slope * x + reg.intercept;
+    const margin = t * se * Math.sqrt(1 / n + (x - meanX) ** 2 / ssX);
+    return { x, upper: yHat + margin, lower: yHat - margin };
+  });
+}
+
 // ─── Extended chart renderer ─────────────────────────────────────────────────
 
 interface ChartProps {
   chartData: any;
   customizations: TabCustomizations;
   colors: string[];
-  // NEW: chart type requested by LLM — takes priority over user's stored customization.
-  // REMOVED: was only using customizations.chartType which defaults to "bar" even for
-  //          area/line/KM charts, so LLM-generated charts always rendered as bar.
   preferredType?: ControlChartType;
 }
 
@@ -724,19 +827,36 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
 
   if (data.length === 0) return null;
 
-  const gridStroke = customizations.showGrid ? "#e2e8f0" : "transparent";
+  const isDark = customizations.chartTheme === "dark";
+  const bgColor = isDark ? "#1e293b" : "#ffffff";
+  const textColor = isDark ? "#e2e8f0" : "#0F172A";
+  const gridStroke = customizations.showGrid
+    ? isDark ? "#334155" : "#e2e8f0"
+    : "transparent";
   const legendProps = buildLegendProps(customizations.legendPosition);
 
-  const bottomMargin = customizations.xLabel ? 36 : 20;
+  const xRotation = customizations.xAxisRotation || 0;
+  const bottomMargin = customizations.xLabel ? 36 + (xRotation > 0 ? xRotation * 0.5 : 0) : 20 + (xRotation > 0 ? xRotation * 0.5 : 0);
   const leftMargin   = customizations.yLabel ? 20 : 0;
   const sharedMargin = { top: 8, right: 16, bottom: bottomMargin, left: leftMargin };
 
   const xAxisLabel = customizations.xLabel
-    ? { value: customizations.xLabel, position: "insideBottom" as const, offset: -12, fontSize: 11, fill: "#64748b" }
+    ? { value: customizations.xLabel, position: "insideBottom" as const, offset: -12, fontSize: 11, fill: isDark ? "#94a3b8" : "#64748b" }
     : undefined;
   const yAxisLabel = customizations.yLabel
-    ? { value: customizations.yLabel, angle: -90, position: "insideLeft" as const, fontSize: 11, fill: "#64748b" }
+    ? { value: customizations.yLabel, angle: -90, position: "insideLeft" as const, fontSize: 11, fill: isDark ? "#94a3b8" : "#64748b" }
     : undefined;
+
+  const xTickProps: any = { fontSize: 11, fill: textColor };
+  if (xRotation > 0) {
+    xTickProps.angle = -xRotation;
+    xTickProps.textAnchor = "end";
+    xTickProps.dy = 5;
+  }
+
+  // Data label style with formatting
+  const labelStyle = { fontSize: 9, fill: isDark ? "#94a3b8" : "#0F172A", fontWeight: 500 };
+  const labelFormatter = (value: any) => formatDataLabel(value, customizations);
 
   // Y-axis domain: guard against 0/negative with log scale
   const yMin = customizations.yAxisMin;
@@ -822,16 +942,30 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
       trendLabel = eqParts.length > 0 ? eqParts.join("  ") : "Trend";
     }
 
+    // Confidence bands data
+    const confidenceBand = customizations.showConfidenceBands && regression
+      ? calcConfidenceBand(scatterData, regression)
+      : [];
+
     // Use ComposedChart when trendline is active
     if (regression) {
+      const trendColor = colors[1] ?? "#194CFF";
+      const dashArray = getTrendlineDashArray(customizations.trendlineDashPattern);
+      const glowFilter = customizations.trendlineGlow
+        ? `drop-shadow(0 0 4px ${trendColor}40)`
+        : undefined;
+
+      // Merge all data: scatter points + trendline + confidence bands
+      const composedData = scatterData.map((p: any) => ({ tx: p.x, ty: p.y }));
+
       return (
         <ResponsiveContainer width="100%" height={320} minHeight={280}>
-          <ComposedChart margin={sharedMargin}>
+          <ComposedChart margin={sharedMargin} style={{ backgroundColor: bgColor }}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
             <XAxis
               dataKey="tx"
               type="number"
-              tick={{ fontSize: 11 }}
+              tick={xTickProps}
               label={xAxisLabel}
               domain={xDomain}
               name="x"
@@ -839,7 +973,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
             />
             <YAxis
               type="number"
-              tick={{ fontSize: 11 }}
+              tick={{ fontSize: 11, fill: textColor }}
               label={yAxisLabel}
               domain={yDomain}
               scale={yScale}
@@ -848,9 +982,36 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
             />
             <Tooltip cursor={{ strokeDasharray: "3 3" }} />
             {legendProps && <Legend {...legendProps} />}
+            {/* Confidence bands as area */}
+            {confidenceBand.length > 0 && (
+              <Area
+                data={confidenceBand}
+                dataKey="upper"
+                type="monotone"
+                stroke="none"
+                fill={trendColor}
+                fillOpacity={0.12}
+                isAnimationActive={false}
+                legendType="none"
+                name="CI Upper"
+              />
+            )}
+            {confidenceBand.length > 0 && (
+              <Area
+                data={confidenceBand}
+                dataKey="lower"
+                type="monotone"
+                stroke="none"
+                fill={bgColor}
+                fillOpacity={1}
+                isAnimationActive={false}
+                legendType="none"
+                name="CI Lower"
+              />
+            )}
             <Scatter
               name="Data"
-              data={scatterData.map((p: any) => ({ tx: p.x, ty: p.y }))}
+              data={composedData}
               dataKey="ty"
               fill={colors[0]}
               isAnimationActive={false}
@@ -861,12 +1022,14 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
               data={trendlinePoints}
               dataKey="ty"
               dot={false}
-              stroke={colors[1] ?? "#ef4444"}
-              strokeWidth={1.5}
-              strokeDasharray="5 3"
+              stroke={trendColor}
+              strokeWidth={customizations.trendlineThickness}
+              strokeDasharray={dashArray}
+              strokeOpacity={customizations.trendlineOpacity}
               isAnimationActive={false}
               type="linear"
               legendType="line"
+              style={glowFilter ? { filter: glowFilter } : undefined}
             />
             {customizations.showDropLines &&
               scatterData.map((p: any, i: number) => (
@@ -886,12 +1049,12 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
     // Regular scatter (no trendline)
     return (
       <ResponsiveContainer width="100%" height={320} minHeight={280}>
-        <ScatterChart margin={sharedMargin}>
+        <ScatterChart margin={sharedMargin} style={{ backgroundColor: bgColor }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis
             dataKey="x"
             type="number"
-            tick={{ fontSize: 11 }}
+            tick={xTickProps}
             label={xAxisLabel}
             domain={xDomain}
             allowDataOverflow
@@ -899,7 +1062,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
           <YAxis
             dataKey="y"
             type="number"
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 11, fill: textColor }}
             label={yAxisLabel}
             domain={yDomain}
             scale={yScale}
@@ -933,11 +1096,11 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   if (type === "area") {
     return (
       <ResponsiveContainer width="100%" height={320} minHeight={280}>
-        <AreaChart data={data} margin={sharedMargin}>
+        <AreaChart data={data} margin={sharedMargin} style={{ backgroundColor: bgColor }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-          <XAxis dataKey="name" tick={{ fontSize: 11 }} interval="preserveStartEnd" label={xAxisLabel} />
+          <XAxis dataKey="name" tick={xTickProps} interval="preserveStartEnd" label={xAxisLabel} />
           <YAxis
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 11, fill: textColor }}
             label={yAxisLabel}
             domain={yDomain}
             scale={yScale}
@@ -959,7 +1122,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
               isAnimationActive={false}
             >
               {customizations.showDataLabels && (
-                <LabelList dataKey={key} position="top" style={{ fontSize: 9, fill: "#64748b" }} />
+                <LabelList dataKey={key} position="top" style={labelStyle} formatter={labelFormatter} />
               )}
             </Area>
           ))}
@@ -972,11 +1135,11 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   if (type === "line") {
     return (
       <ResponsiveContainer width="100%" height={320} minHeight={280}>
-        <LineChart data={data} margin={sharedMargin}>
+        <LineChart data={data} margin={sharedMargin} style={{ backgroundColor: bgColor }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-          <XAxis dataKey="name" tick={{ fontSize: 11 }} interval="preserveStartEnd" label={xAxisLabel} />
+          <XAxis dataKey="name" tick={xTickProps} interval="preserveStartEnd" label={xAxisLabel} />
           <YAxis
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 11, fill: textColor }}
             label={yAxisLabel}
             domain={yDomain}
             scale={yScale}
@@ -985,21 +1148,28 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
           />
           <Tooltip />
           {legendProps && <Legend {...legendProps} />}
-          {datasetKeys.map((key, i) => (
-            <Line
-              key={key}
-              type="monotone"
-              dataKey={key}
-              stroke={colors[i % colors.length]}
-              strokeWidth={customizations.strokeWidth}
-              dot={false}
-              isAnimationActive={false}
-            >
-              {customizations.showDataLabels && (
-                <LabelList dataKey={key} position="top" style={{ fontSize: 9, fill: "#64748b" }} />
-              )}
-            </Line>
-          ))}
+          {datasetKeys.map((key, i) => {
+            const lineColor = colors[i % colors.length];
+            const glowFilter = customizations.trendlineGlow && customizations.strokeWidth >= 2
+              ? `drop-shadow(0 0 4px ${lineColor}4D)`
+              : undefined;
+            return (
+              <Line
+                key={key}
+                type="monotone"
+                dataKey={key}
+                stroke={lineColor}
+                strokeWidth={customizations.strokeWidth}
+                dot={false}
+                isAnimationActive={false}
+                style={glowFilter ? { filter: glowFilter } : undefined}
+              >
+                {customizations.showDataLabels && (
+                  <LabelList dataKey={key} position="top" style={labelStyle} formatter={labelFormatter} />
+                )}
+              </Line>
+            );
+          })}
         </LineChart>
       </ResponsiveContainer>
     );
@@ -1015,11 +1185,11 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
 
   return (
     <ResponsiveContainer width="100%" height={320} minHeight={280}>
-      <BarChart data={data} margin={sharedMargin} barGap={customizations.barGap}>
+      <BarChart data={data} margin={sharedMargin} barGap={customizations.barGap} style={{ backgroundColor: bgColor }}>
         <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-        <XAxis dataKey="name" tick={{ fontSize: 11 }} label={xAxisLabel} />
+        <XAxis dataKey="name" tick={xTickProps} label={xAxisLabel} />
         <YAxis
-          tick={{ fontSize: 11 }}
+          tick={{ fontSize: 11, fill: textColor }}
           label={yAxisLabel}
           domain={yDomain}
           scale={yScale}
@@ -1037,7 +1207,7 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
             isAnimationActive={false}
           >
             {customizations.showDataLabels && (
-              <LabelList dataKey={key} position="top" style={{ fontSize: 9, fill: "#64748b" }} />
+              <LabelList dataKey={key} position="top" style={labelStyle} formatter={labelFormatter} />
             )}
           </Bar>
         ))}
@@ -1208,6 +1378,9 @@ export const GraphTablePanel: React.FC = () => {
 
   // Save modal
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+
+  // Customize sidebar toggle
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // ── Validate & Correct ──────────────────────────────────────────────────
   const currentDataset = useCurrentDatasetStore((s) => s.currentDataset);
@@ -1522,9 +1695,28 @@ export const GraphTablePanel: React.FC = () => {
   // BEFORE: if (view === "charts") { return <PharmaChartPanel … /> }
   // AFTER:  Charts tab removed — single results view always rendered below
 
+  // ── Series labels for sidebar ────────────────────────────────────────────
+  const seriesLabels = useMemo(() => {
+    if (!chartData?.datasets) return undefined;
+    return chartData.datasets.map((ds: any) => ds.label ?? "Series");
+  }, [chartData]);
+
+  // ── DataPointsTable handler — updates chart_data in store ────────────
+  const handleDataPointsChange = useCallback((updatedChartData: any) => {
+    if (!activeTabId || !activeResult) return;
+    updatePanelResult(activeTabId, activeResult.id, {
+      analysisResults: {
+        ...activeResult.analysisResults,
+        chart_data: updatedChartData,
+      },
+    });
+  }, [activeTabId, activeResult, updatePanelResult]);
+
   // ── RESULTS VIEW ────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-[#f8fafc]">
+    <div className="flex h-full overflow-hidden bg-[#f8fafc]">
+    {/* Main content area */}
+    <div className="flex flex-col flex-1 min-w-0 h-full overflow-hidden">
       {/* ── Header bar ──────────────────────────────────────────────────── */}
       {/* BEFORE: had Charts | Results view-toggle button group on the left   */}
       {/* AFTER:  single panel — title + inline pagination left, controls right */}
@@ -1572,75 +1764,113 @@ export const GraphTablePanel: React.FC = () => {
           )}
         </div>
 
-        {/* Right: Customize · Save · Clear */}
+        {/* Right: Customize · Validate & Correct · Save · Clear */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Customize control panel */}
-          <ControlPanel
-            customizations={customizations}
-            onSet={handleSet}
-            onReset={handleReset}
-            hasChartData={!!chartData}
-            seriesCount={seriesCount}
-          />
-
-          {/* Validate & Correct */}
-          <Button
-            size="sm"
-            className="h-7 gap-1.5 text-xs px-3 rounded-lg shadow-sm font-medium transition-colors"
+          {/* Customize — deep blue button that toggles the right sidebar */}
+          <button
+            onClick={() => setSidebarOpen((p) => !p)}
+            className="inline-flex items-center gap-1.5 h-7 px-4 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1"
             style={{
-              backgroundColor: "#a0aec0",
-              color: "#1a202c",
+              backgroundColor: '#194CFF',
+              borderRadius: '0.75rem',
+              padding: '0.5rem 1rem',
             }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#3B82F6'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#194CFF'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
+            aria-label="Toggle customization sidebar"
+            aria-expanded={sidebarOpen}
+          >
+            <Settings2 className="w-3.5 h-3.5" />
+            Customize
+          </button>
+
+          {/* Validate & Correct — deep blue */}
+          <button
             onClick={handleValidateAndCorrect}
             disabled={!activeResult || !currentDataset || isValidating}
+            className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{
+              backgroundColor: '#194CFF',
+              borderRadius: '0.75rem',
+            }}
+            onMouseEnter={(e) => { if (!e.currentTarget.disabled) { (e.currentTarget as HTMLElement).style.backgroundColor = '#3B82F6'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; } }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#194CFF'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
             title="Validate output against original data and correct hallucinations"
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            {isValidating ? "Validating…" : "Validate & Correct"}
-          </Button>
+            {isValidating ? "Validating\u2026" : "Validate & Correct"}
+          </button>
 
-          {/* Save */}
-          <Button
-            size="sm"
-            className="h-7 gap-1.5 text-xs px-3 bg-blue-700 hover:bg-blue-800 text-white rounded-lg shadow-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-300 focus:ring-offset-1 transition-colors"
+          {/* Save — green */}
+          <button
             onClick={() => setSaveModalOpen(true)}
             disabled={!activeResult}
+            className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-green-300 focus-visible:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{
+              backgroundColor: '#22C55E',
+              borderRadius: '0.75rem',
+            }}
+            onMouseEnter={(e) => { if (!e.currentTarget.disabled) { (e.currentTarget as HTMLElement).style.backgroundColor = '#16A34A'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; } }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#22C55E'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
             title="Save analysis to Technical Files"
           >
             <Save className="w-3.5 h-3.5" />
             Save
-          </Button>
+          </button>
 
-          {/* Clear */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 text-xs px-2 text-destructive hover:text-destructive"
+          {/* Clear — red */}
+          <button
             onClick={() => activeTabId && clearResults(activeTabId)}
+            className="inline-flex items-center gap-1.5 h-7 px-2 text-xs font-medium shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300 focus-visible:ring-offset-1"
+            style={{
+              backgroundColor: '#EF4444',
+              color: '#ffffff',
+              borderRadius: '0.75rem',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#DC2626'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EF4444'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
             title="Clear all results for this tab"
           >
             <Trash2 className="w-3.5 h-3.5" />
             Clear
-          </Button>
+          </button>
         </div>
       </div>
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Editable AI-generated title */}
-        {displayTitle && (
-          <h2
-            className="text-lg font-semibold text-[#0f172a] cursor-text outline-none hover:bg-[#eff6ff] focus:bg-[#eff6ff] rounded-lg px-2 py-1 -mx-2 transition-colors"
-            contentEditable
-            suppressContentEditableWarning
-            title="Click to edit title"
-            onBlur={(e) => {
-              const val = e.currentTarget.textContent?.trim() ?? "";
-              setTitleOverride(val || null);
-            }}
-          >
-            {displayTitle}
-          </h2>
+        {/* Auto-fit title — dynamically resizes to prevent cutoff */}
+        {(customizations.chartTitle || displayTitle) && (
+          <div className="relative group">
+            <AutoFitTitle
+              title={customizations.chartTitle || displayTitle || ""}
+              className="px-2 py-1 -mx-2 rounded-lg hover:bg-[#eff6ff] transition-colors cursor-text"
+            />
+            {/* Editable overlay on click */}
+            <div
+              className="absolute inset-0 px-2 py-1 -mx-2"
+              contentEditable
+              suppressContentEditableWarning
+              title="Click to edit title"
+              style={{ color: "transparent", caretColor: "#194CFF" }}
+              onFocus={(e) => {
+                e.currentTarget.style.color = "#194CFF";
+                e.currentTarget.style.backgroundColor = "#eff6ff";
+                e.currentTarget.style.borderRadius = "0.5rem";
+              }}
+              onBlur={(e) => {
+                const val = e.currentTarget.textContent?.trim() ?? "";
+                e.currentTarget.style.color = "transparent";
+                e.currentTarget.style.backgroundColor = "transparent";
+                if (val) {
+                  setTitleOverride(val);
+                  if (activeTabId) setCustomization(activeTabId, "chartTitle", val);
+                }
+              }}
+            >
+              {customizations.chartTitle || displayTitle}
+            </div>
+          </div>
         )}
 
         {/* Subtitle — shown for dataset_generation and any result with a subtitle */}
@@ -1826,7 +2056,7 @@ export const GraphTablePanel: React.FC = () => {
                         config={{
                           mode: (syncedChartData ?? chartData)?.pharma_type ?? 'auto',
                           chartData: syncedChartData ?? chartData,
-                          title: activeResult?.graphTitle ?? activeResult?.title ?? undefined,
+                          title: activeResult?.graphTitle ?? undefined,
                         }}
                         onPointClick={(pt) => {
                           console.log('[PlotlyChart] Point clicked:', pt);
@@ -2054,15 +2284,15 @@ export const GraphTablePanel: React.FC = () => {
             <CardContent className="px-0 pb-2">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-[#e2e8f0] bg-[#f8fafc]">
-                    <th className="text-left py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide">
+                  <tr className="border-b border-[#e2e8f0]" style={{ background: "linear-gradient(180deg, #E0F2FE 0%, #F8FAFC 100%)" }}>
+                    <th className="text-left py-2 px-4 text-xs font-bold text-[#0f172a] uppercase tracking-wide">
                       Metric
                     </th>
-                    <th className="text-right py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide">
+                    <th className="text-right py-2 px-4 text-xs font-bold text-[#0f172a] uppercase tracking-wide">
                       Value
                     </th>
                     {activeResult?.analysisResults?._dataValidation?.validated && (
-                      <th className="text-center py-2 px-4 text-xs font-semibold text-[#64748b] uppercase tracking-wide" style={{ width: 100 }}>
+                      <th className="text-center py-2 px-4 text-xs font-bold text-[#0f172a] uppercase tracking-wide" style={{ width: 100 }}>
                         Validation
                       </th>
                     )}
@@ -2155,6 +2385,17 @@ export const GraphTablePanel: React.FC = () => {
             </CardContent>
           </Card>
         )}
+
+        {/* ── Data Points Table — editable, updates chart in real-time ─── */}
+        {chartData && chartData.labels && chartData.datasets && !isNoteOnlyTable && (
+          <DataPointsTable
+            chartData={syncedChartData ?? chartData}
+            onDataChange={handleDataPointsChange}
+            xAxisLabel={customizations.xLabel || undefined}
+          />
+        )}
+
+        {/* Legacy inline data points table removed — replaced by DataPointsTable component above */}
 
         {/* Diff viewer: side-by-side original vs. generated — shown when corrections detected */}
         {activeResult?.analysisResults?._dataValidation?.validated &&
@@ -2506,6 +2747,19 @@ export const GraphTablePanel: React.FC = () => {
         resultsByTab={resultsByTab}
         projectName={projectName}
       />
+    </div>
+    {/* End of main content div */}
+
+    {/* Customize sidebar — slides in from right */}
+    <CustomizeSidebar
+      open={sidebarOpen}
+      onClose={() => setSidebarOpen(false)}
+      customizations={customizations}
+      onSet={handleSet}
+      onReset={handleReset}
+      seriesCount={seriesCount}
+      seriesLabels={seriesLabels}
+    />
     </div>
   );
 };

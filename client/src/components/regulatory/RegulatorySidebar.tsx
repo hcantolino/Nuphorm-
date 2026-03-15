@@ -20,27 +20,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { trpc } from '@/lib/trpc';
+import { useRegulatoryStore } from '@/stores/regulatoryStore';
+import type { SourceFile } from '@/stores/regulatoryStore';
 
-interface RegulatoryProject {
-  id: string;
-  name: string;
-  createdAt: Date;
-}
+// Re-export so existing imports of SourceFile from this file keep working
+export type { SourceFile };
 
-export interface SourceFile {
-  id: string;
-  name: string;
-  type: 'csv' | 'pdf' | 'xlsx';
-  size: number;
-  uploadedAt: Date;
-  /** Parsed text content — available once client-side parsing completes */
-  parsedContent?: string;
-  /** 'uploading' → 'parsing' → 'ready' → 'error' */
-  status: 'uploading' | 'parsing' | 'ready' | 'error';
-}
+/** Stable empty array — avoids `?? []` creating new refs on every render */
+const EMPTY_SOURCES: SourceFile[] = [];
 
 interface RegulatorySidebarProps {
   onProjectSelect?: (projectId: string) => void;
+  /** Called whenever sources change — passes the current project's sources */
   onSourcesChange?: (sources: SourceFile[]) => void;
   /** Optionally control collapsed state from outside */
   isCollapsed?: boolean;
@@ -51,7 +42,7 @@ const STORAGE_KEY = 'reg-sidebar-collapsed';
 // Pure Tailwind tooltip — rendered only when sidebar is collapsed
 function Tooltip({ label }: { label: string }) {
   return (
-    <span className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1.5 bg-gray-950 border border-gray-700 text-white text-xs rounded shadow-xl whitespace-nowrap z-50 hidden group-hover:block">
+    <span className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-3 px-2.5 py-1.5 bg-[#0f172a] border border-[#1e293b] text-white text-xs rounded shadow-xl whitespace-nowrap z-50 hidden group-hover:block">
       {label}
     </span>
   );
@@ -113,36 +104,36 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
       />
       {/* Dialog */}
       <div className="fixed inset-0 z-[61] flex items-center justify-center pointer-events-none">
-        <div className="pointer-events-auto bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[520px] max-h-[75vh] flex flex-col">
+        <div className="pointer-events-auto bg-white border border-[#e2e8f0] rounded-xl shadow-2xl w-[520px] max-h-[75vh] flex flex-col">
           {/* Header */}
-          <div className="px-5 py-4 border-b border-gray-800 flex items-center justify-between flex-shrink-0">
-            <h4 className="text-white font-semibold text-sm">Select Source Documents</h4>
-            <button onClick={onClose} className="text-gray-400 hover:text-white transition">
+          <div className="px-5 py-4 border-b border-[#e2e8f0] flex items-center justify-between flex-shrink-0">
+            <h4 className="text-[#0f172a] font-semibold text-sm">Select Source Documents</h4>
+            <button onClick={onClose} className="text-[#64748b] hover:text-[#0f172a] transition">
               <X className="w-4 h-4" />
             </button>
           </div>
 
           {/* Toolbar */}
-          <div className="px-4 py-3 border-b border-gray-800 flex items-center gap-3 flex-shrink-0">
+          <div className="px-4 py-3 border-b border-[#e2e8f0] flex items-center gap-3 flex-shrink-0">
             <div className="relative flex-1">
-              <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-gray-500" />
+              <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-[#9ca3af]" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search files..."
-                className="pl-8 h-9 text-xs bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
+                className="pl-8 h-9 text-xs bg-white border-[#cbd5e1] text-[#0f172a] placeholder:text-[#9ca3af]"
               />
             </div>
-            <div className="flex items-center gap-1 bg-gray-800 rounded-md p-0.5">
+            <div className="flex items-center gap-1 bg-[#f1f5f9] rounded-md p-0.5">
               <button
                 onClick={() => setView('list')}
-                className={`p-1.5 rounded ${view === 'list' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                className={`p-1.5 rounded ${view === 'list' ? 'bg-white text-[#3b82f6] shadow-sm' : 'text-[#64748b] hover:text-[#0f172a]'}`}
               >
                 <List className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={() => setView('grid')}
-                className={`p-1.5 rounded ${view === 'grid' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                className={`p-1.5 rounded ${view === 'grid' ? 'bg-white text-[#3b82f6] shadow-sm' : 'text-[#64748b] hover:text-[#0f172a]'}`}
               >
                 <LayoutGrid className="w-3.5 h-3.5" />
               </button>
@@ -152,9 +143,9 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
           {/* File list */}
           <div className="flex-1 overflow-y-auto p-4 min-h-0">
             {isLoading ? (
-              <div className="text-center text-gray-500 text-sm py-8">Loading files…</div>
+              <div className="text-center text-[#64748b] text-sm py-8">Loading files…</div>
             ) : filtered.length === 0 ? (
-              <div className="text-center text-gray-500 text-sm py-8">No files found</div>
+              <div className="text-center text-[#64748b] text-sm py-8">No files found</div>
             ) : view === 'list' ? (
               <div className="space-y-1">
                 {filtered.map((file: any) => {
@@ -165,21 +156,21 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
                       onClick={() => toggleFile(file.id)}
                       className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition ${
                         isSelected
-                          ? 'bg-blue-600/20 border border-blue-500/40'
-                          : 'bg-gray-800 hover:bg-gray-750 border border-transparent'
+                          ? 'bg-[#eff6ff] border border-[#bfdbfe]'
+                          : 'bg-[#f8fafc] hover:bg-[#eff6ff] border border-transparent'
                       }`}
                     >
                       <div
                         className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition ${
-                          isSelected ? 'bg-blue-600 border-blue-600' : 'border-gray-600'
+                          isSelected ? 'bg-[#3b82f6] border-[#3b82f6]' : 'border-[#cbd5e1]'
                         }`}
                       >
-                        {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                        {isSelected && <Check className="w-2.5 h-2.5 text-[#0f172a]" />}
                       </div>
-                      <FileText className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                      <FileText className="w-4 h-4 text-[#3b82f6] flex-shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium text-white truncate">{file.name}</p>
-                        <p className="text-xs text-gray-500">{file.size} · {file.uploadDate}</p>
+                        <p className="text-xs font-medium text-[#0f172a] truncate">{file.name}</p>
+                        <p className="text-xs text-[#64748b]">{file.size} · {file.uploadDate}</p>
                       </div>
                     </div>
                   );
@@ -195,22 +186,22 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
                       onClick={() => toggleFile(file.id)}
                       className={`p-3 rounded-lg cursor-pointer transition border ${
                         isSelected
-                          ? 'bg-blue-600/20 border-blue-500/40'
-                          : 'bg-gray-800 border-transparent hover:border-gray-700'
+                          ? 'bg-[#eff6ff] border-[#bfdbfe]'
+                          : 'bg-[#f8fafc] border-transparent hover:border-[#e2e8f0]'
                       }`}
                     >
                       <div className="flex items-start justify-between mb-2">
-                        <FileText className="w-5 h-5 text-blue-400" />
+                        <FileText className="w-5 h-5 text-[#3b82f6]" />
                         <div
                           className={`w-4 h-4 rounded border flex items-center justify-center ${
-                            isSelected ? 'bg-blue-600 border-blue-600' : 'border-gray-600'
+                            isSelected ? 'bg-[#3b82f6] border-[#3b82f6]' : 'border-[#cbd5e1]'
                           }`}
                         >
-                          {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                          {isSelected && <Check className="w-2.5 h-2.5 text-[#0f172a]" />}
                         </div>
                       </div>
-                      <p className="text-xs font-medium text-white truncate">{file.name}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">{file.size}</p>
+                      <p className="text-xs font-medium text-[#0f172a] truncate">{file.name}</p>
+                      <p className="text-xs text-[#64748b] mt-0.5">{file.size}</p>
                     </div>
                   );
                 })}
@@ -219,8 +210,8 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
           </div>
 
           {/* Footer */}
-          <div className="px-5 py-4 border-t border-gray-800 flex items-center justify-between flex-shrink-0">
-            <span className="text-xs text-gray-500">
+          <div className="px-5 py-4 border-t border-[#e2e8f0] flex items-center justify-between flex-shrink-0">
+            <span className="text-xs text-[#64748b]">
               {localSelected.size} file{localSelected.size !== 1 ? 's' : ''} selected
             </span>
             <div className="flex items-center gap-2">
@@ -228,7 +219,7 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
                 variant="ghost"
                 size="sm"
                 onClick={onClose}
-                className="text-gray-400 hover:text-white"
+                className="text-[#64748b] hover:text-[#0f172a]"
               >
                 Cancel
               </Button>
@@ -236,7 +227,7 @@ function FileRepositoryDialog({ open, onClose, selectedIds, onAttach }: FileRepo
                 size="sm"
                 onClick={handleAttach}
                 disabled={localSelected.size === 0}
-                className="bg-blue-600 hover:bg-blue-700 text-white"
+                className="bg-[#3b82f6] hover:bg-[#2563eb] text-white"
               >
                 Attach Selected ({localSelected.size})
               </Button>
@@ -287,15 +278,23 @@ export default function RegulatorySidebar({
     return () => window.removeEventListener('keydown', handler);
   }, [toggle]);
 
-  // ── Project state ──────────────────────────────────────────────────────────
-  const [projects, setProjects] = useState<RegulatoryProject[]>([
-    { id: '1', name: '510k Submission', createdAt: new Date() },
-    { id: '2', name: 'PMA Application', createdAt: new Date() },
-  ]);
-  const [selectedProject, setSelectedProject] = useState<string>('1');
+  // ── Zustand store — projects, active selection, and per-project sources ──
+  const storeProjects = useRegulatoryStore((s) => s.projects);
+  const storeActiveId = useRegulatoryStore((s) => s.activeProjectId) ?? '1';
+  const storeCreateProject = useRegulatoryStore((s) => s.createProject);
+  const storeDeleteProject = useRegulatoryStore((s) => s.deleteProject);
+  const storeSetActive = useRegulatoryStore((s) => s.setActiveProject);
+  const getProjectSources = useRegulatoryStore((s) => s.getProjectSources);
+  const setProjectSources = useRegulatoryStore((s) => s.setProjectSources);
+  const updateProjectSource = useRegulatoryStore((s) => s.updateProjectSource);
+  const removeProjectSource = useRegulatoryStore((s) => s.removeProjectSource);
+
+  // Derive current sources from the store (re-renders automatically)
+  const sources = useRegulatoryStore((s) => s.sourcesByProject[storeActiveId] ?? EMPTY_SOURCES);
+
+  // ── Project state (backed by store, no local state needed) ────────────────
   const [searchQuery, setSearchQuery] = useState('');
-  const [sources, setSources] = useState<SourceFile[]>([]);
-  const [dragActive, setDragActive] = useState(false);
+  const [modalDragActive, setModalDragActive] = useState(false);
 
   // ── Settings dialog state ─────────────────────────────────────────────────
   const [showSettings, setShowSettings] = useState(false);
@@ -370,41 +369,37 @@ export default function RegulatorySidebar({
   // ── Source docs file upload (sidebar drop zone) ────────────────────────────
   const filteredProjects = useMemo(
     () =>
-      projects.filter((p) =>
+      storeProjects.filter((p) =>
         p.name.toLowerCase().includes(searchQuery.toLowerCase())
       ),
-    [projects, searchQuery]
+    [storeProjects, searchQuery]
   );
 
   const handleProjectSelect = useCallback(
     (projectId: string) => {
-      setSelectedProject(projectId);
+      storeSetActive(projectId);
       onProjectSelect?.(projectId);
+      // Notify parent of this project's sources immediately
+      onSourcesChange?.(getProjectSources(projectId));
     },
-    [onProjectSelect]
+    [storeSetActive, onProjectSelect, onSourcesChange, getProjectSources]
   );
 
   const handleCreateProject = useCallback(() => {
-    const newProject: RegulatoryProject = {
-      id: Date.now().toString(),
-      name: `Project ${projects.length + 1}`,
-      createdAt: new Date(),
-    };
-    setProjects((prev) => [...prev, newProject]);
-  }, [projects.length]);
+    storeCreateProject(`Project ${storeProjects.length + 1}`, '');
+  }, [storeCreateProject, storeProjects.length]);
 
   const handleDeleteProject = useCallback(
     (projectId: string) => {
-      setProjects((prev) => {
-        const remaining = prev.filter((p) => p.id !== projectId);
-        if (selectedProject === projectId && remaining.length > 0) {
-          handleProjectSelect(remaining[0].id);
-        }
-        return remaining;
-      });
+      storeDeleteProject(projectId);
     },
-    [selectedProject, handleProjectSelect]
+    [storeDeleteProject]
   );
+
+  // Notify parent whenever the active project's sources change
+  useEffect(() => {
+    onSourcesChange?.(sources);
+  }, [sources, onSourcesChange]);
 
   /** Read file text content client-side (CSV/TXT as text, others as truncated base64 summary) */
   const parseFileContent = useCallback(async (file: File): Promise<string> => {
@@ -435,74 +430,49 @@ export default function RegulatorySidebar({
 
   const handleFileUpload = useCallback(
     (files: FileList) => {
+      const projectId = storeActiveId;
       const fileArray = Array.from(files);
-      // Create source entries immediately with 'uploading' status
+
+      // Add new source entries immediately with 'uploading' status
       const newSources: SourceFile[] = fileArray.map((file) => ({
         id: Date.now().toString() + Math.random().toString(36).slice(2),
         name: file.name,
-        type:
-          (file.name.split('.').pop()?.toLowerCase() as 'csv' | 'pdf' | 'xlsx') ||
-          'pdf',
+        type: (file.name.split('.').pop()?.toLowerCase() as 'csv' | 'pdf' | 'xlsx') || 'pdf',
         size: file.size,
-        uploadedAt: new Date(),
+        uploadedAt: new Date().toISOString(),
         status: 'uploading' as const,
       }));
 
-      setSources((prev) => {
-        const updated = [...prev, ...newSources];
-        onSourcesChange?.(updated);
-        return updated;
-      });
+      setProjectSources(projectId, [...getProjectSources(projectId), ...newSources]);
 
-      // Auto-parse each file in background
+      // Parse each file in the background and update the store
       fileArray.forEach(async (file, i) => {
         const sourceId = newSources[i].id;
 
-        // Mark as parsing
-        setSources((prev) => {
-          const updated = prev.map((s) =>
-            s.id === sourceId ? { ...s, status: 'parsing' as const } : s
-          );
-          onSourcesChange?.(updated);
-          return updated;
-        });
+        updateProjectSource(projectId, sourceId, { status: 'parsing' });
 
         try {
           const parsedContent = await parseFileContent(file);
-          setSources((prev) => {
-            const updated = prev.map((s) =>
-              s.id === sourceId
-                ? { ...s, parsedContent, status: 'ready' as const }
-                : s
-            );
-            onSourcesChange?.(updated);
-            return updated;
-          });
+          updateProjectSource(projectId, sourceId, { parsedContent, status: 'ready' });
         } catch {
-          setSources((prev) => {
-            const updated = prev.map((s) =>
-              s.id === sourceId ? { ...s, status: 'error' as const } : s
-            );
-            onSourcesChange?.(updated);
-            return updated;
-          });
+          updateProjectSource(projectId, sourceId, { status: 'error' });
         }
       });
     },
-    [onSourcesChange, parseFileContent]
+    [storeActiveId, getProjectSources, setProjectSources, updateProjectSource, parseFileContent]
   );
 
-  const handleDrag = useCallback((e: React.DragEvent) => {
+  const handleModalDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setDragActive(e.type === 'dragenter' || e.type === 'dragover');
+    setModalDragActive(e.type === 'dragenter' || e.type === 'dragover');
   }, []);
 
-  const handleDrop = useCallback(
+  const handleModalDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      setDragActive(false);
+      setModalDragActive(false);
       if (e.dataTransfer.files) handleFileUpload(e.dataTransfer.files);
     },
     [handleFileUpload]
@@ -510,13 +480,9 @@ export default function RegulatorySidebar({
 
   const handleDeleteSource = useCallback(
     (sourceId: string) => {
-      setSources((prev) => {
-        const updated = prev.filter((s) => s.id !== sourceId);
-        onSourcesChange?.(updated);
-        return updated;
-      });
+      removeProjectSource(storeActiveId, sourceId);
     },
-    [onSourcesChange]
+    [removeProjectSource, storeActiveId]
   );
 
   const handleSettingChange = useCallback((key: string, value: unknown) => {
@@ -531,7 +497,7 @@ export default function RegulatorySidebar({
       {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
       <aside
         className={`
-          flex-shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col
+          flex-shrink-0 bg-[#f8fafc] border-r border-[#e2e8f0] flex flex-col
           transition-all duration-300 ease-in-out
           ${collapsed ? 'w-16' : 'w-64'}
         `}
@@ -539,22 +505,22 @@ export default function RegulatorySidebar({
         {/* COLLAPSED: icon-only rows */}
         {collapsed && (
           <div className="flex flex-col">
-            <div className="group relative border-b border-gray-800">
+            <div className="group relative border-b border-[#e2e8f0]">
               <button
                 onClick={toggle}
                 aria-label="Expand sidebar"
-                className="flex items-center justify-center w-full h-11 hover:bg-gray-800 transition-colors"
+                className="flex items-center justify-center w-full h-11 hover:bg-[#e2e8f0] transition-colors"
               >
                 <FolderOpen className="w-5 h-5 text-blue-400 flex-shrink-0" />
               </button>
               <Tooltip label="Projects  (Ctrl+B)" />
             </div>
 
-            <div className="group relative border-b border-gray-800">
+            <div className="group relative border-b border-[#e2e8f0]">
               <button
                 onClick={() => setShowSettings(true)}
                 aria-label="Document Settings"
-                className="flex items-center justify-center w-full h-11 hover:bg-gray-800 transition-colors"
+                className="flex items-center justify-center w-full h-11 hover:bg-[#e2e8f0] transition-colors"
               >
                 <Settings className="w-5 h-5 text-blue-400 flex-shrink-0" />
               </button>
@@ -562,24 +528,14 @@ export default function RegulatorySidebar({
             </div>
 
             <div className="group relative">
-              <label
-                htmlFor="source-upload-collapsed"
-                className="flex items-center justify-center w-full h-11 hover:bg-gray-800 transition-colors cursor-pointer"
-                aria-label="Upload sources"
+              <button
+                onClick={() => setShowSettings(true)}
+                aria-label="Manage Sources"
+                className="flex items-center justify-center w-full h-11 hover:bg-[#e2e8f0] transition-colors"
               >
-                <Upload className="w-5 h-5 text-blue-400 flex-shrink-0" />
-                <input
-                  id="source-upload-collapsed"
-                  type="file"
-                  multiple
-                  accept=".csv,.pdf,.xlsx"
-                  onChange={(e) =>
-                    e.target.files && handleFileUpload(e.target.files)
-                  }
-                  className="hidden"
-                />
-              </label>
-              <Tooltip label="Sources" />
+                <FileText className="w-5 h-5 text-blue-400 flex-shrink-0" />
+              </button>
+              <Tooltip label="Manage Sources" />
             </div>
           </div>
         )}
@@ -590,24 +546,24 @@ export default function RegulatorySidebar({
             <button
               onClick={toggle}
               aria-label="Collapse sidebar"
-              className="w-full flex items-center gap-2 px-4 h-11 hover:bg-gray-800 transition-colors border-b border-gray-800 flex-shrink-0"
+              className="w-full flex items-center gap-2 px-4 h-11 hover:bg-[#e2e8f0] transition-colors border-b border-[#e2e8f0] flex-shrink-0"
             >
               <FolderOpen className="w-4 h-4 text-blue-400 flex-shrink-0" />
-              <span className="text-xs font-semibold text-gray-300 tracking-wide whitespace-nowrap flex-1">
+              <span className="text-xs font-semibold text-[#475569] tracking-wide whitespace-nowrap flex-1">
                 Regulatory
               </span>
-              <ChevronLeft className="w-4 h-4 text-gray-500 flex-shrink-0" />
+              <ChevronLeft className="w-4 h-4 text-[#94a3b8] flex-shrink-0" />
             </button>
 
             {/* Projects section */}
-            <div className="p-4 border-b border-gray-800 flex-shrink-0">
+            <div className="p-4 border-b border-[#e2e8f0] flex-shrink-0">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap">
+                <h3 className="text-xs font-semibold text-[#64748b] uppercase tracking-wider whitespace-nowrap">
                   Projects
                 </h3>
                 <button
                   onClick={handleCreateProject}
-                  className="p-1 hover:bg-gray-800 rounded transition flex-shrink-0"
+                  className="p-1 hover:bg-[#e2e8f0] rounded transition flex-shrink-0"
                   title="New project"
                 >
                   <Plus className="w-4 h-4 text-blue-400" />
@@ -615,13 +571,13 @@ export default function RegulatorySidebar({
               </div>
 
               <div className="mb-3 relative">
-                <Search className="w-4 h-4 absolute left-2 top-2.5 text-gray-500" />
+                <Search className="w-4 h-4 absolute left-2 top-2.5 text-[#94a3b8]" />
                 <Input
                   type="text"
                   placeholder="Search projects..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-8 h-8 text-xs bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
+                  className="pl-8 h-8 text-xs bg-[#f1f5f9] border-[#e2e8f0] text-[#0f172a] placeholder:text-[#94a3b8]"
                 />
               </div>
 
@@ -631,9 +587,9 @@ export default function RegulatorySidebar({
                     key={project.id}
                     onClick={() => handleProjectSelect(project.id)}
                     className={`group/item p-2 rounded cursor-pointer transition flex items-center justify-between ${
-                      selectedProject === project.id
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-800 hover:bg-gray-700 text-gray-300'
+                      storeActiveId === project.id
+                        ? 'bg-[#eff6ff] text-[#1d4ed8] border border-[#bfdbfe]'
+                        : 'bg-white hover:bg-[#f1f5f9] text-[#475569] border border-transparent'
                     }`}
                   >
                     <span className="text-xs font-medium truncate flex-1">
@@ -644,7 +600,7 @@ export default function RegulatorySidebar({
                         e.stopPropagation();
                         handleDeleteProject(project.id);
                       }}
-                      className="p-0.5 hover:bg-gray-600 rounded transition opacity-0 group-hover/item:opacity-100 flex-shrink-0 ml-1"
+                      className="p-0.5 hover:bg-[#e2e8f0] rounded transition opacity-0 group-hover/item:opacity-100 flex-shrink-0 ml-1"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
@@ -654,10 +610,10 @@ export default function RegulatorySidebar({
             </div>
 
             {/* Document Settings button */}
-            <div className="p-4 border-b border-gray-800 flex-shrink-0">
+            <div className="p-4 border-b border-[#e2e8f0] flex-shrink-0">
               <button
                 onClick={() => setShowSettings(true)}
-                className="w-full flex items-center gap-2 p-2 bg-gray-800 hover:bg-gray-700 rounded transition text-xs font-medium text-white whitespace-nowrap"
+                className="w-full flex items-center gap-2 p-2 bg-[#f1f5f9] hover:bg-[#dbeafe] rounded transition text-xs font-medium text-[#0f172a] whitespace-nowrap"
               >
                 <Settings className="w-4 h-4 text-blue-400 flex-shrink-0" />
                 Document Settings
@@ -666,80 +622,49 @@ export default function RegulatorySidebar({
 
             {/* Sources */}
             <div className="p-4 flex flex-col flex-1 min-h-0">
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex-shrink-0">
+              <h3 className="text-xs font-semibold text-[#64748b] uppercase tracking-wider mb-3 flex-shrink-0">
                 Sources
               </h3>
 
-              <div
-                onDragEnter={handleDrag}
-                onDragLeave={handleDrag}
-                onDragOver={handleDrag}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition flex-shrink-0 ${
-                  dragActive
-                    ? 'border-blue-500 bg-blue-500/10'
-                    : 'border-gray-700 hover:border-gray-600'
-                }`}
-              >
-                <Upload className="w-5 h-5 mx-auto mb-2 text-gray-400" />
-                <p className="text-xs text-gray-400">
-                  Drag files or{' '}
-                  <label
-                    htmlFor="source-upload"
-                    className="text-blue-400 cursor-pointer"
-                  >
-                    click
-                  </label>
-                </p>
-                <input
-                  type="file"
-                  multiple
-                  accept=".csv,.pdf,.xlsx"
-                  onChange={(e) =>
-                    e.target.files && handleFileUpload(e.target.files)
-                  }
-                  className="hidden"
-                  id="source-upload"
-                />
-              </div>
-
-              <div className="mt-3 space-y-2 overflow-y-auto flex-1 min-h-0">
-                {sources.map((source) => (
-                  <div
-                    key={source.id}
-                    className="group/src p-2 bg-gray-800 rounded flex items-center justify-between hover:bg-gray-700 transition flex-shrink-0"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium truncate text-white">
-                        {source.name}
-                      </p>
-                      <div className="flex items-center gap-1.5 mt-0.5">
-                        <p className="text-xs text-gray-500">
-                          {(source.size / 1024).toFixed(1)} KB
+              {/* Read-only source list */}
+              <div className="space-y-1.5 overflow-y-auto flex-1 min-h-0">
+                {sources.length === 0 ? (
+                  <p className="text-xs text-[#94a3b8] text-center py-4">
+                    No sources attached.<br />Use "Manage Sources" to upload.
+                  </p>
+                ) : (
+                  sources.map((source) => (
+                    <div
+                      key={source.id}
+                      className="group/src px-2.5 py-2 bg-[#f1f5f9]/60 rounded-lg flex items-center gap-2 hover:bg-[#e2e8f0] transition"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium truncate text-[#1e293b]">
+                          {source.name}
                         </p>
-                        {source.status === 'uploading' && (
-                          <span className="text-[10px] text-blue-400">Uploading...</span>
-                        )}
-                        {source.status === 'parsing' && (
-                          <span className="text-[10px] text-amber-400">Parsing...</span>
-                        )}
-                        {source.status === 'ready' && (
-                          <span className="text-[10px] text-emerald-400">Ready</span>
-                        )}
-                        {source.status === 'error' && (
-                          <span className="text-[10px] text-red-400">Error</span>
-                        )}
+                        <p className="text-[10px] text-[#94a3b8]">
+                          {(source.size / 1024).toFixed(1)} KB ·{' '}
+                          {source.status === 'uploading' && <span className="text-blue-400">Uploading…</span>}
+                          {source.status === 'parsing' && <span className="text-amber-400">Parsing…</span>}
+                          {source.status === 'ready' && <span className="text-emerald-400">Ready</span>}
+                          {source.status === 'error' && <span className="text-red-400">Error</span>}
+                        </p>
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleDeleteSource(source.id)}
-                      className="p-0.5 hover:bg-red-600 rounded transition opacity-0 group-hover/src:opacity-100 flex-shrink-0"
-                    >
-                      <X className="w-3 h-3 text-white" />
-                    </button>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
+
+              {/* Manage Sources link */}
+              <button
+                onClick={() => setShowSettings(true)}
+                className="mt-3 flex items-center gap-1.5 text-xs font-medium flex-shrink-0 group/mgr"
+                style={{ color: '#007bff' }}
+              >
+                <Upload className="w-3 h-3" />
+                <span className="group-hover/mgr:underline">Manage Sources →</span>
+              </button>
             </div>
           </div>
         )}
@@ -756,95 +681,167 @@ export default function RegulatorySidebar({
         }}
       />
 
-      {/* ── Draggable Settings Dialog ──────────────────────────────────────── */}
+      {/* ── Settings Dialog (large, centered) ────────────────────────────── */}
       {showSettings && (
         <>
-          {/* Dim overlay — click outside to close */}
+          {/* Dim overlay */}
           <div
-            className="fixed inset-0 bg-black/50 z-50"
+            className="fixed inset-0 bg-black/60 z-50"
             onClick={() => setShowSettings(false)}
           />
 
-          {/* Centering container — pointer-events-none so overlay clicks reach backdrop */}
-          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-            <Draggable
-              nodeRef={draggableNodeRef}
-              handle=".drag-handle"
-              cancel="button,input,select,label,textarea"
+          {/* Centering container */}
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6 pointer-events-none">
+            <div
+              className="pointer-events-auto rounded-2xl shadow-2xl flex flex-col"
+              style={{
+                background: '#ffffff',
+                border: '1px solid #e2e8f0',
+                width: '75vw',
+                maxWidth: '960px',
+                maxHeight: '85vh',
+              }}
             >
-              <div
-                ref={draggableNodeRef}
-                className="pointer-events-auto bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[500px] max-h-[85vh] flex flex-col"
-              >
-                {/* Drag handle / header */}
-                <div className="drag-handle cursor-move px-5 py-4 border-b border-gray-800 flex items-center justify-between rounded-t-xl flex-shrink-0 select-none">
-                  <div className="flex items-center gap-2">
-                    <GripVertical className="w-4 h-4 text-gray-500" />
-                    <h3 className="font-semibold text-white text-sm">
-                      Document Settings
-                    </h3>
-                  </div>
+                {/* Header */}
+                <div
+                  className="px-6 py-5 flex items-center justify-between rounded-t-2xl flex-shrink-0"
+                  style={{ borderBottom: '1px solid #e2e8f0' }}
+                >
+                  <h3 className="font-bold text-[#0f172a] text-base tracking-tight">
+                    Document Settings
+                  </h3>
                   <button
                     onClick={() => setShowSettings(false)}
-                    className="text-gray-400 hover:text-white transition p-0.5 rounded hover:bg-gray-700"
+                    className="text-[#64748b] hover:text-[#0f172a] transition p-1.5 rounded-lg hover:bg-[#f1f5f9]"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-5 h-5" />
                   </button>
                 </div>
 
-                {/* Scrollable body */}
-                <div className="flex-1 overflow-y-auto p-5 space-y-5 min-h-0">
+                {/* Scrollable body — two-column layout */}
+                <div className="flex-1 overflow-y-auto min-h-0">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-[#e2e8f0]">
+
+                  {/* Left column: Source Documents */}
+                  <div className="p-6 space-y-4">
 
                   {/* ── Source Documents ───────────────────────────────────── */}
                   <section>
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
+                    <label className="text-xs font-semibold uppercase tracking-widest block mb-3" style={{ color: '#9ab0d0' }}>
                       Source Documents
                     </label>
-                    {/* Selected chips */}
-                    {sourceFileNames.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-2">
-                        {sourceFileNames.map((name, i) => (
-                          <Badge
-                            key={sourceFileIds[i]}
-                            variant="secondary"
-                            className="flex items-center gap-1 bg-gray-800 text-gray-200 text-xs"
-                          >
-                            <Paperclip className="w-2.5 h-2.5" />
-                            <span className="max-w-[120px] truncate">{name}</span>
-                            <button
-                              onClick={() => {
-                                setSourceFileIds((prev) =>
-                                  prev.filter((_, idx) => idx !== i)
-                                );
-                                setSourceFileNames((prev) =>
-                                  prev.filter((_, idx) => idx !== i)
-                                );
-                              }}
-                              className="ml-0.5 hover:text-red-400 transition"
-                            >
-                              <X className="w-2.5 h-2.5" />
-                            </button>
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
+
+                    {/* Repository button */}
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => setShowFileRepo(true)}
-                      className="w-full border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white text-xs"
+                      className="w-full mb-4 text-xs font-medium"
+                      style={{
+                        background: 'transparent',
+                        border: '1px solid #007bff',
+                        color: '#007bff',
+                      }}
+                      onMouseEnter={(e) => {
+                        (e.currentTarget as HTMLButtonElement).style.background = 'rgba(0,123,255,0.12)';
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                      }}
                     >
                       <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
                       {sourceFileIds.length > 0
-                        ? `${sourceFileIds.length} file${sourceFileIds.length !== 1 ? 's' : ''} selected — change`
+                        ? `${sourceFileIds.length} file${sourceFileIds.length !== 1 ? 's' : ''} selected from repository`
                         : 'Select from Repository'}
                     </Button>
+
+                    {/* Drag-and-drop upload zone */}
+                    <label
+                      htmlFor="modal-source-upload"
+                      onDragEnter={handleModalDrag}
+                      onDragLeave={handleModalDrag}
+                      onDragOver={handleModalDrag}
+                      onDrop={handleModalDrop}
+                      className="flex flex-col items-center justify-center rounded-xl cursor-pointer transition-all"
+                      style={{
+                        border: `2px dashed ${modalDragActive ? '#00cc99' : '#007bff'}`,
+                        background: modalDragActive ? 'rgba(0,204,153,0.07)' : 'rgba(0,123,255,0.05)',
+                        minHeight: '180px',
+                        padding: '28px 20px',
+                      }}
+                    >
+                      <Upload
+                        className="w-8 h-8 mb-3"
+                        style={{ color: modalDragActive ? '#00cc99' : '#007bff' }}
+                      />
+                      <p className="text-sm font-medium text-[#0f172a] mb-1">
+                        Drag files here or click to upload
+                      </p>
+                      <p className="text-xs text-center" style={{ color: '#9ab0d0' }}>
+                        CSV, PDF, XLSX · up to 100 MB<br />
+                        Clinical data, test reports, device specs
+                      </p>
+                      <input
+                        id="modal-source-upload"
+                        type="file"
+                        multiple
+                        accept=".csv,.pdf,.xlsx,.docx"
+                        onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
+                        className="hidden"
+                      />
+                    </label>
+
+                    {/* Uploaded source file list */}
+                    {sources.length > 0 && (
+                      <div
+                        className="mt-4 rounded-xl overflow-hidden"
+                        style={{ border: '1px solid #e2e8f0' }}
+                      >
+                        {sources.map((source, idx) => (
+                          <div
+                            key={source.id}
+                            className="flex items-center gap-3 px-4 py-3 group/srow transition"
+                            style={{
+                              background: idx % 2 === 0 ? '#f8fafc' : 'transparent',
+                              borderBottom: idx < sources.length - 1 ? '1px solid #f1f5f9' : 'none',
+                            }}
+                          >
+                            <FileText className="w-4 h-4 flex-shrink-0" style={{ color: '#007bff' }} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium truncate text-[#0f172a]">{source.name}</p>
+                              <p className="text-[10px] mt-0.5" style={{ color: '#9ab0d0' }}>
+                                {(source.size / 1024).toFixed(1)} KB ·{' '}
+                                {new Date(source.uploadedAt).toLocaleDateString()} ·{' '}
+                                {source.status === 'uploading' && <span className="text-blue-400">Uploading…</span>}
+                                {source.status === 'parsing' && <span className="text-amber-400">Parsing…</span>}
+                                {source.status === 'ready' && <span style={{ color: '#00cc99' }}>Ready</span>}
+                                {source.status === 'error' && <span className="text-red-400">Error</span>}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => handleDeleteSource(source.id)}
+                              className="flex-shrink-0 p-1 rounded transition opacity-0 group-hover/srow:opacity-100"
+                              style={{ color: '#9ab0d0' }}
+                              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#ef4444'; }}
+                              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#9ab0d0'; }}
+                              title="Remove source"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </section>
+                  </div>
+
+                  {/* Right column: all other settings */}
+                  <div className="p-6 space-y-5">
 
                   {/* ── Document Template ──────────────────────────────────── */}
                   <section>
                     <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                      <label className="text-xs font-semibold uppercase tracking-widest" style={{ color: '#9ab0d0' }}>
                         Document Template
                       </label>
                       <button
@@ -870,38 +867,39 @@ export default function RegulatorySidebar({
 
                     {/* Template search */}
                     <div className="relative mb-2">
-                      <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-gray-500" />
+                      <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5" style={{ color: '#4a6480' }} />
                       <Input
                         value={templateSearch}
                         onChange={(e) => setTemplateSearch(e.target.value)}
                         placeholder="Search templates..."
-                        className="pl-8 h-8 text-xs bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
+                        className="pl-8 h-8 text-xs"
+                        style={{ background: '#f8fafc', border: '1px solid #cbd5e1', color: '#0f172a' }}
                       />
                     </div>
 
                     {/* Template list */}
                     <div className="space-y-1 max-h-36 overflow-y-auto">
-                      {/* "None" option */}
                       <div
                         onClick={() => setSelectedTemplateId(null)}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-xs ${
-                          selectedTemplateId === null
-                            ? 'bg-blue-600/20 border border-blue-500/40 text-white'
-                            : 'bg-gray-800 text-gray-400 hover:bg-gray-750 border border-transparent'
-                        }`}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-xs"
+                        style={{
+                          background: selectedTemplateId === null ? '#eff6ff' : '#f8fafc',
+                          border: selectedTemplateId === null ? '1px solid rgba(0,123,255,0.35)' : '1px solid transparent',
+                          color: selectedTemplateId === null ? '#fff' : '#9ab0d0',
+                        }}
                       >
                         <div
-                          className={`w-3.5 h-3.5 rounded-full border-2 flex-shrink-0 ${
-                            selectedTemplateId === null
-                              ? 'border-blue-500 bg-blue-500'
-                              : 'border-gray-600'
-                          }`}
+                          className="w-3.5 h-3.5 rounded-full border-2 flex-shrink-0"
+                          style={{
+                            borderColor: selectedTemplateId === null ? '#007bff' : '#cbd5e1',
+                            background: selectedTemplateId === null ? '#007bff' : 'transparent',
+                          }}
                         />
                         None (default)
                       </div>
 
                       {filteredTemplates.length === 0 && templateSearch === '' && (
-                        <p className="text-xs text-gray-600 text-center py-2">
+                        <p className="text-xs text-center py-2" style={{ color: '#4a6480' }}>
                           No templates yet — upload one above
                         </p>
                       )}
@@ -909,32 +907,31 @@ export default function RegulatorySidebar({
                       {filteredTemplates.map((template: any) => (
                         <div
                           key={template.id}
-                          className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-xs group/tmpl ${
-                            selectedTemplateId === template.id
-                              ? 'bg-blue-600/20 border border-blue-500/40 text-white'
-                              : 'bg-gray-800 text-gray-300 hover:bg-gray-750 border border-transparent'
-                          }`}
+                          className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-xs group/tmpl"
+                          style={{
+                            background: selectedTemplateId === template.id ? '#eff6ff' : '#f8fafc',
+                            border: selectedTemplateId === template.id ? '1px solid rgba(0,123,255,0.35)' : '1px solid transparent',
+                            color: selectedTemplateId === template.id ? '#fff' : '#9ab0d0',
+                          }}
                           onClick={() => setSelectedTemplateId(template.id)}
                         >
                           <div
-                            className={`w-3.5 h-3.5 rounded-full border-2 flex-shrink-0 ${
-                              selectedTemplateId === template.id
-                                ? 'border-blue-500 bg-blue-500'
-                                : 'border-gray-600'
-                            }`}
+                            className="w-3.5 h-3.5 rounded-full border-2 flex-shrink-0"
+                            style={{
+                              borderColor: selectedTemplateId === template.id ? '#007bff' : '#cbd5e1',
+                              background: selectedTemplateId === template.id ? '#007bff' : 'transparent',
+                            }}
                           />
-                          <FileText className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                          <FileText className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#007bff' }} />
                           <span className="flex-1 truncate">{template.name}</span>
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              deleteTemplateMutation.mutate({
-                                templateId: template.id,
-                              });
-                              if (selectedTemplateId === template.id)
-                                setSelectedTemplateId(null);
+                              deleteTemplateMutation.mutate({ templateId: template.id });
+                              if (selectedTemplateId === template.id) setSelectedTemplateId(null);
                             }}
-                            className="opacity-0 group-hover/tmpl:opacity-100 hover:text-red-400 transition p-0.5"
+                            className="opacity-0 group-hover/tmpl:opacity-100 transition p-0.5 hover:text-red-400"
+                            style={{ color: '#9ab0d0' }}
                           >
                             <Trash2 className="w-3 h-3" />
                           </button>
@@ -945,137 +942,92 @@ export default function RegulatorySidebar({
 
                   {/* ── Formatting ─────────────────────────────────────────── */}
                   <section className="space-y-3">
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block">
+                    <label className="text-xs font-semibold uppercase tracking-widest block" style={{ color: '#9ab0d0' }}>
                       Formatting
                     </label>
 
-                    <div>
-                      <label className="text-xs text-gray-400 block mb-1">
-                        Citation Format
-                      </label>
-                      <select
-                        value={settings.format}
-                        onChange={(e) =>
-                          handleSettingChange('format', e.target.value)
-                        }
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
-                      >
-                        <option>MLA</option>
-                        <option>APA</option>
-                        <option>Chicago</option>
-                      </select>
-                    </div>
+                    {[
+                      { label: 'Citation Format', key: 'format', options: ['MLA', 'APA', 'Chicago'] },
+                    ].map(({ label, key, options }) => (
+                      <div key={key}>
+                        <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>{label}</label>
+                        <select
+                          value={(settings as any)[key]}
+                          onChange={(e) => handleSettingChange(key, e.target.value)}
+                          className="w-full rounded px-2 py-1.5 text-sm text-[#0f172a]"
+                          style={{ background: '#f8fafc', border: '1px solid #cbd5e1' }}
+                        >
+                          {options.map((o) => <option key={o} style={{ background: '#ffffff' }}>{o}</option>)}
+                        </select>
+                      </div>
+                    ))}
 
                     <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs text-gray-400 block mb-1">
-                          Font Size
-                        </label>
-                        <select
-                          value={settings.fontSize}
-                          onChange={(e) =>
-                            handleSettingChange('fontSize', e.target.value)
-                          }
-                          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
-                        >
-                          {['10', '11', '12', '13', '14'].map((size) => (
-                            <option key={size}>{size}pt</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-xs text-gray-400 block mb-1">
-                          Font Family
-                        </label>
-                        <select
-                          value={settings.fontFamily}
-                          onChange={(e) =>
-                            handleSettingChange('fontFamily', e.target.value)
-                          }
-                          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
-                        >
-                          <option>Arial</option>
-                          <option>Times New Roman</option>
-                          <option>Calibri</option>
-                        </select>
-                      </div>
+                      {[
+                        { label: 'Font Size', key: 'fontSize', options: ['10', '11', '12', '13', '14'].map(s => `${s}pt`) },
+                        { label: 'Font Family', key: 'fontFamily', options: ['Arial', 'Times New Roman', 'Calibri'] },
+                      ].map(({ label, key, options }) => (
+                        <div key={key}>
+                          <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>{label}</label>
+                          <select
+                            value={(settings as any)[key]}
+                            onChange={(e) => handleSettingChange(key, e.target.value)}
+                            className="w-full rounded px-2 py-1.5 text-sm text-[#0f172a]"
+                            style={{ background: '#f8fafc', border: '1px solid #cbd5e1' }}
+                          >
+                            {options.map((o) => <option key={o} style={{ background: '#ffffff' }}>{o}</option>)}
+                          </select>
+                        </div>
+                      ))}
                     </div>
 
-                    <div>
-                      <label className="text-xs text-gray-400 block mb-1">
-                        Line Spacing
-                      </label>
-                      <select
-                        value={settings.lineSpacing}
-                        onChange={(e) =>
-                          handleSettingChange('lineSpacing', e.target.value)
-                        }
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
-                      >
-                        <option value="1">Single</option>
-                        <option value="1.5">1.5</option>
-                        <option value="2">Double</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-gray-400 block mb-1">
-                        Annotation Style
-                      </label>
-                      <select
-                        value={settings.annotationStyle}
-                        onChange={(e) =>
-                          handleSettingChange('annotationStyle', e.target.value)
-                        }
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
-                      >
-                        <option>MLA</option>
-                        <option>APA</option>
-                        <option>Chicago</option>
-                        <option>Custom</option>
-                      </select>
-                    </div>
+                    {[
+                      { label: 'Line Spacing', key: 'lineSpacing', options: [{ v: '1', l: 'Single' }, { v: '1.5', l: '1.5' }, { v: '2', l: 'Double' }] },
+                      { label: 'Annotation Style', key: 'annotationStyle', options: [{ v: 'MLA', l: 'MLA' }, { v: 'APA', l: 'APA' }, { v: 'Chicago', l: 'Chicago' }, { v: 'Custom', l: 'Custom' }] },
+                    ].map(({ label, key, options }) => (
+                      <div key={key}>
+                        <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>{label}</label>
+                        <select
+                          value={(settings as any)[key]}
+                          onChange={(e) => handleSettingChange(key, e.target.value)}
+                          className="w-full rounded px-2 py-1.5 text-sm text-[#0f172a]"
+                          style={{ background: '#f8fafc', border: '1px solid #cbd5e1' }}
+                        >
+                          {options.map((o) => <option key={o.v} value={o.v} style={{ background: '#ffffff' }}>{o.l}</option>)}
+                        </select>
+                      </div>
+                    ))}
                   </section>
 
                   {/* ── AI Settings ───────────────────────────────────────── */}
                   <section className="space-y-3">
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block">
+                    <label className="text-xs font-semibold uppercase tracking-widest block" style={{ color: '#9ab0d0' }}>
                       AI Settings
                     </label>
 
                     <div>
-                      <label className="text-xs text-gray-400 block mb-1">
-                        Source Restriction
-                      </label>
+                      <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>Source Restriction</label>
                       <select
                         value={settings.sourceRestriction}
-                        onChange={(e) =>
-                          handleSettingChange('sourceRestriction', e.target.value)
-                        }
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white"
+                        onChange={(e) => handleSettingChange('sourceRestriction', e.target.value)}
+                        className="w-full rounded px-2 py-1.5 text-sm text-[#0f172a]"
+                        style={{ background: '#f8fafc', border: '1px solid #cbd5e1' }}
                       >
-                        <option value="repository-only">Repository Only</option>
-                        <option value="repository-plus">
-                          Repository + Scientific Literature
-                        </option>
+                        <option value="repository-only" style={{ background: '#ffffff' }}>Repository Only</option>
+                        <option value="repository-plus" style={{ background: '#ffffff' }}>Repository + Scientific Literature</option>
                       </select>
                     </div>
 
                     <div>
-                      <label className="text-xs text-gray-400 block mb-1">
-                        AI Confidence Threshold: {settings.confidenceThreshold}%
+                      <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>
+                        AI Confidence Threshold: <span className="text-[#0f172a] font-medium">{settings.confidenceThreshold}%</span>
                       </label>
                       <input
                         type="range"
                         min="0"
                         max="100"
                         value={settings.confidenceThreshold}
-                        onChange={(e) =>
-                          handleSettingChange(
-                            'confidenceThreshold',
-                            parseInt(e.target.value)
-                          )
-                        }
+                        onChange={(e) => handleSettingChange('confidenceThreshold', parseInt(e.target.value))}
                         className="w-full accent-blue-500"
                       />
                     </div>
@@ -1085,32 +1037,34 @@ export default function RegulatorySidebar({
                         type="checkbox"
                         id="auto-annotate"
                         checked={settings.autoAnnotate}
-                        onChange={(e) =>
-                          handleSettingChange('autoAnnotate', e.target.checked)
-                        }
+                        onChange={(e) => handleSettingChange('autoAnnotate', e.target.checked)}
                         className="rounded accent-blue-500"
                       />
-                      <label
-                        htmlFor="auto-annotate"
-                        className="text-xs text-gray-400 cursor-pointer"
-                      >
+                      <label htmlFor="auto-annotate" className="text-xs cursor-pointer" style={{ color: '#9ab0d0' }}>
                         Auto-Annotate References
                       </label>
                     </div>
                   </section>
-                </div>
+                  </div>{/* end right column */}
+                  </div>{/* end two-column grid */}
+                </div>{/* end scrollable body */}
 
                 {/* Footer */}
-                <div className="px-5 py-4 border-t border-gray-800 flex-shrink-0">
-                  <Button
+                <div
+                  className="px-6 py-4 flex-shrink-0 rounded-b-2xl"
+                  style={{ borderTop: '1px solid #e2e8f0' }}
+                >
+                  <button
                     onClick={() => setShowSettings(false)}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                    className="w-full py-3 rounded-xl text-sm font-semibold text-[#0f172a] transition-colors"
+                    style={{ background: '#007bff' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#3399ff'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#007bff'; }}
                   >
                     Save Settings
-                  </Button>
+                  </button>
                 </div>
               </div>
-            </Draggable>
           </div>
         </>
       )}

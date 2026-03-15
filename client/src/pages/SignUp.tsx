@@ -26,12 +26,14 @@ function MicrosoftLogo() {
   );
 }
 
-export default function Login() {
+export default function SignUp() {
   const [, setLocation] = useLocation();
   const { isAuthenticated, loading } = useAuth();
 
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -41,28 +43,38 @@ export default function Login() {
     }
   }, [isAuthenticated, loading, setLocation]);
 
-  const handleGoogleSignIn = () => {
+  const handleGoogleSignUp = () => {
     // TODO: Implement Google OAuth
-    console.log("Google Sign-In clicked");
+    console.log("Google Sign-Up clicked");
     setLocation("/regulatory");
   };
 
-  const handleMicrosoftSignIn = () => {
+  const handleMicrosoftSignUp = () => {
     // TODO: Implement Microsoft OAuth
-    console.log("Microsoft Sign-In clicked");
+    console.log("Microsoft Sign-Up clicked");
     setLocation("/regulatory");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitting(true);
     setError("");
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setSubmitting(true);
     try {
-      // TODO: Implement email sign-in via API
-      console.log("Sign in with:", { email, password });
+      // TODO: Implement email sign-up via API
+      console.log("Sign up with:", { fullName, email, password });
       setLocation("/regulatory");
     } catch {
-      setError("Invalid email or password.");
+      setError("Failed to create account. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -77,7 +89,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center relative" style={{ fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}>
+    <div className="min-h-screen flex flex-col items-center justify-center relative py-12" style={{ fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}>
       <TechBackground />
 
       {/* NuPhorm logo above card */}
@@ -88,14 +100,14 @@ export default function Login() {
         <span className="text-[#1a2332] font-bold text-xl">NuPhorm</span>
       </div>
 
-      {/* Login card */}
+      {/* Sign up card */}
       <div
         className="relative z-10 w-full max-w-[420px] bg-white rounded-2xl"
         style={{ padding: "40px 44px 36px", boxShadow: "0 20px 60px rgba(0,0,0,0.1)" }}
       >
-        <h1 className="text-2xl font-bold text-[#1a2332] text-center mb-1">Welcome Back</h1>
+        <h1 className="text-2xl font-bold text-[#1a2332] text-center mb-1">Create Account</h1>
         <p className="text-[13.5px] text-[#7a8fa3] text-center mb-8" style={{ fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace" }}>
-          Sign in to access your analyses
+          Start building your analyses
         </p>
 
         {error && (
@@ -107,18 +119,18 @@ export default function Login() {
         {/* OAuth buttons */}
         <div className="space-y-3 mb-6">
           <button
-            onClick={handleGoogleSignIn}
+            onClick={handleGoogleSignUp}
             className="w-full h-11 flex items-center justify-center gap-3 rounded-lg bg-[#1a2332] text-white text-sm font-medium hover:bg-[#2a3a4f] transition-colors"
           >
             <GoogleLogo />
-            Sign in with Google
+            Sign up with Google
           </button>
           <button
-            onClick={handleMicrosoftSignIn}
+            onClick={handleMicrosoftSignUp}
             className="w-full h-11 flex items-center justify-center gap-3 rounded-lg bg-[#1a2332] text-white text-sm font-medium hover:bg-[#2a3a4f] transition-colors"
           >
             <MicrosoftLogo />
-            Sign in with Microsoft
+            Sign up with Microsoft
           </button>
         </div>
 
@@ -128,12 +140,23 @@ export default function Login() {
             <div className="w-full border-t border-gray-200" />
           </div>
           <div className="relative flex justify-center text-xs">
-            <span className="px-3 bg-white text-[#7a8fa3]">Or sign in with email</span>
+            <span className="px-3 bg-white text-[#7a8fa3]">Or sign up with email</span>
           </div>
         </div>
 
         {/* Email form */}
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-[#1a2332] mb-1.5">Full Name</label>
+            <input
+              type="text"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="Jane Doe"
+              className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1a2332]/20 focus:border-[#1a2332] transition-all"
+              required
+            />
+          </div>
           <div>
             <label className="block text-sm font-medium text-[#1a2332] mb-1.5">Email</label>
             <input
@@ -151,9 +174,22 @@ export default function Login() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              placeholder="Minimum 8 characters"
+              className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1a2332]/20 focus:border-[#1a2332] transition-all"
+              required
+              minLength={8}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#1a2332] mb-1.5">Confirm Password</label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="••••••••"
               className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#1a2332]/20 focus:border-[#1a2332] transition-all"
               required
+              minLength={8}
             />
           </div>
           <button
@@ -161,21 +197,21 @@ export default function Login() {
             disabled={submitting}
             className="w-full h-11 rounded-lg bg-[#1a2332] text-white text-sm font-medium hover:bg-[#2a3a4f] transition-colors disabled:opacity-50"
           >
-            {submitting ? "Signing in..." : "Sign In"}
+            {submitting ? "Creating account..." : "Create Account"}
           </button>
         </form>
 
-        {/* Switch to signup */}
+        {/* Switch to login */}
         <p className="text-center text-sm text-[#7a8fa3] mt-6">
-          Don't have an account?{" "}
-          <Link href="/signup" className="text-[#1a2332] font-semibold hover:underline">
-            Sign up
+          Already have an account?{" "}
+          <Link href="/login" className="text-[#1a2332] font-semibold hover:underline">
+            Sign in
           </Link>
         </p>
 
         {/* Terms */}
         <p className="text-center text-xs text-[#9ab0c4] mt-5">
-          By signing in you agree to our{" "}
+          By signing up you agree to our{" "}
           <a href="#" className="text-[#7a8fa3] underline">Terms of Service</a>
           {" "}and{" "}
           <a href="#" className="text-[#7a8fa3] underline">Privacy Policy</a>

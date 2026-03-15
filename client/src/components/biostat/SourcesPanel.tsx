@@ -4,12 +4,14 @@ import {
   FileText,
   ChevronDown,
   CheckCircle2,
+  Eye,
   FolderOpen,
   Layers,
   Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useCurrentDatasetStore } from '@/stores/currentDatasetStore';
+import FilePreviewModal, { type FilePreviewFile } from '@/components/FilePreviewModal';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -69,16 +71,34 @@ function SectionHeader({
   );
 }
 
-function FileRow({ file, badge }: { file: SourceFile; badge?: React.ReactNode }) {
+function FileRow({ file, badge, onPreview }: { file: SourceFile; badge?: React.ReactNode; onPreview?: () => void }) {
   const Icon = file.name.endsWith('.csv') || file.name.endsWith('.tsv')
     ? FileSpreadsheet
     : FileText;
   return (
-    <div className="flex items-center gap-2 px-3 py-1 ml-2 rounded hover:bg-accent/30">
+    <div className="flex items-center gap-2 px-3 py-1 ml-2 rounded hover:bg-accent/30 group">
       <Icon className="w-3 h-3 text-muted-foreground flex-shrink-0" />
-      <span className="text-xs truncate flex-1 min-w-0">{file.name}</span>
+      <button
+        type="button"
+        onClick={onPreview}
+        className="text-xs truncate flex-1 min-w-0 text-left hover:text-[#3b82f6] hover:underline cursor-pointer transition-colors"
+        title={`Click to preview ${file.name}`}
+      >
+        {file.name}
+      </button>
       {file.size && (
         <span className="text-[10px] text-muted-foreground flex-shrink-0">{file.size}</span>
+      )}
+      {onPreview && (
+        <button
+          type="button"
+          onClick={onPreview}
+          className="p-0.5 rounded text-muted-foreground/40 hover:text-[#3b82f6] hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"
+          aria-label={`Preview ${file.name}`}
+          title={`Preview ${file.name}`}
+        >
+          <Eye className="w-3 h-3" />
+        </button>
       )}
       {badge}
     </div>
@@ -91,10 +111,22 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
   const [projectOpen, setProjectOpen] = useState(true);
   const [tabOpen, setTabOpen] = useState(true);
   const [cleanedOpen, setCleanedOpen] = useState(true);
+  const [previewFile, setPreviewFile] = useState<FilePreviewFile | null>(null);
 
   const cleanedSources = useCurrentDatasetStore((s) => s.cleanedSources);
 
+  const openPreview = (name: string, size?: string) => {
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    let fileType: 'txt' | 'csv' | null = null;
+    if (ext === 'csv') fileType = 'csv';
+    else if (['txt', 'tsv', 'dat'].includes(ext)) fileType = 'txt';
+    else if (['xlsx', 'xls'].includes(ext)) fileType = 'csv';
+    setPreviewFile({ name, content: '', type: fileType, size });
+  };
+
   return (
+    <>
+    <FilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
     <div className={cn('flex flex-col h-full bg-background border-t border-border overflow-y-auto', className)}>
       {/* Header */}
       <div className="flex-shrink-0 px-3 py-2 border-b border-border flex items-center gap-2">
@@ -117,7 +149,7 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
             {projectFiles.length === 0 ? (
               <p className="text-[11px] text-muted-foreground px-3 py-1 ml-2 italic">No project files yet</p>
             ) : (
-              projectFiles.map((f) => <FileRow key={f.id} file={f} />)
+              projectFiles.map((f) => <FileRow key={f.id} file={f} onPreview={() => openPreview(f.name, f.size)} />)
             )}
           </div>
         )}
@@ -127,8 +159,8 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
       <div className="flex-shrink-0 border-t border-border/60">
         <SectionHeader
           icon={FileText}
-          title="Sources for This Tab"
-          subtitle="Current analysis tab only"
+          title="Tab Files"
+          subtitle="Files uploaded here are associated with this analysis tab"
           count={tabFiles.length}
           open={tabOpen}
           onToggle={() => setTabOpen((o) => !o)}
@@ -138,7 +170,7 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
             {tabFiles.length === 0 ? (
               <p className="text-[11px] text-muted-foreground px-3 py-1 ml-2 italic">No tab-specific files</p>
             ) : (
-              tabFiles.map((f) => <FileRow key={f.id} file={f} />)
+              tabFiles.map((f) => <FileRow key={f.id} file={f} onPreview={() => openPreview(f.name, f.size)} />)
             )}
           </div>
         )}
@@ -163,6 +195,7 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
                 <FileRow
                   key={cs.id}
                   file={{ id: cs.id, name: cs.filename, size: `${cs.rowCount} rows` }}
+                  onPreview={() => openPreview(cs.filename, `${cs.rowCount} rows`)}
                   badge={
                     <span className="flex items-center gap-0.5 text-[10px] text-blue-600 font-medium flex-shrink-0">
                       <CheckCircle2 className="w-3 h-3" />
@@ -176,5 +209,6 @@ export function SourcesPanel({ projectFiles = [], tabFiles = [], className }: So
         )}
       </div>
     </div>
+    </>
   );
 }

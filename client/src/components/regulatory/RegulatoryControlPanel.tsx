@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Sparkles, ChevronDown, Upload, AlertCircle, CheckCircle } from 'lucide-react';
 import { useRegulatoryStore } from '@/stores/regulatoryStore';
 import { LoadingProgressBar } from './LoadingProgressBar';
@@ -31,7 +31,12 @@ export default function RegulatoryControlPanel({
 }: {
   onDataFilesChange?: (files: string[]) => void;
 }) {
-  const activeProject = useRegulatoryStore((state) => state.getActiveProject());
+  const projects = useRegulatoryStore((state) => state.projects);
+  const activeProjectId = useRegulatoryStore((state) => state.activeProjectId);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId),
+    [projects, activeProjectId]
+  );
   const updateReferenceFormat = useRegulatoryStore((state) => state.updateReferenceFormat);
   const [aiPrompt, setAiPrompt] = useState('');
   const [selectedDocType, setSelectedDocType] = useState<string>('fda-estar');

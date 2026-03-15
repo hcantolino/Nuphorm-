@@ -12,6 +12,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  LogIn,
+  LogOut,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -49,7 +51,6 @@ const sidebarItems: SidebarItem[] = [
     icon: <Database className="w-5 h-5" />,
     href: "/data-uploaded",
   },
-  // "subscription" removed from top-level — nested under "Profile" below
   {
     id: "profile",
     label: "Profile",
@@ -75,25 +76,28 @@ interface SidebarProps {
 export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [profileExpanded, setProfileExpanded] = useState(
-    // Auto-expand if subscription is active
     activeItem === "subscription"
   );
   const { isCollapsed, setIsCollapsed } = useSidebarContext();
-  const { user } = useAuth();
-  const [location] = useLocation();
+  const { user, isAuthenticated, logout } = useAuth();
+  const [, setLocation] = useLocation();
 
   const handleCollapse = () => {
     setIsCollapsed(!isCollapsed);
   };
 
-  const handleItemClick = (itemId: string) => {
-    onItemClick?.(itemId);
+  const handleItemClick = (item: SidebarItem) => {
+    onItemClick?.(item.id);
     setIsOpen(false);
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setLocation("/");
   };
 
   const sidebarWidth = isCollapsed ? "w-20" : "w-64";
 
-  // Shared link class builder
   const linkClass = (isActive: boolean) => `
     flex items-center gap-3 px-4 py-3 rounded-lg
     transition-all duration-200 ease-in-out
@@ -110,6 +114,9 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
     `flex-shrink-0 transition-colors duration-200 ${
       isActive ? "text-[#0693e3]" : "text-[#8a9aaa] group-hover:text-[#0693e3]"
     }`;
+
+  // Get first initial for avatar
+  const userInitial = user?.name?.charAt(0)?.toUpperCase() || user?.email?.charAt(0)?.toUpperCase() || "U";
 
   return (
     <>
@@ -151,21 +158,29 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
             isCollapsed ? "px-3" : ""
           }`}
         >
-          <div
-            className={`flex items-center ${
+          <Link
+            href="/"
+            onClick={() => onItemClick?.("home")}
+            className={`flex items-center cursor-pointer group transition-all duration-200 ${
               isCollapsed ? "justify-center w-full" : "gap-3"
             }`}
+            title="Go to home page"
+            aria-label="Nuphorm home"
           >
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[#0693e3] to-[#0574c1] flex items-center justify-center flex-shrink-0">
+            <div className="w-10 h-10 rounded-full bg-[#194CFF] flex items-center justify-center flex-shrink-0 group-hover:bg-[#3B82F6] transition-colors duration-200 shadow-md">
               <span className="text-white font-bold text-lg">N</span>
             </div>
             {!isCollapsed && (
               <div className="flex flex-col">
-                <h1 className="text-white font-semibold text-sm">NuPhorm</h1>
-                <p className="text-[#8a9aaa] text-xs">Platform</p>
+                <h1 className="text-white font-bold text-[1.05rem] leading-tight group-hover:text-[#93b4ff] transition-colors duration-200">
+                  Nuphorm
+                </h1>
+                <p className="text-[#8a9aaa] text-xs group-hover:text-[#a0b0c0] transition-colors duration-200">
+                  Platform
+                </p>
               </div>
             )}
-          </div>
+          </Link>
         </div>
 
         {/* Navigation Menu */}
@@ -186,7 +201,9 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
                     <div className="flex items-center">
                       <Link
                         href={item.href}
-                        onClick={() => handleItemClick(item.id)}
+                        onClick={() => {
+                          handleItemClick(item);
+                        }}
                         className={`
                           flex-1 flex items-center gap-3 px-4 py-3 rounded-l-lg
                           transition-all duration-200 ease-in-out relative group
@@ -245,7 +262,10 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
                         <li>
                           <Link
                             href="/subscription"
-                            onClick={() => handleItemClick("subscription")}
+                            onClick={() => {
+                              onItemClick?.("subscription");
+                              setIsOpen(false);
+                            }}
                             className={`
                               flex items-center gap-3 px-3 py-2 rounded-lg
                               transition-all duration-200 relative group
@@ -282,7 +302,9 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
                 <li key={item.id}>
                   <Link
                     href={item.href}
-                    onClick={() => handleItemClick(item.id)}
+                    onClick={() => {
+                      handleItemClick(item);
+                    }}
                     className={linkClass(isActive)}
                     title={isCollapsed ? item.label : undefined}
                   >
@@ -305,7 +327,60 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
             })}
           </ul>
 
-          {/* Collapse toggle — sits immediately below the last nav item */}
+          {/* ── Sign In / User Section ── */}
+          <div className="mt-4">
+            {isAuthenticated && user ? (
+              /* Authenticated: show avatar, email, sign out */
+              <div className="space-y-2">
+                {!isCollapsed && (
+                  <div className="flex items-center gap-3 px-4 py-2">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#194CFF] to-[#0693e3] flex items-center justify-center flex-shrink-0">
+                      <span className="text-white text-xs font-bold">{userInitial}</span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-white text-xs font-medium truncate">{user.name || "User"}</p>
+                      <p className="text-[#6a7a8a] text-[10px] truncate">{user.email}</p>
+                    </div>
+                  </div>
+                )}
+                <button
+                  onClick={handleLogout}
+                  className={`
+                    flex items-center gap-3 w-full rounded-lg
+                    border border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.08)]
+                    text-[#f87171] hover:bg-[rgba(239,68,68,0.15)]
+                    transition-all duration-200
+                    ${isCollapsed ? "px-3 py-3 justify-center" : "px-4 py-2.5"}
+                  `}
+                  title={isCollapsed ? "Sign Out" : undefined}
+                >
+                  <LogOut className="w-4 h-4 flex-shrink-0" />
+                  {!isCollapsed && <span className="text-sm font-medium">Sign Out</span>}
+                </button>
+              </div>
+            ) : (
+              /* Not authenticated: show Sign In button */
+              <button
+                onClick={() => {
+                  setLocation("/login");
+                  setIsOpen(false);
+                }}
+                className={`
+                  flex items-center gap-3 w-full rounded-lg
+                  border border-[rgba(43,125,233,0.3)] bg-[rgba(43,125,233,0.08)]
+                  text-[#5aa3f0] hover:bg-[rgba(43,125,233,0.15)]
+                  transition-all duration-200
+                  ${isCollapsed ? "px-3 py-3 justify-center" : "px-4 py-2.5"}
+                `}
+                title={isCollapsed ? "Sign In" : undefined}
+              >
+                <LogIn className="w-5 h-5 flex-shrink-0" />
+                {!isCollapsed && <span className="text-sm font-medium">Sign In</span>}
+              </button>
+            )}
+          </div>
+
+          {/* Collapse toggle */}
           <button
             onClick={handleCollapse}
             className="hidden lg:flex w-full items-center justify-center mt-2 px-3 py-2 rounded-lg text-[#8a9aaa] hover:text-white hover:bg-[#1f2d3d] transition-colors duration-200"
@@ -338,7 +413,10 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
                       <li key={item.id}>
                         <Link
                           href={item.href}
-                          onClick={() => handleItemClick(item.id)}
+                          onClick={() => {
+                            onItemClick?.(item.id);
+                            setIsOpen(false);
+                          }}
                           className={linkClass(isActive)}
                           title={isCollapsed ? item.label : undefined}
                         >
@@ -367,7 +445,7 @@ export default function Sidebar({ activeItem, onItemClick }: SidebarProps) {
 
         {/* Footer */}
         <div className="px-4 py-4 border-t border-[#2a3a4a]">
-          <p className="text-[#6a7a8a] text-xs text-center">© 2026 NuPhorm</p>
+          <p className="text-[#6a7a8a] text-xs text-center">&copy; 2026 NuPhorm</p>
         </div>
       </aside>
     </>

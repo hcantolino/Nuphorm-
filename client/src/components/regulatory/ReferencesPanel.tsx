@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { FileText, FileSpreadsheet, BookOpen, ChevronLeft, ChevronRight, Quote } from 'lucide-react';
 import { useRegulatoryStore } from '@/stores/regulatoryStore';
 import type { AIReference } from '@/stores/regulatoryStore';
@@ -23,7 +23,12 @@ interface ReferencesPanelProps {
 }
 
 export default function ReferencesPanel({ highlightedCitation }: ReferencesPanelProps) {
-  const activeProject = useRegulatoryStore((state) => state.getActiveProject());
+  const projects = useRegulatoryStore((state) => state.projects);
+  const activeProjectId = useRegulatoryStore((state) => state.activeProjectId);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId),
+    [projects, activeProjectId]
+  );
   const [activeCard, setActiveCard] = useState(0);
   const [flipped, setFlipped] = useState<Set<number>>(new Set());
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());

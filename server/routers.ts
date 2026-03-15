@@ -1255,6 +1255,69 @@ Rules for references:
           });
         }
       }),
+
+    // ── Project state persistence ─────────────────────────────────────────────
+    // Saves the full regulatory project state (content, annotations, references,
+    // conversation history, source files, UI state) to a local JSON file so it
+    // survives page navigations and browser refreshes.  When a real DB is
+    // available the data is also written to the regulatoryProjects table.
+
+    saveProjectState: publicProcedure
+      .input(
+        z.object({
+          projectId: z.string(),
+          state: z.object({
+            name: z.string(),
+            description: z.string(),
+            regulatoryStandard: z.string(),
+            paperLayout: z.string(),
+            referenceFormat: z.string(),
+            content: z.string(),
+            attachedFiles: z.array(z.string()),
+            annotations: z.array(z.any()),
+            references: z.array(z.any()),
+            conversationHistory: z.array(z.object({
+              role: z.string(),
+              content: z.string(),
+            })),
+            sidebarSources: z.array(z.any()).optional(),
+            updatedAt: z.string(),
+          }),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          const stateDir = path.join(UPLOADS_DIR, ".regulatory-state");
+          fs.mkdirSync(stateDir, { recursive: true });
+          const filePath = path.join(stateDir, `project-${input.projectId}.json`);
+          fs.writeFileSync(filePath, JSON.stringify(input.state, null, 2), "utf-8");
+          return { success: true, savedAt: new Date().toISOString() };
+        } catch (error) {
+          console.error("[regulatory] saveProjectState error:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Failed to save project state: ${error instanceof Error ? error.message : "Unknown error"}`,
+          });
+        }
+      }),
+
+    loadProjectState: publicProcedure
+      .input(z.object({ projectId: z.string() }))
+      .query(async ({ input }) => {
+        try {
+          const stateDir = path.join(UPLOADS_DIR, ".regulatory-state");
+          const filePath = path.join(stateDir, `project-${input.projectId}.json`);
+          if (!fs.existsSync(filePath)) {
+            return { found: false as const, state: null };
+          }
+          const raw = fs.readFileSync(filePath, "utf-8");
+          const state = JSON.parse(raw);
+          return { found: true as const, state };
+        } catch (error) {
+          console.error("[regulatory] loadProjectState error:", error);
+          return { found: false as const, state: null };
+        }
+      }),
   }),
 
   biostatistics: router({

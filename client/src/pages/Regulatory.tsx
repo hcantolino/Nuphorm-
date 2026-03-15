@@ -1,11 +1,13 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { toast } from 'sonner';
-import { Sparkles, GripVertical, Loader2, CheckCircle2, AlertCircle, Trash2 } from 'lucide-react';
+import { Sparkles, GripVertical, Loader2, CheckCircle2, AlertCircle, Trash2, Check, Settings2 } from 'lucide-react';
 import RegulatorySidebar from '@/components/regulatory/RegulatorySidebar';
 import type { SourceFile } from '@/components/regulatory/RegulatorySidebar';
 import BottomChatBar from '@/components/regulatory/BottomChatBar';
 import ReferencesPanel from '@/components/regulatory/ReferencesPanel';
 import DocumentContentPanel from '@/components/regulatory/DocumentContentPanel';
+import DocumentSettingsModal from '@/components/regulatory/DocumentSettingsModal';
+import type { DocumentSettingsValues } from '@/components/regulatory/DocumentSettingsModal';
 import { useRegulatoryStore } from '@/stores/regulatoryStore';
 import type { AIReference } from '@/stores/regulatoryStore';
 import { trpc } from '@/lib/trpc';
@@ -27,9 +29,13 @@ const T = {
   danger: '#ef4444',
   dangerLight: '#fef2f2',
   divider: '#e2e8f0',
-  shadow: '0 1px 3px rgba(0,0,0,0.1)',
+  shadow: '0 1px 3px rgba(0,0,0,0.08)',
   shadowLg: '0 4px 16px rgba(0,0,0,0.08)',
 } as const;
+
+/** Stable empty array — avoids `?? []` creating new refs on every render */
+const EMPTY_SOURCES: import('@/stores/regulatoryStore').SourceFile[] = [];
+const EMPTY_CONVERSATION: import('@/stores/regulatoryStore').ConversationMessage[] = [];
 
 // ── Fake demo sources for showcase ──────────────────────────────────────────
 const DEMO_SOURCES = [
@@ -63,7 +69,16 @@ export default function Regulatory() {
   const addConversationMessage = useRegulatoryStore((s) => s.addConversationMessage);
   const getConversationHistory = useRegulatoryStore((s) => s.getConversationHistory);
   const clearConversationHistory = useRegulatoryStore((s) => s.clearConversationHistory);
-  const activeProject = useRegulatoryStore((s) => s.getActiveProject());
+  // Stable selector for conversation array — avoids calling getter in render body
+  const conversationMessages = useRegulatoryStore((s) =>
+    s.conversationsByProject[s.activeProjectId ?? ''] ?? EMPTY_CONVERSATION
+  );
+  const conversationCount = conversationMessages.length;
+  const projects = useRegulatoryStore((s) => s.projects);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId),
+    [projects, activeProjectId]
+  );
 
   // Use a ref so async callbacks always read the latest activeProjectId,
   // avoiding stale closures during the 40+ second LLM generation.
@@ -75,9 +90,173 @@ export default function Regulatory() {
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [highlightedCitation, setHighlightedCitation] = useState<string | null>(null);
   const [pendingChatContent, setPendingChatContent] = useState<string | null>(null);
-  const [sidebarSources, setSidebarSources] = useState<SourceFile[]>([]);
+  // Sources come from the persisted store — no local state needed
+  const sidebarSources = useRegulatoryStore((s) =>
+    s.sourcesByProject[s.activeProjectId ?? ''] ?? EMPTY_SOURCES
+  );
   const safetyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastUserMessageRef = useRef<string>('');
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const pendingSaveRef = useRef(false);
+
+  // ── Auto-save mutation ──────────────────────────────────────────────────────
+  const saveStateMutation = trpc.regulatory.saveProjectState.useMutation();
+
+  const saveProjectState = useCallback(async () => {
+    const projId = activeProjectIdRef.current;
+    if (!projId) return;
+
+    const store = useRegulatoryStore.getState();
+    const project = store.projects.find((p) => p.id === projId);
+    if (!project) return;
+
+    const conversationHistory = store.conversationsByProject[projId] ?? [];
+
+    // Serialize sidebar sources from store (already serializable — uploadedAt is ISO string)
+    const sourcesSnapshot = (store.sourcesByProject[projId] ?? []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      type: s.type,
+      size: s.size,
+      uploadedAt: s.uploadedAt,
+      parsedContent: s.parsedContent ?? null,
+      status: s.status,
+    }));
+
+    setSaveStatus('saving');
+    try {
+      await saveStateMutation.mutateAsync({
+        projectId: projId,
+        state: {
+          name: project.name,
+          description: project.description,
+          regulatoryStandard: project.regulatoryStandard,
+          paperLayout: project.paperLayout,
+          referenceFormat: project.referenceFormat,
+          content: project.content,
+          attachedFiles: project.attachedFiles,
+          annotations: project.annotations as any[],
+          references: project.references as any[],
+          conversationHistory: conversationHistory.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          sidebarSources: sourcesSnapshot,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      setSaveStatus('saved');
+      pendingSaveRef.current = false;
+      setTimeout(() => setSaveStatus('idle'), 1500);
+    } catch (err) {
+      console.error('[Regulatory] Auto-save failed:', err);
+      setSaveStatus('idle');
+    }
+  }, [saveStateMutation]);
+
+  // Debounced save: triggers 500ms after last call to avoid rapid-fire saves
+  const triggerAutoSave = useCallback(() => {
+    pendingSaveRef.current = true;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveProjectState();
+    }, 500);
+  }, [saveProjectState]);
+
+  // ── Restore project state on project switch ──────────────────────────────
+  const loadStateQuery = trpc.regulatory.loadProjectState.useQuery(
+    { projectId: activeProjectId ?? '' },
+    { enabled: !!activeProjectId, refetchOnWindowFocus: false }
+  );
+
+  // Track which project we last restored to avoid re-applying on every render
+  const lastRestoredProjectRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      !loadStateQuery.data?.found ||
+      !loadStateQuery.data.state ||
+      !activeProjectId ||
+      lastRestoredProjectRef.current === activeProjectId
+    ) return;
+
+    const saved = loadStateQuery.data.state as any;
+    lastRestoredProjectRef.current = activeProjectId;
+
+    // Restore project fields into the Zustand store
+    const store = useRegulatoryStore.getState();
+    if (saved.content) store.updateProjectContent(activeProjectId, saved.content);
+    if (saved.annotations?.length) store.updateProjectAnnotations(activeProjectId, saved.annotations);
+    if (saved.references?.length) store.updateProjectReferences(activeProjectId, saved.references);
+    if (saved.attachedFiles?.length) {
+      saved.attachedFiles.forEach((f: string) => store.attachFile(activeProjectId, f));
+    }
+    // Restore conversation history
+    if (saved.conversationHistory?.length) {
+      store.clearConversationHistory(activeProjectId);
+      saved.conversationHistory.forEach((msg: any) => {
+        store.addConversationMessage(activeProjectId, { role: msg.role, content: msg.content });
+      });
+    }
+    // Restore sidebar sources into the persisted store
+    if (saved.sidebarSources?.length) {
+      const restored: SourceFile[] = saved.sidebarSources.map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        type: s.type,
+        size: s.size,
+        uploadedAt: typeof s.uploadedAt === 'string' ? s.uploadedAt : new Date(s.uploadedAt).toISOString(),
+        parsedContent: s.parsedContent ?? undefined,
+        status: s.status ?? 'ready',
+      }));
+      store.setProjectSources(activeProjectId, restored);
+    }
+
+    console.log(`[Regulatory] Restored project state for "${activeProjectId}"`);
+  }, [loadStateQuery.data, activeProjectId]);
+
+  // ── beforeunload: flush pending save ──────────────────────────────────────
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (!pendingSaveRef.current) return;
+      // Use sendBeacon for reliable last-chance save (fire-and-forget)
+      const projId = activeProjectIdRef.current;
+      if (!projId) return;
+      const store = useRegulatoryStore.getState();
+      const project = store.projects.find((p) => p.id === projId);
+      if (!project) return;
+      const payload = JSON.stringify({
+        projectId: projId,
+        state: {
+          name: project.name,
+          description: project.description,
+          regulatoryStandard: project.regulatoryStandard,
+          paperLayout: project.paperLayout,
+          referenceFormat: project.referenceFormat,
+          content: project.content,
+          attachedFiles: project.attachedFiles,
+          annotations: project.annotations,
+          references: project.references,
+          conversationHistory: store.conversationsByProject[projId] ?? [],
+          sidebarSources: (store.sourcesByProject[projId] ?? []).map((s) => ({
+            id: s.id, name: s.name, type: s.type, size: s.size,
+            uploadedAt: s.uploadedAt,
+            parsedContent: s.parsedContent ?? null,
+            status: s.status,
+          })),
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      // sendBeacon is the most reliable way to send data during page unload
+      navigator.sendBeacon('/api/regulatory-save-beacon', payload);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
 
   // ── Resizable panel state ──────────────────────────────────────────────────
   const [leftPanelPct, setLeftPanelPct] = useState(68); // percentage
@@ -186,8 +365,10 @@ export default function Regulatory() {
 
       setGenerationStage('done');
       toast.success('Document generated successfully', {
-        style: { background: T.successLight, color: '#065f46', borderColor: '#86efac' },
+        style: { background: T.successLight, color: T.success, borderColor: T.success + '40' },
       });
+      // Auto-save after successful generation
+      triggerAutoSave();
       setTimeout(clearGeneration, 1500);
     },
     onError: (err) => {
@@ -243,7 +424,7 @@ export default function Regulatory() {
       setGenerationStage('error');
       setGenerationError('Generation took too long. The AI may be overloaded — try again.');
       toast.error('Generation timed out after 2 minutes. Please try again.', {
-        style: { background: T.dangerLight, color: '#991b1b', borderColor: '#fecaca' },
+        style: { background: T.dangerLight, color: T.danger, borderColor: T.danger + '40' },
       });
       setTimeout(clearGeneration, 5000);
     }, 130_000);
@@ -280,6 +461,12 @@ export default function Regulatory() {
     setTimeout(() => setHighlightedCitation(null), 3000);
   }, []);
 
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const handleSaveSettings = useCallback((vals: DocumentSettingsValues) => {
+    console.log('[Regulatory] Document settings saved:', vals);
+    toast.success('Document settings saved');
+  }, []);
+
   const showEmptyState = activeProject && !activeProject.content.trim() && !isGenerating;
 
   return (
@@ -292,27 +479,79 @@ export default function Regulatory() {
         <RegulatorySidebar
           onProjectSelect={(projectId) => {
             console.log('[Regulatory] Selected project:', projectId);
+            // Save current project state before switching
+            if (activeProjectId && activeProjectId !== projectId) {
+              saveProjectState();
+            }
             setActiveProject(projectId);
+            lastRestoredProjectRef.current = null; // Allow restore for new project
           }}
-          onSourcesChange={(sources) => setSidebarSources(sources)}
+          onSourcesChange={(sources) => {
+            // Sidebar writes to store directly; auto-save when sources are ready
+            if (sources.some((s) => s.status === 'ready')) {
+              triggerAutoSave();
+            }
+          }}
         />
 
         {/* Main content — light theme */}
         <div className="flex-1 flex flex-col overflow-hidden" style={{ background: T.bg }}>
           {/* Top chat bar */}
-          <div style={{ background: T.card, borderBottom: `1px solid ${T.border}`, boxShadow: T.shadow }}>
-            <BottomChatBar
-              inline
-              onSendMessage={handleSendMessage}
-              selectedProject={activeProjectId?.toString()}
-              isLoading={isGenerating}
-              pendingContent={pendingChatContent}
-              onPendingContentConsumed={() => setPendingChatContent(null)}
-            />
+          <div style={{ background: T.card, borderBottom: `1px solid ${T.border}`, boxShadow: T.shadow, display: 'flex', alignItems: 'stretch' }}>
+            <div style={{ flex: 1 }}>
+              <BottomChatBar
+                inline
+                onSendMessage={handleSendMessage}
+                selectedProject={activeProjectId?.toString()}
+                isLoading={isGenerating}
+                pendingContent={pendingChatContent}
+                onPendingContentConsumed={() => setPendingChatContent(null)}
+              />
+            </div>
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="flex items-center gap-1.5 px-4 text-[#64748B] hover:text-[#2563EB] hover:bg-[#EFF6FF] transition-colors border-l border-[#E2E8F0]"
+              title="Document Settings"
+              aria-label="Open document settings"
+            >
+              <Settings2 className="w-5 h-5" />
+            </button>
           </div>
 
+          {/* Save status indicator */}
+          {saveStatus !== 'idle' && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                padding: '5px 12px',
+                background: saveStatus === 'saved' ? T.successLight : T.accentLight,
+                borderBottom: `1px solid ${saveStatus === 'saved' ? '#86efac40' : T.accent + '20'}`,
+                fontSize: 12,
+                fontWeight: 500,
+                color: saveStatus === 'saved' ? T.success : T.accent,
+                transition: 'all 0.3s ease',
+              }}
+            >
+              {saveStatus === 'saving' && (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  Saving…
+                </>
+              )}
+              {saveStatus === 'saved' && (
+                <>
+                  <Check size={12} />
+                  Saved
+                </>
+              )}
+            </div>
+          )}
+
           {/* Conversation memory indicator + Clear History */}
-          {activeProjectId && getConversationHistory(activeProjectId).length > 0 && (
+          {activeProjectId && conversationCount > 0 && (
             <div
               style={{
                 display: 'flex',
@@ -326,7 +565,7 @@ export default function Regulatory() {
               }}
             >
               <span>
-                AI memory active — {Math.floor(getConversationHistory(activeProjectId).length / 2)} prior exchange{Math.floor(getConversationHistory(activeProjectId).length / 2) !== 1 ? 's' : ''} in this project
+                AI memory active — {Math.floor(conversationCount / 2)} prior exchange{Math.floor(conversationCount / 2) !== 1 ? 's' : ''} in this project
               </span>
               <button
                 onClick={() => {
@@ -338,8 +577,8 @@ export default function Regulatory() {
                   alignItems: 'center',
                   gap: 4,
                   padding: '3px 10px',
-                  background: '#a0aec0',
-                  color: '#1a202c',
+                  background: '#e2e8f0',
+                  color: '#475569',
                   border: 'none',
                   borderRadius: 4,
                   fontSize: 11,
@@ -347,8 +586,8 @@ export default function Regulatory() {
                   cursor: 'pointer',
                   transition: 'background 0.2s',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = '#e2e8f0'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = '#a0aec0'; }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#cbd5e1'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = '#e2e8f0'; }}
               >
                 <Trash2 size={12} />
                 Clear History
@@ -382,7 +621,7 @@ export default function Regulatory() {
                     fontSize: 14,
                     fontWeight: 600,
                     cursor: 'pointer',
-                    boxShadow: '0 2px 8px rgba(59,130,246,0.3)',
+                    boxShadow: '0 2px 8px rgba(8,145,178,0.4)',
                     transition: 'all 0.2s',
                   }}
                   onMouseEnter={(e) => {
@@ -409,15 +648,15 @@ export default function Regulatory() {
                   justifyContent: 'center',
                   gap: 12,
                   padding: '14px 20px',
-                  background: generationStage === 'error' ? '#fef2f2' : generationStage === 'done' ? T.successLight : T.accentLight,
-                  borderBottom: `1px solid ${generationStage === 'error' ? '#fecaca' : generationStage === 'done' ? '#86efac' : T.accent + '40'}`,
+                  background: generationStage === 'error' ? T.dangerLight : generationStage === 'done' ? T.successLight : T.accentLight,
+                  borderBottom: `1px solid ${generationStage === 'error' ? T.danger + '40' : generationStage === 'done' ? T.success + '40' : T.accent + '40'}`,
                   transition: 'all 0.3s ease',
                 }}
               >
                 {generationStage === 'error' ? (
-                  <AlertCircle size={16} style={{ color: '#dc2626' }} />
+                  <AlertCircle size={16} style={{ color: T.danger }} />
                 ) : generationStage === 'done' ? (
-                  <CheckCircle2 size={16} style={{ color: '#059669' }} />
+                  <CheckCircle2 size={16} style={{ color: T.success }} />
                 ) : (
                   <Loader2 size={16} className="animate-spin" style={{ color: T.accent }} />
                 )}
@@ -425,7 +664,7 @@ export default function Regulatory() {
                   style={{
                     fontSize: 13,
                     fontWeight: 500,
-                    color: generationStage === 'error' ? '#dc2626' : generationStage === 'done' ? '#059669' : T.accent,
+                    color: generationStage === 'error' ? T.danger : generationStage === 'done' ? T.success : T.accent,
                   }}
                 >
                   {generationStage === 'preparing' && 'Preparing source materials...'}
@@ -460,8 +699,8 @@ export default function Regulatory() {
                       onClick={clearGeneration}
                       style={{
                         fontSize: 11,
-                        color: T.textMuted,
-                        background: 'transparent',
+                        color: T.textSub,
+                        background: T.card,
                         border: `1px solid ${T.border}`,
                         borderRadius: 4,
                         padding: '2px 8px',
@@ -503,7 +742,7 @@ export default function Regulatory() {
                     overflow: 'hidden',
                   }}
                 >
-                  <DocumentContentPanel onCitationClick={handleCitationClick} onAddToChat={(c) => { setPendingChatContent(c); toast.success('Added to chat input', { style: { background: '#f7fafc', color: '#1a202c', border: '1px solid #e2e8f0' }, duration: 1500 }); }} />
+                  <DocumentContentPanel onCitationClick={handleCitationClick} onAddToChat={(c) => { setPendingChatContent(c); toast.success('Added to chat input', { style: { background: T.card, color: T.text, border: `1px solid ${T.border}` }, duration: 1500 }); }} />
                 </div>
               </div>
 
@@ -520,7 +759,7 @@ export default function Regulatory() {
                     marginBottom: 16,
                   }}
                 >
-                  <DocumentContentPanel onCitationClick={handleCitationClick} onAddToChat={(c) => { setPendingChatContent(c); toast.success('Added to chat input', { style: { background: '#f7fafc', color: '#1a202c', border: '1px solid #e2e8f0' }, duration: 1500 }); }} />
+                  <DocumentContentPanel onCitationClick={handleCitationClick} onAddToChat={(c) => { setPendingChatContent(c); toast.success('Added to chat input', { style: { background: T.card, color: T.text, border: `1px solid ${T.border}` }, duration: 1500 }); }} />
                 </div>
                 <div
                   style={{
@@ -604,6 +843,13 @@ export default function Regulatory() {
           </div>
         </div>
       </div>
+
+      {/* Document Settings Modal */}
+      <DocumentSettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        onSave={handleSaveSettings}
+      />
     </div>
   );
 }

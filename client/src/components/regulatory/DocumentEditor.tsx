@@ -1,5 +1,5 @@
 import { FileUp, X, Save } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import SaveTechnicalFileDialog from './SaveTechnicalFileDialog';
 import { useRegulatoryStore } from '@/stores/regulatoryStore';
 
@@ -14,7 +14,12 @@ const AVAILABLE_FILES = [
 ];
 
 export default function DocumentEditor() {
-  const activeProject = useRegulatoryStore((state) => state.getActiveProject());
+  const projects = useRegulatoryStore((state) => state.projects);
+  const activeProjectId = useRegulatoryStore((state) => state.activeProjectId);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId),
+    [projects, activeProjectId]
+  );
   const updateProjectContent = useRegulatoryStore((state) => state.updateProjectContent);
   const attachFile = useRegulatoryStore((state) => state.attachFile);
   const detachFile = useRegulatoryStore((state) => state.detachFile);

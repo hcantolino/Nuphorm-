@@ -58,31 +58,31 @@ interface UploadFileItem {
 const sampleDatasets: UploadedDataset[] = [
   {
     id: "1", name: "Clinical Trial Phase 2", fileName: "trial_phase2_data.csv",
-    uploadDate: "Jan 28, 2026", size: "2.4 MB", rows: 1250, columns: 24, format: "CSV",
+    uploadDate: "2026-03-14T10:01:00", size: "2.4 MB", rows: 1250, columns: 24, format: "CSV",
     description: "Patient demographics and lab results from Phase 2 trial",
     folderId: "folder-1", tags: ["tag-1"],
   },
   {
     id: "2", name: "Patient Safety Database", fileName: "safety_data_2025.xlsx",
-    uploadDate: "Jan 27, 2026", size: "5.8 MB", rows: 3450, columns: 18, format: "XLSX",
+    uploadDate: "2026-03-12T14:30:00", size: "5.8 MB", rows: 3450, columns: 18, format: "XLSX",
     description: "Adverse events and safety monitoring data",
     folderId: "folder-1", tags: ["tag-2"],
   },
   {
     id: "3", name: "Biomarker Analysis", fileName: "biomarkers_q4_2025.csv",
-    uploadDate: "Jan 25, 2026", size: "1.2 MB", rows: 890, columns: 15, format: "CSV",
+    uploadDate: "2026-03-05T09:15:00", size: "1.2 MB", rows: 890, columns: 15, format: "CSV",
     description: "Serum biomarker measurements and correlations",
     folderId: "folder-2", tags: ["tag-1", "tag-3"],
   },
   {
     id: "4", name: "Efficacy Outcomes", fileName: "efficacy_outcomes.xlsx",
-    uploadDate: "Jan 20, 2026", size: "3.1 MB", rows: 2100, columns: 22, format: "XLSX",
+    uploadDate: "2026-02-20T16:45:00", size: "3.1 MB", rows: 2100, columns: 22, format: "XLSX",
     description: "Primary and secondary efficacy endpoints",
     folderId: "folder-2",
   },
   {
     id: "5", name: "Pharmacokinetics Study", fileName: "pk_study_data.csv",
-    uploadDate: "Jan 15, 2026", size: "1.9 MB", rows: 450, columns: 12, format: "CSV",
+    uploadDate: "2026-01-15T11:00:00", size: "1.9 MB", rows: 450, columns: 12, format: "CSV",
     description: "PK parameters and concentration-time data",
   },
 ];
@@ -101,13 +101,13 @@ const sampleTags: FileTag[] = [
 // ── Tag palette (Finbox) ───────────────────────────────────────────────────────
 
 const TAG_COLORS: Record<string, { pill: string; sidebar: string }> = {
-  teal:   { pill: "bg-[#DBEAFE] text-[#0056B3]",       sidebar: "bg-[#E3F2FD] text-[#007BFF]" },
-  blue:   { pill: "bg-[#DBEAFE] text-[#1D4ED8]",       sidebar: "bg-[#EFF6FF] text-[#3B82F6]" },
-  purple: { pill: "bg-[#E8EAF6] text-[#283593]",       sidebar: "bg-[#E8EAF6] text-[#3949AB]" },
-  orange: { pill: "bg-[#E3F2FD] text-[#0D47A1]",       sidebar: "bg-[#BBDEFB] text-[#1565C0]" },
-  green:  { pill: "bg-[#E1F5FE] text-[#01579B]",       sidebar: "bg-[#E1F5FE] text-[#0277BD]" },
-  red:    { pill: "bg-[#E3F2FD] text-[#0056B3]",       sidebar: "bg-[#E3F2FD] text-[#0056B3]" },
-  gray:   { pill: "bg-[#E3F2FD] text-[#42A5F5]",       sidebar: "bg-[#E3F2FD] text-[#42A5F5]" },
+  teal:   { pill: "bg-[#dbeafe] text-[#3b82f6]",       sidebar: "bg-[#eff6ff] text-[#3b82f6]" },
+  blue:   { pill: "bg-[#dbeafe] text-[#3b82f6]",       sidebar: "bg-[#eff6ff] text-[#3b82f6]" },
+  purple: { pill: "bg-[#ede9fe] text-[#7c3aed]",       sidebar: "bg-[#f5f3ff] text-[#7c3aed]" },
+  orange: { pill: "bg-[#ffedd5] text-[#ea580c]",       sidebar: "bg-[#fff7ed] text-[#ea580c]" },
+  green:  { pill: "bg-[#d1fae5] text-[#10b981]",       sidebar: "bg-[#ecfdf5] text-[#10b981]" },
+  red:    { pill: "bg-[#fee2e2] text-[#ef4444]",       sidebar: "bg-[#fef2f2] text-[#ef4444]" },
+  gray:   { pill: "bg-[#f1f5f9] text-[#64748b]",       sidebar: "bg-[#f8fafc] text-[#64748b]" },
 };
 
 function tagPillClass(color: string) {
@@ -613,9 +613,22 @@ function DatasetCard({
   const cardTags = allTags.filter((t) => dataset.tags?.includes(t.id));
   const isRenaming = renamingId === dataset.id;
 
+  // Format date as "Added Mar 14, 2026 at 10:01 AM"
+  const formatUploadDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const h = d.getHours();
+    const m = d.getMinutes();
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h % 12 || 12;
+    const mm = m.toString().padStart(2, "0");
+    return `Added ${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} at ${h12}:${mm} ${ampm}`;
+  };
+
+  const dateDisplay = formatUploadDate(dataset.uploadDate);
   const metaLine = [
     dataset.size,
-    dataset.uploadDate,
     dataset.rows > 0 && dataset.columns > 0
       ? `${dataset.rows.toLocaleString()} rows x ${dataset.columns} cols`
       : null,
@@ -634,13 +647,14 @@ function DatasetCard({
       <div
         {...dragProps}
         className={cn(
-          "group relative bg-white rounded-md overflow-hidden cursor-pointer",
+          "group relative bg-white rounded-lg overflow-hidden cursor-pointer",
           "border transition-all duration-200",
           "shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
-          "hover:border-[#007BFF] hover:shadow-[0_2px_4px_rgba(0,0,0,0.05)]",
+          "hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(59,130,246,0.15)]",
+          "hover:border-[#007BFF]",
           selected
             ? "border-[#007BFF] ring-1 ring-[#007BFF]/20"
-            : "border-[#DEE2E6]"
+            : "border-[#e2e8f0]"
         )}
         style={provided?.draggableProps?.style}
         onClick={() => onClick(dataset)}
@@ -672,7 +686,8 @@ function DatasetCard({
               onDelete={() => onDelete(dataset.id)}
             />
           </div>
-          <p className="text-[11px] text-[#6C757D] mb-2">{metaLine}</p>
+          <p className="text-[11px] text-[#6C757D] mb-1">{metaLine}</p>
+          <p className="text-[10px] text-[#94a3b8] mb-2">{dateDisplay}</p>
           {cardTags.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {cardTags.map((t) => (
@@ -691,12 +706,12 @@ function DatasetCard({
       <div
         {...dragProps}
         className={cn(
-          "group flex items-center gap-4 bg-white border-2 rounded-md px-5 py-4 cursor-pointer",
+          "group flex items-center gap-4 bg-white border rounded-lg px-5 py-4 cursor-pointer",
           "transition-all duration-200",
+          "hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(59,130,246,0.15)]",
           selected
             ? "border-[#007BFF] bg-[#E3F2FD]"
-            : "border-transparent hover:border-[#007BFF] shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_2px_4px_rgba(0,0,0,0.05)]",
-          "border border-[#DEE2E6]"
+            : "border-[#e2e8f0] hover:border-[#007BFF]"
         )}
         onClick={() => onClick(dataset)}
         onContextMenu={e => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, dataset); } }}
@@ -753,8 +768,8 @@ function DatasetCard({
           {dataset.rows > 0 && <span>{dataset.rows.toLocaleString()} rows</span>}
           {dataset.columns > 0 && <span>{dataset.columns} cols</span>}
           <span>{dataset.size}</span>
-          <span className="flex items-center gap-1">
-            <Calendar className="w-3 h-3" />{dataset.uploadDate}
+          <span className="flex items-center gap-1 text-[#94a3b8]">
+            <Calendar className="w-3 h-3" />{dateDisplay}
           </span>
         </div>
 
@@ -779,12 +794,13 @@ function DatasetCard({
     <div
       {...dragProps}
       className={cn(
-        "group relative bg-white rounded-md overflow-hidden cursor-pointer",
-        "border-2 transition-all duration-200",
+        "group relative bg-white rounded-lg overflow-hidden cursor-pointer",
+        "border transition-all duration-200",
         "shadow-[0_1px_2px_rgba(0,0,0,0.04)]",
+        "hover:scale-[1.02] hover:shadow-[0_4px_12px_rgba(59,130,246,0.15)]",
         selected
           ? "border-[#007BFF] bg-[#E3F2FD]"
-          : "border-[#DEE2E6] hover:border-[#007BFF] hover:shadow-[0_2px_4px_rgba(0,0,0,0.05)]"
+          : "border-[#e2e8f0] hover:border-[#007BFF]"
       )}
       style={provided?.draggableProps?.style}
       onClick={() => onClick(dataset)}
@@ -855,7 +871,8 @@ function DatasetCard({
         )}
 
         {/* Meta line */}
-        <p className="text-[12px] text-[#6b7280] mb-4 leading-relaxed">{metaLine}</p>
+        <p className="text-[12px] text-[#6b7280] mb-1 leading-relaxed">{metaLine}</p>
+        <p className="text-[11px] text-[#94a3b8] mb-4">{dateDisplay}</p>
 
         {/* Tags */}
         {cardTags.length > 0 && (
@@ -1306,7 +1323,7 @@ export default function DataUploaded() {
   const [selectedDataset, setSelectedDataset] = useState<UploadedDataset | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode("data-library", "grid"));
-  const [groupBy, setGroupBy] = useState<GroupByOption>(() => loadGroupBy("data-library"));
+  const [groupBy, setGroupBy] = useState<GroupByOption>(() => loadGroupBy("data-library", "dateAdded"));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);

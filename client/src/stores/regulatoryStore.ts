@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 export interface GeneratedDocument {
   id: number;
@@ -47,25 +48,45 @@ export interface ConversationMessage {
   content: string;
 }
 
+/** Serialisable metadata for an uploaded source file (no File/Blob objects). */
+export interface SourceFile {
+  id: string;
+  name: string;
+  type: 'csv' | 'pdf' | 'xlsx';
+  size: number;
+  uploadedAt: string; // ISO string — safe for JSON serialisation
+  parsedContent?: string;
+  status: 'uploading' | 'parsing' | 'ready' | 'error';
+}
+
 interface RegulatoryStore {
   projects: RegulatoryProject[];
   activeProjectId: string | null;
 
-  // Per-project conversation history for multi-turn LLM memory
+  /** Per-project uploaded source files — persisted across navigation & refresh */
+  sourcesByProject: Record<string, SourceFile[]>;
+
+  /** Per-project LLM conversation history */
   conversationsByProject: Record<string, ConversationMessage[]>;
 
-  // Project management
+  // ── Project management ────────────────────────────────────────────────────
   createProject: (name: string, description: string) => void;
   deleteProject: (id: string) => void;
   setActiveProject: (id: string) => void;
   getActiveProject: () => RegulatoryProject | undefined;
 
-  // Conversation history
+  // ── Source file management ────────────────────────────────────────────────
+  getProjectSources: (projectId: string) => SourceFile[];
+  setProjectSources: (projectId: string, sources: SourceFile[]) => void;
+  updateProjectSource: (projectId: string, sourceId: string, patch: Partial<SourceFile>) => void;
+  removeProjectSource: (projectId: string, sourceId: string) => void;
+
+  // ── Conversation history ──────────────────────────────────────────────────
   addConversationMessage: (projectId: string, message: ConversationMessage) => void;
   getConversationHistory: (projectId: string) => ConversationMessage[];
   clearConversationHistory: (projectId: string) => void;
 
-  // Project updates
+  // ── Project content updates ───────────────────────────────────────────────
   updateProjectName: (id: string, name: string) => void;
   updateProjectContent: (id: string, content: string) => void;
   updateRegulatoryStandard: (id: string, standard: 'US' | 'EU') => void;
@@ -74,221 +95,288 @@ interface RegulatoryStore {
   attachFile: (projectId: string, fileName: string) => void;
   detachFile: (projectId: string, fileName: string) => void;
 
-  // Annotations & References
+  // ── Annotations & References ──────────────────────────────────────────────
   updateProjectAnnotations: (id: string, annotations: Annotation[]) => void;
   updateProjectReferences: (id: string, references: AIReference[]) => void;
 
-  // Generated documents
+  // ── Generated documents ───────────────────────────────────────────────────
   addGeneratedDocuments: (documents: GeneratedDocument[]) => void;
   getGeneratedDocuments: (projectId: string) => GeneratedDocument[];
   updateGeneratedDocument: (projectId: string, documentId: number, content: string) => void;
 }
 
-export const useRegulatoryStore = create<RegulatoryStore>((set, get) => ({
-  projects: [
+/** Revive Date strings → Date objects after JSON rehydration from localStorage. */
+function reviveDates(projects: RegulatoryProject[]): RegulatoryProject[] {
+  return projects.map((p) => ({
+    ...p,
+    createdAt: p.createdAt instanceof Date ? p.createdAt : new Date(p.createdAt),
+    updatedAt: p.updatedAt instanceof Date ? p.updatedAt : new Date(p.updatedAt),
+  }));
+}
+
+const DEFAULT_PROJECTS: RegulatoryProject[] = [
+  {
+    id: '1',
+    name: '510k Submission',
+    description: 'Premarket notification for substantially equivalent devices',
+    regulatoryStandard: 'US',
+    paperLayout: 'eSTAR',
+    referenceFormat: 'apa',
+    content: '',
+    attachedFiles: [],
+    annotations: [],
+    references: [],
+    generatedDocuments: [],
+    createdAt: new Date('2026-01-15'),
+    updatedAt: new Date('2026-01-15'),
+  },
+  {
+    id: '2',
+    name: 'PMA Application',
+    description: 'Premarket approval application for high-risk devices',
+    regulatoryStandard: 'US',
+    paperLayout: 'document',
+    referenceFormat: 'apa',
+    content: '',
+    attachedFiles: [],
+    annotations: [],
+    references: [],
+    generatedDocuments: [],
+    createdAt: new Date('2026-01-20'),
+    updatedAt: new Date('2026-01-20'),
+  },
+];
+
+export const useRegulatoryStore = create<RegulatoryStore>()(
+  persist(
+    (set, get) => ({
+      projects: DEFAULT_PROJECTS,
+      activeProjectId: '1',
+      sourcesByProject: {},
+      conversationsByProject: {},
+
+      // ── Source file management ──────────────────────────────────────────
+      getProjectSources: (projectId) => get().sourcesByProject[projectId] ?? [],
+
+      setProjectSources: (projectId, sources) =>
+        set((state) => ({
+          sourcesByProject: { ...state.sourcesByProject, [projectId]: sources },
+        })),
+
+      updateProjectSource: (projectId, sourceId, patch) =>
+        set((state) => ({
+          sourcesByProject: {
+            ...state.sourcesByProject,
+            [projectId]: (state.sourcesByProject[projectId] ?? []).map((s) =>
+              s.id === sourceId ? { ...s, ...patch } : s
+            ),
+          },
+        })),
+
+      removeProjectSource: (projectId, sourceId) =>
+        set((state) => ({
+          sourcesByProject: {
+            ...state.sourcesByProject,
+            [projectId]: (state.sourcesByProject[projectId] ?? []).filter(
+              (s) => s.id !== sourceId
+            ),
+          },
+        })),
+
+      // ── Conversation history ────────────────────────────────────────────
+      addConversationMessage: (projectId, message) =>
+        set((state) => ({
+          conversationsByProject: {
+            ...state.conversationsByProject,
+            [projectId]: [
+              ...(state.conversationsByProject[projectId] ?? []),
+              message,
+            ],
+          },
+        })),
+
+      getConversationHistory: (projectId) =>
+        get().conversationsByProject[projectId] ?? [],
+
+      clearConversationHistory: (projectId) =>
+        set((state) => ({
+          conversationsByProject: {
+            ...state.conversationsByProject,
+            [projectId]: [],
+          },
+        })),
+
+      // ── Project management ──────────────────────────────────────────────
+      createProject: (name, description) => {
+        const newProject: RegulatoryProject = {
+          id: Date.now().toString(),
+          name,
+          description,
+          regulatoryStandard: 'US',
+          paperLayout: 'eSTAR',
+          referenceFormat: 'apa',
+          content: '',
+          attachedFiles: [],
+          annotations: [],
+          references: [],
+          generatedDocuments: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        set((state) => ({
+          projects: [...state.projects, newProject],
+          activeProjectId: newProject.id,
+        }));
+      },
+
+      deleteProject: (id) =>
+        set((state) => {
+          const filtered = state.projects.filter((p) => p.id !== id);
+          const { [id]: _rC, ...restConvos } = state.conversationsByProject;
+          const { [id]: _rS, ...restSources } = state.sourcesByProject;
+          return {
+            projects: filtered,
+            activeProjectId: filtered.length > 0 ? filtered[0].id : null,
+            conversationsByProject: restConvos,
+            sourcesByProject: restSources,
+          };
+        }),
+
+      setActiveProject: (id) => set({ activeProjectId: id }),
+
+      getActiveProject: () => {
+        const { projects, activeProjectId } = get();
+        return projects.find((p) => p.id === activeProjectId);
+      },
+
+      // ── Project content ─────────────────────────────────────────────────
+      updateProjectName: (id, name) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, name, updatedAt: new Date() } : p
+          ),
+        })),
+
+      updateProjectContent: (id, content) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, content, updatedAt: new Date() } : p
+          ),
+        })),
+
+      updateRegulatoryStandard: (id, standard) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, regulatoryStandard: standard, updatedAt: new Date() } : p
+          ),
+        })),
+
+      updatePaperLayout: (id, layout) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, paperLayout: layout, updatedAt: new Date() } : p
+          ),
+        })),
+
+      updateReferenceFormat: (id, format) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, referenceFormat: format, updatedAt: new Date() } : p
+          ),
+        })),
+
+      attachFile: (projectId, fileName) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId && !p.attachedFiles.includes(fileName)
+              ? { ...p, attachedFiles: [...p.attachedFiles, fileName], updatedAt: new Date() }
+              : p
+          ),
+        })),
+
+      detachFile: (projectId, fileName) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId
+              ? { ...p, attachedFiles: p.attachedFiles.filter((f) => f !== fileName), updatedAt: new Date() }
+              : p
+          ),
+        })),
+
+      // ── Annotations & References ────────────────────────────────────────
+      updateProjectAnnotations: (id, annotations) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, annotations, updatedAt: new Date() } : p
+          ),
+        })),
+
+      updateProjectReferences: (id, references) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, references, updatedAt: new Date() } : p
+          ),
+        })),
+
+      // ── Generated documents ─────────────────────────────────────────────
+      addGeneratedDocuments: (documents) =>
+        set((state) => {
+          const active = state.projects.find((p) => p.id === state.activeProjectId);
+          if (!active) return state;
+          return {
+            projects: state.projects.map((p) =>
+              p.id === state.activeProjectId
+                ? { ...p, generatedDocuments: [...p.generatedDocuments, ...documents], updatedAt: new Date() }
+                : p
+            ),
+          };
+        }),
+
+      getGeneratedDocuments: (projectId) =>
+        get().projects.find((p) => p.id === projectId)?.generatedDocuments ?? [],
+
+      updateGeneratedDocument: (projectId, documentId, content) =>
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId
+              ? {
+                  ...p,
+                  generatedDocuments: p.generatedDocuments.map((d) =>
+                    d.id === documentId ? { ...d, content } : d
+                  ),
+                  updatedAt: new Date(),
+                }
+              : p
+          ),
+        })),
+    }),
     {
-      id: '1',
-      name: 'Sample FDA Submission',
-      description: 'Initial regulatory submission for clinical trial',
-      regulatoryStandard: 'US',
-      paperLayout: 'eSTAR',
-      referenceFormat: 'apa',
-      content: '',
-      attachedFiles: ['Clinical_Trial_Data.csv', 'Statistical_Analysis.xlsx'],
-      annotations: [],
-      references: [],
-      generatedDocuments: [],
-      createdAt: new Date('2026-01-15'),
-      updatedAt: new Date('2026-01-28'),
-    },
-  ],
-  activeProjectId: '1',
-  conversationsByProject: {},
-
-  addConversationMessage: (projectId: string, message: ConversationMessage) => {
-    set((state) => ({
-      conversationsByProject: {
-        ...state.conversationsByProject,
-        [projectId]: [...(state.conversationsByProject[projectId] ?? []), message],
+      name: 'nuphorm-regulatory-v1',
+      // Revive Date strings back to Date objects after localStorage rehydration
+      onRehydrateStorage: () => (state) => {
+        if (state?.projects) {
+          state.projects = reviveDates(state.projects);
+        }
       },
-    }));
-  },
-
-  getConversationHistory: (projectId: string) => {
-    return get().conversationsByProject[projectId] ?? [];
-  },
-
-  clearConversationHistory: (projectId: string) => {
-    set((state) => ({
-      conversationsByProject: {
-        ...state.conversationsByProject,
-        [projectId]: [],
-      },
-    }));
-  },
-
-  createProject: (name: string, description: string) => {
-    const newProject: RegulatoryProject = {
-      id: Date.now().toString(),
-      name,
-      description,
-      regulatoryStandard: 'US',
-      paperLayout: 'eSTAR',
-      referenceFormat: 'apa',
-      content: '',
-      attachedFiles: [],
-      annotations: [],
-      references: [],
-      generatedDocuments: [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    set((state) => ({
-      projects: [...state.projects, newProject],
-      activeProjectId: newProject.id,
-    }));
-  },
-
-  deleteProject: (id: string) => {
-    set((state) => {
-      const filtered = state.projects.filter((p) => p.id !== id);
-      const { [id]: _removed, ...restConvos } = state.conversationsByProject;
-      return {
-        projects: filtered,
-        activeProjectId: filtered.length > 0 ? filtered[0].id : null,
-        conversationsByProject: restConvos,
-      };
-    });
-  },
-
-  setActiveProject: (id: string) => {
-    set({ activeProjectId: id });
-  },
-
-  getActiveProject: () => {
-    const state = get();
-    return state.projects.find((p) => p.id === state.activeProjectId);
-  },
-
-  updateProjectName: (id: string, name: string) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, name, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  updateProjectContent: (id: string, content: string) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, content, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  updateRegulatoryStandard: (id: string, standard: 'US' | 'EU') => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, regulatoryStandard: standard, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  updatePaperLayout: (id: string, layout: 'eSTAR' | 'document') => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, paperLayout: layout, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  updateReferenceFormat: (id: string, format: 'mla' | 'chicago' | 'apa') => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, referenceFormat: format, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  attachFile: (projectId: string, fileName: string) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId && !p.attachedFiles.includes(fileName)
-          ? { ...p, attachedFiles: [...p.attachedFiles, fileName], updatedAt: new Date() }
-          : p
-      ),
-    }));
-  },
-
-  detachFile: (projectId: string, fileName: string) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId
-          ? {
-              ...p,
-              attachedFiles: p.attachedFiles.filter((f) => f !== fileName),
-              updatedAt: new Date(),
-            }
-          : p
-      ),
-    }));
-  },
-
-  updateProjectAnnotations: (id: string, annotations: Annotation[]) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, annotations, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  updateProjectReferences: (id: string, references: AIReference[]) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === id ? { ...p, references, updatedAt: new Date() } : p
-      ),
-    }));
-  },
-
-  addGeneratedDocuments: (documents: GeneratedDocument[]) => {
-    set((state) => {
-      const activeProject = state.projects.find(p => p.id === state.activeProjectId);
-      if (!activeProject) return state;
-
-      return {
-        projects: state.projects.map((p) =>
-          p.id === state.activeProjectId
-            ? {
-                ...p,
-                generatedDocuments: [...p.generatedDocuments, ...documents],
-                updatedAt: new Date(),
-              }
-            : p
+      // Don't persist computed/getter functions — Zustand handles this automatically
+      // but we explicitly skip very large parsedContent over 50 KB per project
+      partialize: (state) => ({
+        projects: state.projects,
+        activeProjectId: state.activeProjectId,
+        conversationsByProject: state.conversationsByProject,
+        sourcesByProject: Object.fromEntries(
+          Object.entries(state.sourcesByProject).map(([pid, sources]) => [
+            pid,
+            sources.map((s) => ({
+              ...s,
+              // Cap stored parsedContent at 4 KB to keep localStorage healthy
+              parsedContent: s.parsedContent && s.parsedContent.length > 4096
+                ? s.parsedContent.slice(0, 4096) + '\n...[truncated]'
+                : s.parsedContent,
+            })),
+          ])
         ),
-      };
-    });
-  },
-
-  getGeneratedDocuments: (projectId: string) => {
-    const state = get();
-    const project = state.projects.find(p => p.id === projectId);
-    return project?.generatedDocuments || [];
-  },
-
-  updateGeneratedDocument: (projectId: string, documentId: number, content: string) => {
-    set((state) => ({
-      projects: state.projects.map((p) =>
-        p.id === projectId
-          ? {
-              ...p,
-              generatedDocuments: p.generatedDocuments.map((d) =>
-                d.id === documentId ? { ...d, content } : d
-              ),
-              updatedAt: new Date(),
-            }
-          : p
-      ),
-    }));
-  },
-}));
+      }),
+    }
+  )
+);

@@ -36,6 +36,7 @@ import {
   Eye,
   Loader2,
   ChevronDown,
+  ChevronUp,
   Wand2,
   ShieldCheck,
   BarChart2,
@@ -44,6 +45,8 @@ import {
   RefreshCw,
   WifiOff,
   Trash2,
+  FolderOpen,
+  Plus,
 } from "lucide-react";
 import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
 import { formatDistanceToNow } from "date-fns";
@@ -314,7 +317,7 @@ function SourcesPanel({
         });
         const ext = file.type?.toLowerCase();
         if (["csv", "xlsx", "xls"].includes(ext)) {
-          const parsed = parseCSVData(result.content);
+          const parsed = parseCSVData(result.content ?? "");
           setPreviewData((prev) => ({
             ...prev,
             [file.id]: {
@@ -1490,7 +1493,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           const result = await trpcUtils.files.getFileContent.fetch({
             fileId: parseInt(csvFile.id),
           });
-          const parsed = parseCSVData(result.content);
+          const parsed = parseCSVData(result.content ?? "");
           if (parsed.length > 0) {
             const cols = Object.keys(parsed[0] ?? {});
             setColumnClassifications(deriveColumnTypes(parsed));
@@ -2372,14 +2375,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             <p className="text-sm text-center max-w-xs leading-relaxed">
               Ask me anything about your biostatistics data
             </p>
-            {uploadedData ? (
+            {uploadedData && (
               <p className="text-xs opacity-50">
                 📊 {uploadedData.filename} · {fullData.length} rows loaded
-              </p>
-            ) : (
-              <p className="text-xs opacity-40 text-center max-w-[220px]">
-                Attach a CSV or XLSX file using the paperclip icon below to
-                enable data analysis
               </p>
             )}
           </div>
@@ -2496,11 +2494,12 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         <div ref={messagesEndRef} />
       </div>
 
-      {/* ── Dataset pill ─────────────────────────────────────────────── */}
-      <DatasetPill />
+      {/* Dataset pill removed — all source info lives in the foldable Sources Attached drawer */}
 
       {/* ── Dataset Tools accordion (hidden in compact mode — dropdowns serve this) */}
       {!compact && <DatasetToolsPanel />}
+
+      {/* Sources panel removed — now accessible via paperclip icon in input bar */}
 
       {/* ── Pinned input bar ──────────────────────────────────────────── */}
       <div className={cn(
@@ -2536,25 +2535,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               </button>
             </div>
           )}
-          {/* No-sources hint — shown only when NO files are attached at all */}
-          {!hasAnySources && (
-            <div
-              className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg border"
-              style={{ backgroundColor: "#f3f4f6", borderColor: "#d1d5db" }}
-            >
-              <Paperclip className="w-3.5 h-3.5 flex-shrink-0 text-[#475569]" />
-              <span className="text-[11px] leading-tight text-[#1f2937]">
-                Attach a file to enable data analysis
-              </span>
-              <button
-                type="button"
-                onClick={() => setAttachModalOpen(true)}
-                className="text-[11px] font-semibold hover:underline flex-shrink-0 ml-auto text-[#3b82f6] hover:text-[#1d4ed8]"
-              >
-                Attach File
-              </button>
-            </div>
-          )}
+          {/* Gray banner removed — single paperclip entry point in input bar */}
           {/* Graph-edit mode banner */}
           {selectedGraphId && (
             <div className="flex items-center justify-between px-4 py-2 rounded-t-2xl bg-[#f0fdf4] border border-emerald-200 border-b-0">
@@ -2581,56 +2562,148 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 : "items-end py-3 border-[#E5E7EB] focus-within:border-[#3b82f6] focus-within:shadow-[0_0_0_3px_rgba(59,130,246,0.14)]"
           )}>
 
-            {/* Left: Paperclip (manage sources) + Upload (computer).
-                CHANGED: paperclip now opens AttachmentModal instead of a scope-picker dropdown.
-                Upload button triggers computer upload directly (tab scope, no dropdown).
-                REMOVED: both inline scope-picker DropdownMenus — no clutter in the UI. */}
-            <div className="flex items-center gap-2 flex-shrink-0 self-end pb-1.5">
-
-              {/* ── Paperclip: open AttachmentModal to view/manage attached sources ── */}
-              <Button
+            {/* Paperclip — Source Documents toggle */}
+            <div className="relative flex-shrink-0 self-end pb-1.5">
+              <button
                 type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setAttachModalOpen(true)}
+                onClick={() => setSourcesOpen((v) => !v)}
+                title="Manage Source Documents"
                 className={cn(
-                  "h-9 w-9 rounded-xl transition-colors text-muted-foreground",
-                  (attachedFiles.length > 0 || projectSettings.sources.length > 0)
-                    ? "hover:bg-blue-50 hover:text-[#3b82f6] text-[#3b82f6]"
-                    : "hover:bg-accent/60 hover:text-foreground"
+                  "p-2 rounded-full transition-colors",
+                  sourcesOpen
+                    ? "text-[#194CFF] bg-[#eff6ff]"
+                    : "text-[#194CFF] hover:text-[#3b82f6] hover:bg-[#f1f5f9]"
                 )}
-                aria-label="Attach files for analysis"
-                title={
-                  (attachedFiles.length + projectSettings.sources.length) > 0
-                    ? `${attachedFiles.length + projectSettings.sources.length} file(s) attached — click to manage`
-                    : "Attach files for analysis"
-                }
               >
-                <Paperclip className="h-5 w-5" />
-              </Button>
+                <Paperclip className="w-5 h-5" />
+              </button>
 
-              {/* ── Upload: from computer (tab scope by default) ── */}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                disabled={uploadFileMutation.isPending}
-                onClick={() => { setAttachScope('tab'); computerUploadRef.current?.click(); }}
-                className="h-9 w-9 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                title="Upload file from computer"
-                aria-label="Upload file from computer"
-              >
-                {uploadFileMutation.isPending ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Upload className="h-5 w-5" />
-                )}
-              </Button>
+              {/* Source Documents popup — positioned above the input bar */}
+              {sourcesOpen && (
+                <div
+                  className="absolute bottom-full left-0 mb-3 w-[300px] bg-[#f9fafb] border border-[#e2e8f0] rounded-lg shadow-[0_4px_6px_-1px_rgba(0,0,0,0.1)] z-50 overflow-hidden"
+                >
+                  {/* Header */}
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-[#e2e8f0]">
+                    <h3 className="text-lg font-bold text-[#0f172a]">Source Documents</h3>
+                    <button
+                      type="button"
+                      onClick={() => setSourcesOpen(false)}
+                      className="p-1 rounded text-[#64748b] hover:text-[#111827] hover:bg-[#f1f5f9] transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
 
+                  {/* Scrollable content */}
+                  <div className="overflow-y-auto" style={{ maxHeight: "320px" }}>
+                    {/* Project Files */}
+                    <div className="px-4 py-3">
+                      <h4 className="text-xs font-bold text-[#0f172a] uppercase tracking-wider mb-0.5 flex items-center gap-1.5">
+                        <FolderOpen className="w-3.5 h-3.5 text-[#2563eb]" />
+                        Project Files
+                      </h4>
+                      <p className="text-[10px] text-[#94a3b8] mb-2 pl-5">Shared across all analysis tabs</p>
+                      <div className="h-px bg-[#e2e8f0] mb-2" />
+                      {projectSettings.sources.length === 0 ? (
+                        <p className="text-xs text-[#94a3b8] italic pl-5">No project-level files</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {projectSettings.sources.map((src) => {
+                            const ext = src.name.split(".").pop()?.toLowerCase() ?? "";
+                            const SrcIcon = ["csv", "xlsx", "xls", "tsv"].includes(ext) ? FileSpreadsheet : FileText;
+                            return (
+                              <div
+                                key={src.id}
+                                className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white group transition-colors"
+                              >
+                                <SrcIcon className="w-4 h-4 text-[#2563eb] flex-shrink-0" />
+                                <span className="text-xs font-medium text-[#0f172a] truncate flex-1 min-w-0">
+                                  {src.name}
+                                </span>
+                                {src.size && <span className="text-[10px] text-[#94a3b8] flex-shrink-0">{formatBytes(src.size)}</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    activeProjectId && removeProjectSource(activeProjectId, src.id);
+                                    toast.success("Project file removed");
+                                  }}
+                                  className="text-[10px] text-[#ef4444] font-medium opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex-shrink-0"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Tab Files */}
+                    <div className="px-4 py-3 border-t border-[#e2e8f0]">
+                      <h4 className="text-xs font-bold text-[#0f172a] uppercase tracking-wider mb-0.5 flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-[#2563eb]" />
+                        Tab Files
+                      </h4>
+                      <p className="text-[10px] text-[#94a3b8] mb-2 pl-5">Files uploaded here are associated with this analysis tab</p>
+                      <div className="h-px bg-[#e2e8f0] mb-2" />
+                      {attachedFiles.length === 0 ? (
+                        <p className="text-xs text-[#94a3b8] italic pl-5">No tab files yet — add below</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {attachedFiles.map((file) => {
+                            const ext = file.type?.toLowerCase() ?? "";
+                            const FIcon = ["csv", "xlsx", "xls"].includes(ext) ? FileSpreadsheet : FileText;
+                            return (
+                              <div
+                                key={file.id}
+                                className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-white group transition-colors"
+                              >
+                                <FIcon className="w-4 h-4 text-[#2563eb] flex-shrink-0" />
+                                <span className="text-xs font-medium text-[#0f172a] truncate flex-1 min-w-0">
+                                  {file.name}
+                                </span>
+                                {file.size && <span className="text-[10px] text-[#94a3b8] flex-shrink-0">{file.size}</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))}
+                                  className="text-[10px] text-[#ef4444] font-medium opacity-0 group-hover:opacity-100 transition-opacity hover:underline flex-shrink-0"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Footer: Add File + Upload from Computer */}
+                  <div className="px-4 py-3 border-t border-[#e2e8f0] space-y-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setPickerOpen(true); setSourcesOpen(false); }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-[#194CFF] rounded-lg hover:bg-[#3b82f6] transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add from Repository
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setAttachScope('tab'); computerUploadRef.current?.click(); setSourcesOpen(false); }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-[#194CFF] border border-[#194CFF] rounded-lg hover:bg-[#eff6ff] transition-colors"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Upload File
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-[#94a3b8] text-center">Drag files into the chat area or click to browse</p>
+                  </div>
+                </div>
+              )}
             </div>
-
-            {/* Divider */}
-            <div className="w-px h-6 bg-border/60 flex-shrink-0 mx-0.5 self-end mb-2.5" />
 
             {/* Voice dictation */}
             <div className="relative flex-shrink-0 self-end pb-1.5">
@@ -2685,38 +2758,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               style={{ minHeight: "80px", maxHeight: "200px", padding: "16px 16px", fontSize: "15px" }}
             />
 
-            {/* Right: Sources badge + Send */}
+            {/* Right: Send button only — no file badges in input bar */}
             <div className="flex items-center gap-2 flex-shrink-0 self-end pb-1.5">
-              {/* Sources panel trigger */}
-              {(() => {
-                const totalCount = attachedFiles.length + projectSettings.sources.length;
-                return (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setSourcesOpen(true)}
-                    className="relative h-9 w-9 rounded-xl hover:bg-accent/60 text-muted-foreground hover:text-foreground"
-                    aria-label="View attached sources"
-                    title={
-                      totalCount > 0
-                        ? `${totalCount} source${totalCount !== 1 ? "s" : ""} attached (${projectSettings.sources.length} project, ${attachedFiles.length} tab)`
-                        : "View attached sources"
-                    }
-                  >
-                    <Files className="h-5 w-5" />
-                    {totalCount > 0 && (
-                      <span
-                        className="absolute -top-0.5 -right-0.5 text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center leading-none pointer-events-none text-white"
-                        style={{ backgroundColor: hasActiveSource ? "#3b82f6" : "#94a3b8" }}
-                      >
-                        {totalCount > 9 ? "9+" : totalCount}
-                      </span>
-                    )}
-                  </Button>
-                );
-              })()}
-
               {/* Send */}
               <Button
                 onClick={() => {
@@ -2730,7 +2773,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 }}
                 disabled={isLoading || !inputValue.trim()}
                 aria-label="Send message"
-                title={hasAnySources ? `${attachedFiles.length + projectSettings.sources.length} source${(attachedFiles.length + projectSettings.sources.length) !== 1 ? 's' : ''} ready — analysis will use attached data` : "Send message"}
+                title="Send message"
                 className={cn(
                   "rounded-full bg-[#0f172a] text-white transition-all p-0 flex-shrink-0",
                   "hover:bg-[#1e293b] active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed",
@@ -2779,12 +2822,24 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         open={attachModalOpen}
         onClose={() => setAttachModalOpen(false)}
         tabFiles={attachedFiles}
-        onRemoveTabFile={(id) => setAttachedFiles((prev) => prev.filter((f) => f.id !== id))}
+        onRemoveTabFile={(id) => {
+          setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
+          toast.success("File removed", {
+            style: { backgroundColor: "#00cc99", color: "#ffffff", border: "none" },
+            duration: 2000,
+          });
+        }}
         onClearAllTabFiles={() => setAttachedFiles([])}
         projectSources={projectSettings.sources}
-        onRemoveProjectSource={(id) => activeProjectId && removeProjectSource(activeProjectId, id)}
-        onAddFromLibrary={() => { setAttachScope('tab'); setPickerOpen(true); }}
-        onUploadFromComputer={() => { setAttachScope('tab'); computerUploadRef.current?.click(); }}
+        onRemoveProjectSource={(id) => {
+          activeProjectId && removeProjectSource(activeProjectId, id);
+          toast.success("File removed", {
+            style: { backgroundColor: "#00cc99", color: "#ffffff", border: "none" },
+            duration: 2000,
+          });
+        }}
+        onAddFromLibrary={() => { setPickerOpen(true); }}
+        onUploadFromComputer={() => { computerUploadRef.current?.click(); }}
         tabName={activeTabName}
         sourceSelection={sourceSelection}
         onToggleSource={toggleSource}
@@ -2793,9 +2848,10 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         onSelectTabOnly={selectTabOnly}
         onSelectProjectOnly={selectProjectOnly}
         isSourceUsedInQueries={isSourceUsedInQueries}
+        onSetScope={(scope) => setAttachScope(scope)}
         onLoadToQuery={() => {
           toast.success("Sources loaded and associated with your query.", {
-            style: { backgroundColor: "#3b82f6", color: "#ffffff", border: "none" },
+            style: { backgroundColor: "#00cc99", color: "#ffffff", border: "none" },
             duration: 2500,
           });
         }}
@@ -2807,24 +2863,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         onAttach={(files) => handleAttachedFiles(files, attachScope)}
       />
 
-      <SourcesPanel
-        open={sourcesOpen}
-        onClose={() => setSourcesOpen(false)}
-        files={attachedFiles}
-        onRemove={(id) =>
-          setAttachedFiles((prev) => prev.filter((f) => f.id !== id))
-        }
-        onClearAll={() => setAttachedFiles([])}
-        onAddMore={() => {
-          setSourcesOpen(false);
-          setPickerOpen(true);
-        }}
-        projectSources={projectSettings.sources}
-        onRemoveProjectSource={(id) =>
-          activeProjectId && removeProjectSource(activeProjectId, id)
-        }
-        tabName={activeTabName}
-      />
+      {/* SourcesPanel bottom sheet removed — all file management via AttachmentModal */}
 
       {/* Hidden input for computer file upload */}
       <input
@@ -2845,13 +2884,13 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           />
           <div
             className="fixed z-[210] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-xl shadow-2xl border w-full max-w-sm p-6"
-            style={{ backgroundColor: "#1a202c", borderColor: "#2d3748" }}
+            style={{ backgroundColor: "#ffffff", borderColor: "#e2e8f0" }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-sm font-semibold mb-3" style={{ color: "#ffffff" }}>
+            <h3 className="text-sm font-semibold mb-3" style={{ color: "#111827" }}>
               PDF Content Not Fully Extractable
             </h3>
-            <p className="text-xs leading-relaxed mb-5" style={{ color: "#e2e8f0" }}>
+            <p className="text-xs leading-relaxed mb-5" style={{ color: "#475569" }}>
               One or more selected PDF sources could not be fully parsed for text content.
               The AI will only have access to the file name and basic metadata.
               Proceed with basic metadata?
@@ -2861,7 +2900,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                 type="button"
                 onClick={() => { setPdfWarningOpen(false); setPdfWarningPendingMessage(null); }}
                 className="px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors"
-                style={{ borderColor: "#4a5568", color: "#a0aec0" }}
+                style={{ borderColor: "#e2e8f0", color: "#64748b" }}
               >
                 Cancel
               </button>

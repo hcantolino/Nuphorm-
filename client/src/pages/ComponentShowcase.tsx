@@ -174,7 +174,7 @@ import { toast as sonnerToast } from "sonner";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
 
 export default function ComponentsShowcase() {
-  const { theme, toggleTheme } = useTheme();
+  const { theme } = useTheme();
   const [date, setDate] = useState<Date | undefined>(new Date());
   const [datePickerDate, setDatePickerDate] = useState<Date>();
   const [selectedFruits, setSelectedFruits] = useState<string[]>([]);
@@ -233,12 +233,8 @@ export default function ComponentsShowcase() {
           <h2 className="text-3xl font-bold tracking-tight mb-6">
             Shadcn/ui Component Library
           </h2>
-          <Button variant="outline" size="icon" onClick={toggleTheme}>
-            {theme === "light" ? (
-              <Moon className="h-5 w-5" />
-            ) : (
-              <Sun className="h-5 w-5" />
-            )}
+          <Button variant="outline" size="icon" disabled title="Light theme only">
+            <Sun className="h-5 w-5" />
           </Button>
         </div>
 

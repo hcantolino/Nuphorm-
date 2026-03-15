@@ -171,7 +171,7 @@ export default function Biostatistics() {
       });
 
       // Parse the CSV into rows using the existing parseFile utility
-      const fileBlob = new Blob([fileResult.content], { type: 'text/csv' });
+      const fileBlob = new Blob([fileResult.content ?? ''], { type: 'text/csv' });
       const fileObj = new File([fileBlob], fileResult.fileName, { type: 'text/csv' });
       const parsedData = await parseFile(fileObj);
       const fullData: Array<Record<string, any>> = parsedData.data || [];

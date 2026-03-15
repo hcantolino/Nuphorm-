@@ -42,6 +42,9 @@ import type {
   TableSortConfig,
   ErrorBarType,
   TrendlineType,
+  TrendlineDashPattern,
+  DataLabelFormat,
+  ChartTheme,
 } from "@/stores/aiPanelStore";
 
 // ── Palette definitions (exported so ChartRenderer can use them) ─────────
@@ -309,6 +312,32 @@ const ChartSection: React.FC<{
           checked={customizations.showDataLabels}
           onChange={(v) => onSet("showDataLabels", v)}
         />
+        {customizations.showDataLabels && (
+          <div className="pl-3 border-l-2 border-blue-100 space-y-2">
+            <div>
+              <span className="text-xs text-[#64748b]">Format</span>
+              <select
+                value={customizations.dataLabelFormat}
+                onChange={(e) => onSet("dataLabelFormat", e.target.value as DataLabelFormat)}
+                className="w-full mt-1 px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#194CFF] text-[#0f172a] bg-white"
+                aria-label="Data label format"
+              >
+                <option value="decimal">Decimal</option>
+                <option value="percentage">Percentage</option>
+                <option value="integer">Integer</option>
+              </select>
+            </div>
+            {customizations.dataLabelFormat === "decimal" && (
+              <SliderRow
+                label="Decimal Places"
+                value={customizations.dataLabelDecimals}
+                min={0} max={6} step={1}
+                displayFn={(v) => `${v}`}
+                onChange={(v) => onSet("dataLabelDecimals", v)}
+              />
+            )}
+          </div>
+        )}
         {isScatter && (
           <ToggleRow
             label="Drop Lines"
@@ -324,7 +353,8 @@ const ChartSection: React.FC<{
           <select
             value={customizations.trendlineType}
             onChange={(e) => onSet("trendlineType", e.target.value as TrendlineType)}
-            className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#3b82f6] text-[#0f172a] bg-white"
+            className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-1 focus:ring-[#194CFF] text-[#0f172a] bg-white"
+            aria-label="Trendline type"
           >
             <option value="none">None</option>
             <option value="linear">Linear</option>
@@ -332,13 +362,64 @@ const ChartSection: React.FC<{
             <option value="exponential">Exponential</option>
           </select>
           {customizations.trendlineType !== "none" && (
-            <div className="mt-2 space-y-1.5 pl-3 border-l-2 border-blue-100">
+            <div className="mt-2 space-y-2.5 pl-3 border-l-2 border-blue-100">
+              <SliderRow
+                label="Thickness"
+                value={customizations.trendlineThickness}
+                min={1} max={5} step={0.5}
+                displayFn={(v) => `${v}px`}
+                onChange={(v) => onSet("trendlineThickness", v)}
+              />
+              <div>
+                <span className="text-xs text-[#64748b]">Dash Pattern</span>
+                <div className="flex gap-1.5 mt-1">
+                  {([
+                    { value: "solid" as TrendlineDashPattern, label: "Solid", preview: "────" },
+                    { value: "dashed" as TrendlineDashPattern, label: "Dashed", preview: "- - -" },
+                    { value: "dotted" as TrendlineDashPattern, label: "Dotted", preview: "· · · ·" },
+                  ]).map(({ value, label, preview }) => (
+                    <button
+                      key={value}
+                      onClick={() => onSet("trendlineDashPattern", value)}
+                      className={cn(
+                        "flex-1 flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-lg border text-[10px] font-medium transition-all focus:outline-none",
+                        customizations.trendlineDashPattern === value
+                          ? "bg-blue-50 border-[#194CFF] text-[#194CFF] shadow-sm"
+                          : "bg-white border-[#e2e8f0] text-[#64748b] hover:border-[#194CFF] hover:bg-blue-50"
+                      )}
+                      aria-label={`${label} trendline pattern`}
+                    >
+                      <span className="font-mono text-[9px] tracking-wider">{preview}</span>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <SliderRow
+                label="Opacity"
+                value={customizations.trendlineOpacity}
+                min={0.3} max={1} step={0.05}
+                displayFn={(v) => `${Math.round(v * 100)}%`}
+                onChange={(v) => onSet("trendlineOpacity", v)}
+              />
+              <ToggleRow
+                label="Glow Effect"
+                description="Subtle shadow glow on trendlines"
+                checked={customizations.trendlineGlow}
+                onChange={(v) => onSet("trendlineGlow", v)}
+              />
+              <ToggleRow
+                label="Confidence Bands"
+                description="Semi-transparent fill showing confidence interval"
+                checked={customizations.showConfidenceBands}
+                onChange={(v) => onSet("showConfidenceBands", v)}
+              />
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={customizations.showTrendlineEquation}
                   onChange={(e) => onSet("showTrendlineEquation", e.target.checked)}
-                  className="w-3 h-3 accent-teal-500"
+                  className="w-3 h-3 accent-[#194CFF]"
                 />
                 <span className="text-xs text-[#64748b]">Show equation</span>
               </label>
@@ -347,7 +428,7 @@ const ChartSection: React.FC<{
                   type="checkbox"
                   checked={customizations.showTrendlineR2}
                   onChange={(e) => onSet("showTrendlineR2", e.target.checked)}
-                  className="w-3 h-3 accent-teal-500"
+                  className="w-3 h-3 accent-[#194CFF]"
                 />
                 <span className="text-xs text-[#64748b]">Show R²</span>
               </label>
@@ -475,6 +556,20 @@ const GraphSection: React.FC<{
   onSet: <K extends keyof TabCustomizations>(key: K, value: TabCustomizations[K]) => void;
 }> = ({ customizations, onSet }) => (
   <div className="space-y-4">
+    {/* Chart Title */}
+    <div>
+      <SectionLabel>Chart Title</SectionLabel>
+      <input
+        type="text"
+        value={customizations.chartTitle}
+        onChange={(e) => onSet("chartTitle", e.target.value)}
+        placeholder="Enter chart title…"
+        className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors font-semibold"
+        aria-label="Chart title"
+      />
+      <p className="text-[10px] text-[#94a3b8] mt-1">Auto-fits: scales down if too long</p>
+    </div>
+
     {/* Axis Labels */}
     <div>
       <SectionLabel>Axis Labels</SectionLabel>
@@ -484,14 +579,16 @@ const GraphSection: React.FC<{
           value={customizations.xLabel}
           onChange={(e) => onSet("xLabel", e.target.value)}
           placeholder="X-axis label…"
-          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#3b82f6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+          aria-label="X-axis label"
         />
         <input
           type="text"
           value={customizations.yLabel}
           onChange={(e) => onSet("yLabel", e.target.value)}
           placeholder="Y-axis label…"
-          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#3b82f6] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+          className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8] transition-colors"
+          aria-label="Y-axis label"
         />
       </div>
     </div>
@@ -504,6 +601,7 @@ const GraphSection: React.FC<{
           <BoundInput label="Min" value={customizations.yAxisMin} onChange={(v) => onSet("yAxisMin", v)} />
           <BoundInput label="Max" value={customizations.yAxisMax} onChange={(v) => onSet("yAxisMax", v)} />
         </div>
+        <BoundInput label="Step" value={customizations.yAxisStepSize} onChange={(v) => onSet("yAxisStepSize", v)} />
         <ToggleRow
           label="Log Scale"
           description="Logarithmic Y-axis"
@@ -519,13 +617,23 @@ const GraphSection: React.FC<{
       </div>
     </div>
 
-    {/* X-Axis Bounds */}
+    {/* X-Axis */}
     <div>
-      <SectionLabel>X-Axis Bounds</SectionLabel>
-      <p className="text-[10px] text-[#94a3b8] mb-2 -mt-1">For scatter / numeric X-axis</p>
-      <div className="grid grid-cols-2 gap-2">
-        <BoundInput label="Min" value={customizations.xAxisMin} onChange={(v) => onSet("xAxisMin", v)} />
-        <BoundInput label="Max" value={customizations.xAxisMax} onChange={(v) => onSet("xAxisMax", v)} />
+      <SectionLabel>X-Axis</SectionLabel>
+      <p className="text-[10px] text-[#94a3b8] mb-2 -mt-1">Bounds, step, and rotation</p>
+      <div className="space-y-2.5">
+        <div className="grid grid-cols-2 gap-2">
+          <BoundInput label="Min" value={customizations.xAxisMin} onChange={(v) => onSet("xAxisMin", v)} />
+          <BoundInput label="Max" value={customizations.xAxisMax} onChange={(v) => onSet("xAxisMax", v)} />
+        </div>
+        <BoundInput label="Step" value={customizations.xAxisStepSize} onChange={(v) => onSet("xAxisStepSize", v)} />
+        <SliderRow
+          label="Label Rotation"
+          value={customizations.xAxisRotation}
+          min={0} max={90} step={15}
+          displayFn={(v) => `${v}°`}
+          onChange={(v) => onSet("xAxisRotation", v)}
+        />
       </div>
     </div>
 
@@ -540,9 +648,10 @@ const GraphSection: React.FC<{
             className={cn(
               "px-2.5 py-1 rounded-lg text-xs border transition-all focus:outline-none",
               customizations.legendPosition === value
-                ? "bg-blue-50 border-[#3b82f6] text-[#3b82f6] font-medium"
-                : "border-[#e2e8f0] text-[#64748b] hover:border-[#3b82f6] hover:bg-blue-50 hover:text-[#0f172a]"
+                ? "bg-blue-50 border-[#194CFF] text-[#194CFF] font-medium"
+                : "border-[#e2e8f0] text-[#64748b] hover:border-[#194CFF] hover:bg-blue-50 hover:text-[#0f172a]"
             )}
+            aria-label={`Legend position: ${label}`}
           >
             {label}
           </button>
@@ -555,10 +664,35 @@ const GraphSection: React.FC<{
       <SectionLabel>Display</SectionLabel>
       <ToggleRow
         label="Grid Lines"
-        description="Show major grid lines on chart"
+        description="Light gray dashed grid lines"
         checked={customizations.showGrid}
         onChange={(v) => onSet("showGrid", v)}
       />
+    </div>
+
+    {/* Theme */}
+    <div>
+      <SectionLabel>Theme</SectionLabel>
+      <div className="flex gap-1.5">
+        {([
+          { value: "light" as ChartTheme, label: "Light (Finbox)" },
+          { value: "dark" as ChartTheme, label: "Dark" },
+        ]).map(({ value, label }) => (
+          <button
+            key={value}
+            onClick={() => onSet("chartTheme", value)}
+            className={cn(
+              "flex-1 px-2.5 py-1.5 rounded-lg text-xs border transition-all focus:outline-none",
+              customizations.chartTheme === value
+                ? "bg-blue-50 border-[#194CFF] text-[#194CFF] font-medium"
+                : "border-[#e2e8f0] text-[#64748b] hover:border-[#194CFF] hover:bg-blue-50 hover:text-[#0f172a]"
+            )}
+            aria-label={`Chart theme: ${label}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   </div>
 );
@@ -819,10 +953,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
   return (
     <>
-      {/* Trigger button */}
+      {/* Trigger button — Finbox deep blue */}
       <button
         onClick={() => setOpen((p) => !p)}
-        className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium rounded-lg bg-[#3b82f6] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1"
+        className="inline-flex items-center gap-1.5 h-7 px-4 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1"
+        style={{
+          backgroundColor: '#194CFF',
+          borderRadius: '0.75rem',
+        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#3B82F6'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#194CFF'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
         aria-label="Open customization panel"
         aria-expanded={open}
       >
@@ -835,12 +975,13 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         <Draggable nodeRef={nodeRef} handle=".drag-handle" position={dragPos} onDrag={(_, data) => setDragPos({ x: data.x, y: data.y })}>
           <div
             ref={nodeRef}
-            className="fixed top-20 right-4 bg-white border border-[#e5e7eb] rounded-xl z-[200] flex flex-col"
+            className="fixed top-20 right-4 border border-[#e5e7eb] rounded-xl z-[200] flex flex-col"
             style={{
               width: panelWidth,
               height: panelHeight ?? "auto",
               maxHeight: panelHeight ? "none" : "85vh",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
+              boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1), 0 8px 32px rgba(0,0,0,0.08)",
+              background: "linear-gradient(180deg, #E0F2FE 0%, #FFFFFF 100%)",
             }}
           >
             {/* Drag handle / header */}

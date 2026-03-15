@@ -61,8 +61,10 @@ interface PlotlyInteractiveChartProps {
 // ── Theme constants ────────────────────────────────────────────────────────
 
 const TREATMENT_COLORS: Record<string, string> = {
-  control: '#64748b',
-  placebo: '#64748b',
+  experimental: '#0F172A',
+  treatment: '#0F172A',
+  control: '#EC4899',
+  placebo: '#EC4899',
   kinase: '#3b82f6',
   chemo: '#10b981',
   chemotherapy: '#10b981',
@@ -71,6 +73,10 @@ const TREATMENT_COLORS: Record<string, string> = {
 };
 
 const DEFAULT_PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#64748b'];
+/** KM/survival default: black for Experimental, pink for Control */
+const KM_PALETTE = ['#0F172A', '#EC4899', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6'];
+/** Trendline default color for survival charts */
+const KM_TRENDLINE_COLOR = '#D1D5DB';
 
 const LAYOUT_BASE: Partial<Plotly.Layout> = {
   paper_bgcolor: '#ffffff',
@@ -154,12 +160,14 @@ function buildTitleConfig(
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function getTraceColor(name: string, index: number): string {
+function getTraceColor(name: string, index: number, isSurvival = false): string {
   const lower = name.toLowerCase();
   for (const [key, color] of Object.entries(TREATMENT_COLORS)) {
     if (lower.includes(key)) return color;
   }
-  return DEFAULT_PALETTE[index % DEFAULT_PALETTE.length];
+  // Use KM palette (black/pink) for survival charts, default palette otherwise
+  const palette = isSurvival ? KM_PALETTE : DEFAULT_PALETTE;
+  return palette[index % palette.length];
 }
 
 // ── Survival / KM builder ────────────────────────────────────────────────
@@ -171,15 +179,15 @@ function buildSurvivalTraces(
   const annotations: Partial<Plotly.Annotations>[] = [];
 
   traces.forEach((trace, i) => {
-    const color = trace.color ?? getTraceColor(trace.name, i);
+    const color = trace.color ?? getTraceColor(trace.name, i, true);
 
     plotData.push({
       x: trace.time,
       y: trace.values,
       mode: 'lines+markers',
       name: trace.name,
-      line: { color, width: 2.5, shape: 'spline' },
-      marker: { color, size: 5 },
+      line: { color, width: 2.5, shape: 'hv' },
+      marker: { color, size: 4 },
       type: 'scatter',
       hovertemplate: `<b>${trace.name}</b><br>Time: %{x}<br>Value: %{y:.1f}<extra></extra>`,
     });
@@ -644,12 +652,17 @@ interface ActionButtonProps {
   onClick: () => void;
 }
 
-function ActionButton({ icon: Icon, label, onClick }: ActionButtonProps) {
+function ActionButton({ icon: Icon, label, onClick, variant }: ActionButtonProps & { variant?: "primary" }) {
+  const isPrimary = variant === "primary";
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors
-        bg-white border-slate-200 text-slate-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700"
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border transition-colors ${
+        isPrimary
+          ? "bg-[#194CFF] border-[#194CFF] text-white hover:bg-[#3B82F6] hover:border-[#3B82F6]"
+          : "bg-[#F1F5F9] border-[#E2E8F0] text-[#64748b] hover:bg-[#E2E8F0] hover:text-[#0f172a]"
+      }`}
+      style={{ borderRadius: "0.5rem" }}
     >
       <Icon className="w-3.5 h-3.5" />
       {label}
@@ -973,7 +986,7 @@ export default function PlotlyInteractiveChart({
             onClick={() => onEditAction('add_trendline', selectedPoint)}
           />
           <div className="ml-auto">
-            <ActionButton icon={Download} label="Export PNG" onClick={handleExport} />
+            <ActionButton icon={Download} label="Export PNG" onClick={handleExport} variant="primary" />
           </div>
         </div>
       )}

@@ -372,9 +372,9 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
    * Render upload zone panel
    */
   const renderUploadPanel = () => (
-    <Card className="border-0 shadow-sm bg-white dark:bg-gray-900">
+    <Card className="border-0 shadow-sm bg-white">
       <CardHeader
-        className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        className="cursor-pointer hover:bg-gray-50 transition-colors"
         onClick={() => togglePanel('upload')}
         role="button"
         tabIndex={0}
@@ -415,8 +415,8 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
             onClick={() => fileInputRef.current?.click()}
             className={`relative border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all ${
               isDragging
-                ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
-                : 'border-gray-300 hover:border-gray-400 bg-gray-50 dark:bg-gray-900'
+                ? 'border-blue-500 bg-blue-50'
+                : 'border-gray-300 hover:border-gray-400 bg-gray-50'
             }`}
             role="button"
             tabIndex={0}
@@ -442,10 +442,10 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
               aria-label="File input"
             />
             <Upload className="w-12 h-12 mx-auto mb-2 text-gray-400" />
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            <p className="text-sm font-medium text-gray-700">
               Drag and drop your files here
             </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <p className="text-xs text-gray-500 mt-1">
               or click to browse (PDF, CSV, XLSX, TXT, JSON - max 50MB)
             </p>
           </div>
@@ -459,12 +459,12 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
                   {uploadedFiles.map((file) => (
                     <div
                       key={file.id}
-                      className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                     >
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{file.name}</p>
                         <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                          <div className="flex-1 bg-gray-200 rounded-full h-1.5">
                             <div
                               className="bg-blue-500 h-1.5 rounded-full transition-all"
                               style={{ width: `${file.progress || 0}%` }}
@@ -485,7 +485,7 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
                       </div>
                       <button
                         onClick={() => removeFile(file.id)}
-                        className="ml-2 p-1 hover:bg-red-100 dark:hover:bg-red-900 rounded transition-colors"
+                        className="ml-2 p-1 hover:bg-red-100 rounded transition-colors"
                         aria-label={`Remove ${file.name}`}
                       >
                         <X className="w-4 h-4 text-red-500" />
@@ -505,9 +505,9 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
    * Render AI configuration panel
    */
   const renderAiConfigPanel = () => (
-    <Card className="border-0 shadow-sm bg-white dark:bg-gray-900">
+    <Card className="border-0 shadow-sm bg-white">
       <CardHeader
-        className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        className="cursor-pointer hover:bg-gray-50 transition-colors"
         onClick={() => togglePanel('ai-config')}
         role="button"
         tabIndex={0}
@@ -560,7 +560,7 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
               value={aiConfig.prompt}
               onChange={(e) => updateAiConfig({ prompt: e.target.value })}
               placeholder="Enter custom prompt for AI generation"
-              className="w-full h-24 p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-24 p-3 border border-gray-300 rounded-lg bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
               aria-label="AI prompt"
             />
           </div>
@@ -576,7 +576,7 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
                   className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                     aiConfig.tone === tone
                       ? 'bg-blue-500 text-white'
-                      : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
+                      : 'bg-gray-100 hover:bg-gray-200'
                   }`}
                   aria-pressed={aiConfig.tone === tone}
                   aria-label={`Select ${tone} tone`}
@@ -671,9 +671,9 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
    * Render preview pane
    */
   const renderPreviewPane = () => (
-    <Card className="border-0 shadow-sm bg-white dark:bg-gray-900 h-full flex flex-col">
+    <Card className="border-0 shadow-sm bg-white h-full flex flex-col">
       <CardHeader
-        className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        className="cursor-pointer hover:bg-gray-50 transition-colors"
         onClick={() => togglePanel('preview')}
         role="button"
         tabIndex={0}
@@ -733,18 +733,18 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
           </div>
 
           {/* Preview content */}
-          <ScrollArea className="flex-1 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+          <ScrollArea className="flex-1 border border-gray-200 rounded-lg p-4">
             <div className="space-y-4 pr-4">
               <h3 className="text-lg font-semibold">{previewContent.title}</h3>
               {Object.entries(previewContent.sections).map(([key, content]) => (
                 <div key={key}>
-                  <h4 className="font-medium text-sm text-gray-700 dark:text-gray-300 mb-2">
+                  <h4 className="font-medium text-sm text-gray-700 mb-2">
                     {key
                       .replace(/([A-Z])/g, ' $1')
                       .replace(/^./, (str) => str.toUpperCase())
                       .trim()}
                   </h4>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                  <p className="text-sm text-gray-600 leading-relaxed">
                     {content}
                   </p>
                 </div>
@@ -800,16 +800,16 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
    * Main render
    */
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
+    <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* Header */}
-      <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 sticky top-0 z-40">
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+              <h1 className="text-3xl font-bold text-gray-900">
                 Create a Regulatory Document
               </h1>
-              <p className="text-gray-600 dark:text-gray-400 mt-1">
+              <p className="text-gray-600 mt-1">
                 Generate comprehensive regulatory documents using AI
               </p>
             </div>
@@ -851,8 +851,8 @@ export const RegulatoryDocumentDashboard: React.FC = () => {
                   onClick={() => setActiveSidebarItem(item.id)}
                   className={`w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
                     activeSidebarItem === item.id
-                      ? 'bg-blue-100 dark:bg-blue-900 text-blue-900 dark:text-blue-100'
-                      : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                      ? 'bg-blue-100 text-blue-900'
+                      : 'text-gray-700 hover:bg-gray-100'
                   }`}
                   aria-current={activeSidebarItem === item.id ? 'page' : undefined}
                 >

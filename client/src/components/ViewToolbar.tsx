@@ -13,7 +13,6 @@ export type GroupByOption =
   | "name"
   | "kind"
   | "dateModified"
-  | "dateCreated"
   | "dateAdded"
   | "size"
   | "tags";
@@ -30,7 +29,6 @@ export const GROUP_BY_OPTIONS: { key: GroupByOption; label: string }[] = [
   { key: "name",         label: "Name" },
   { key: "kind",         label: "Kind (File Type)" },
   { key: "dateModified", label: "Date Modified" },
-  { key: "dateCreated",  label: "Date Created" },
   { key: "dateAdded",    label: "Date Added" },
   { key: "size",         label: "Size" },
   { key: "tags",         label: "Tags" },
@@ -53,12 +51,13 @@ export function saveViewMode(section: string, mode: ViewMode) {
   try { localStorage.setItem(LS_VIEW_KEY_PREFIX + section, mode); } catch {}
 }
 
-export function loadGroupBy(section: string): GroupByOption {
+export function loadGroupBy(section: string, fallback: GroupByOption = "none"): GroupByOption {
   try {
     const v = localStorage.getItem(LS_GROUP_KEY_PREFIX + section);
+    if (v === "dateCreated") return "dateAdded"; // migrate removed option
     if (v && GROUP_BY_OPTIONS.some((o) => o.key === v)) return v as GroupByOption;
   } catch {}
-  return "none";
+  return fallback;
 }
 
 export function saveGroupBy(section: string, group: GroupByOption) {
@@ -85,17 +84,48 @@ function getSizeCategory(sizeStr: string): string {
   return "Large (>10 MB)";
 }
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** Returns a sort-key prefix + display label separated by "|" so we can sort then display. */
 function getDateCategory(dateStr: string): string {
-  if (!dateStr) return "Unknown";
+  if (!dateStr) return "9|Unknown";
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return "Unknown";
+  if (isNaN(d.getTime())) return "9|Unknown";
+
   const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  const oneDay = 86400000;
-  if (diff < oneDay) return "Today";
-  if (diff < 7 * oneDay) return "This Week";
-  if (diff < 30 * oneDay) return "This Month";
-  return "Older";
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const fileDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+  // This Day — same calendar day
+  if (fileDay.getTime() === today.getTime()) {
+    const label = `${MONTH_NAMES[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
+    return `0|${label}`;
+  }
+
+  // This Week — same ISO week (Mon-Sun containing today)
+  const dayOfWeek = (now.getDay() + 6) % 7; // Mon=0
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - dayOfWeek);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+
+  if (fileDay >= weekStart && fileDay <= weekEnd) {
+    const fmt = (dt: Date) => `${MONTH_NAMES[dt.getMonth()]} ${dt.getDate()}`;
+    const label = `${fmt(weekStart)} – ${fmt(weekEnd)}, ${weekEnd.getFullYear()}`;
+    return `1|${label}`;
+  }
+
+  // This Month — same calendar month & year
+  if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) {
+    return `2|${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
+  }
+
+  // Earlier — grouped by month/year, sorted most recent first
+  const monthsAgo = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
+  return `${3 + monthsAgo}|${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 /** Generic grouping for Data Library datasets */
@@ -120,7 +150,6 @@ export function groupDatasets<T extends { name: string; format?: string; uploadD
         key = item.format || "Unknown";
         break;
       case "dateModified":
-      case "dateCreated":
       case "dateAdded":
         key = getDateCategory(item.uploadDate ?? "");
         break;
@@ -144,9 +173,21 @@ export function groupDatasets<T extends { name: string; format?: string; uploadD
     groups.get(key)!.push(item);
   }
 
-  // Sort group keys
-  const sorted = Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
-  return sorted.map(([label, items]) => ({ label, items }));
+  // Sort group keys — date groups use "N|Label" format for ordering
+  const isDateGroup = groupBy === "dateModified" || groupBy === "dateAdded";
+  const sorted = Array.from(groups.entries()).sort(([a], [b]) => {
+    if (isDateGroup) {
+      const aNum = parseInt(a.split("|")[0], 10);
+      const bNum = parseInt(b.split("|")[0], 10);
+      if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
+    }
+    return a.localeCompare(b);
+  });
+  // Strip sort-key prefix for display
+  return sorted.map(([rawLabel, items]) => {
+    const label = isDateGroup && rawLabel.includes("|") ? rawLabel.split("|").slice(1).join("|") : rawLabel;
+    return { label, items };
+  });
 }
 
 /** Generic grouping for Technical Files */
@@ -177,7 +218,6 @@ export function groupTechnicalFiles<T extends { title?: string; filename?: strin
         key = format;
         break;
       case "dateModified":
-      case "dateCreated":
       case "dateAdded":
         key = getDateCategory(dateStr);
         break;
@@ -199,8 +239,19 @@ export function groupTechnicalFiles<T extends { title?: string; filename?: strin
     groups.get(key)!.push(item);
   }
 
-  const sorted = Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
-  return sorted.map(([label, items]) => ({ label, items }));
+  const isDateGroup = groupBy === "dateModified" || groupBy === "dateAdded";
+  const sorted = Array.from(groups.entries()).sort(([a], [b]) => {
+    if (isDateGroup) {
+      const aNum = parseInt(a.split("|")[0], 10);
+      const bNum = parseInt(b.split("|")[0], 10);
+      if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
+    }
+    return a.localeCompare(b);
+  });
+  return sorted.map(([rawLabel, items]) => {
+    const label = isDateGroup && rawLabel.includes("|") ? rawLabel.split("|").slice(1).join("|") : rawLabel;
+    return { label, items };
+  });
 }
 
 // ── GroupHeader component ─────────────────────────────────────────────────────
@@ -217,11 +268,11 @@ export function GroupHeader({
   return (
     <button
       onClick={onToggle}
-      className="col-span-full w-full flex items-center gap-2.5 px-4 py-2.5 bg-[#E3F2FD] rounded-lg mb-2 transition-colors hover:bg-[#BBDEFB]"
+      className="col-span-full w-full flex items-center gap-2.5 px-4 py-2.5 bg-[#e0f2ff] rounded-lg mb-2 transition-colors hover:bg-[#bae0fd]"
     >
-      <ChevronDown className={cn("w-4 h-4 text-[#1565C0] transition-transform", collapsed && "-rotate-90")} />
-      <span className="text-sm font-bold text-[#1565C0]">{label}</span>
-      <span className="text-xs text-[#42A5F5] font-medium ml-1">({count})</span>
+      <ChevronDown className={cn("w-4 h-4 text-[#007bff] transition-transform", collapsed && "-rotate-90")} />
+      <span className="text-sm font-bold text-[#1e40af]">{label}</span>
+      <span className="text-xs text-[#3b82f6] font-medium ml-1">({count})</span>
     </button>
   );
 }

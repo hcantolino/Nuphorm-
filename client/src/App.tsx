@@ -15,10 +15,12 @@ import Biostatistics from "./pages/Biostatistics";
 import DataUploaded from "./pages/DataUploaded";
 import Regulatory from "./pages/Regulatory";
 import Login from "./pages/Login";
+import SignUp from "./pages/SignUp";
+import DemoCreate from "./pages/DemoCreate";
 import Subscription from "./pages/Subscription";
 import Profile from "./pages/Profile";
+import ProfileSettings from "./pages/ProfileSettings";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import LandingPage from "./pages/LandingPage";
 import PremiumBanner from "./components/PremiumBanner";
 import AdminFeedback from "./pages/AdminFeedback";
@@ -32,7 +34,7 @@ console.log("App.tsx module loaded");
 function Router() {
   console.log("Router() rendering");
   const [activeItem, setActiveItem] = useState("dashboard");
-  const { user, isAuthenticated, loading, logout, refreshSession } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
   const { isCollapsed } = useSidebarContext();
 
   // Show loading state while checking authentication
@@ -48,50 +50,59 @@ function Router() {
   }
 
   return (
-    <Switch>
-      <Route path={"/login"} component={Login} />
-      <Route path={"/subscription"} component={Subscription} />
-      <Route path={"/profile"} component={Profile} />
-      <Route>
-        {() => (
-          <div className="h-screen overflow-hidden flex flex-col">
-            <div className="flex-shrink-0">
-              <OfflineDetectionBanner />
-              <SessionActivityDashboard />
-              <SessionWarningBanner />
-              <PremiumBanner isVisible={isAuthenticated && user?.subscriptionStatus !== 'active'} />
-              <SessionErrorHandler errorType={null} />
+    <>
+      <Switch>
+        <Route path={"/login"} component={Login} />
+        <Route path={"/signup"} component={SignUp} />
+        <Route path={"/subscription"} component={Subscription} />
+        <Route path={"/profile/account"} component={Profile} />
+        <Route>
+          {() => (
+            <div className="h-screen overflow-hidden flex flex-col">
+              <div className="flex-shrink-0">
+                <OfflineDetectionBanner />
+                <SessionActivityDashboard />
+                <SessionWarningBanner />
+                <PremiumBanner isVisible={isAuthenticated && user?.subscriptionStatus !== 'active'} />
+                <SessionErrorHandler errorType={null} />
+              </div>
+              <div className="flex flex-1 min-h-0 overflow-hidden">
+                <Sidebar
+                  activeItem={activeItem}
+                  onItemClick={setActiveItem}
+                />
+                <main
+                  className={`flex-1 min-h-0 overflow-y-auto w-full transition-all duration-300 ease-in-out hidden lg:block`}
+                  style={{
+                    marginLeft: isCollapsed ? "80px" : "256px",
+                  }}
+                >
+                  <Switch>
+                    <Route path={"/"} component={LandingPage} />
+                    <Route path={"/dashboard"} component={Dashboard} />
+                    <Route path={"/regulatory"} component={Regulatory} />
+                    <Route path={"/saved-files"} component={SavedFiles} />
+                    <Route
+                      path={"/saved-technical-files"}
+                      component={SavedTechnicalFiles}
+                    />
+                    <Route path={"/biostatistics"} component={Biostatistics} />
+                    <Route path={"/demo-create"} component={DemoCreate} />
+                    <Route path={"/data-uploaded"} component={DataUploaded} />
+                    <Route path={"/profile"} component={ProfileSettings} />
+                    <Route path={"/admin-feedback"} component={AdminFeedback} />
+                    <Route path={"/404"} component={NotFound} />
+                    <Route component={NotFound} />
+                  </Switch>
+                </main>
+              </div>
             </div>
-            <div className="flex flex-1 min-h-0 overflow-hidden">
-              <Sidebar activeItem={activeItem} onItemClick={setActiveItem} />
-              <main
-                className={`flex-1 min-h-0 overflow-y-auto w-full transition-all duration-300 ease-in-out hidden lg:block`}
-                style={{
-                  marginLeft: isCollapsed ? "80px" : "256px",
-                }}
-              >
-                <Switch>
-                  <Route path={"/"} component={Dashboard} />
-                  <Route path={"/dashboard"} component={Dashboard} />
-                  <Route path={"/regulatory"} component={Regulatory} />
-                  <Route path={"/saved-files"} component={SavedFiles} />
-                  <Route
-                    path={"/saved-technical-files"}
-                    component={SavedTechnicalFiles}
-                  />
-                  <Route path={"/biostatistics"} component={Biostatistics} />
-                  <Route path={"/data-uploaded"} component={DataUploaded} />
-                  <Route path={"/admin-feedback"} component={AdminFeedback} />
-                  <Route path={"/404"} component={NotFound} />
-                  <Route component={NotFound} />
-                </Switch>
-              </main>
-            </div>
-          </div>
 
-        )}
-      </Route>
-    </Switch>
+          )}
+        </Route>
+      </Switch>
+
+    </>
   );
 }
 

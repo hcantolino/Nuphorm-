@@ -7,9 +7,11 @@ import {
   Folder,
   FolderOpen,
   FileText,
+  FileSpreadsheet,
   ChevronRight,
   ChevronDown,
   MoreVertical,
+  MoreHorizontal,
   X,
   Share2,
   Copy,
@@ -21,17 +23,18 @@ import {
   Link2,
   Eye,
   AlertTriangle,
-  Plus,
   Upload,
   Clock,
   Tag,
   GripVertical,
   FolderPlus,
-  Users,
-  Shield,
-  MessageSquare,
+  Calendar,
+  CheckSquare,
+  Square,
+  Braces,
   LayoutGrid,
   List,
+  Columns3,
 } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { trpc } from '@/lib/trpc';
@@ -78,7 +81,7 @@ const FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ViewFilter  = 'all' | 'projects' | 'tabs';
+type ViewFilter  = 'all' | 'projects';
 type FolderType  = 'project' | 'tab' | 'general';
 
 interface RawFile {
@@ -145,9 +148,8 @@ function matchesViewFilter(raw: any, vf: ViewFilter): boolean {
   if (vf === 'all') return true;
   const ms: string[] = Array.isArray(raw.measurements) ? raw.measurements : [];
   const isProj = ms.includes('foldertype:project');
-  const isTab  = ms.includes('foldertype:tab');
   if (vf === 'projects') return isProj;
-  return isTab || (!isProj && !isTab);
+  return true;
 }
 
 function fmtDate(d: Date | string | undefined): string {
@@ -186,20 +188,49 @@ const FORMAT_MIME_MAP: Record<string, string> = {
 };
 
 const FORMAT_COLOR_MAP: Record<string, { bg: string; color: string }> = {
-  csv:  { bg: '#f0fdf4', color: '#16a34a' },
-  xlsx: { bg: '#f0fdf4', color: '#15803d' },
-  pdf:  { bg: '#fef2f2', color: '#dc2626' },
-  json: { bg: '#fff7ed', color: '#ea580c' },
-  sas:  { bg: '#eff6ff', color: '#2563eb' },
-  dta:  { bg: '#EFF6FF', color: '#3b82f6' },
-  html: { bg: '#f8fafc', color: '#64748b' },
+  pdf:  { bg: '#d0e0f2', color: '#1e3a5f' },   // Navy
+  csv:  { bg: '#dbeafe', color: '#1d4ed8' },   // Bright Blue
+  xlsx: { bg: '#cffafe', color: '#0e7490' },   // Teal Blue
+  docx: { bg: '#e0e7ff', color: '#3730a3' },   // Indigo Blue
+  html: { bg: '#e2e8f0', color: '#475569' },   // Steel Blue
+  sas:  { bg: '#cbd5e1', color: '#334155' },   // Slate Blue
+  txt:  { bg: '#e0f2fe', color: '#0369a1' },   // Sky Blue
+  json: { bg: '#cffafe', color: '#155e75' },   // Cerulean
+  pptx: { bg: '#bfdbfe', color: '#1e40af' },   // Royal Blue
+  zip:  { bg: '#cbd5e1', color: '#1e293b' },   // Dark Slate
+  png:  { bg: '#bfdbfe', color: '#2563eb' },   // Cornflower
+  jpg:  { bg: '#bfdbfe', color: '#2563eb' },   // Cornflower
+  gif:  { bg: '#bfdbfe', color: '#2563eb' },   // Cornflower
+  r:    { bg: '#bae6fd', color: '#075985' },   // Ocean Blue
+  dta:  { bg: '#dbeafe', color: '#1d4ed8' },   // Bright Blue
 };
 
 function estimateSize(content: string): string {
   const bytes = new Blob([content]).size;
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function fmtDateFull(d: Date | string | undefined): string {
+  if (!d) return '\u2014';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '\u2014';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const h = dt.getHours();
+  const m = dt.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  const mm = m.toString().padStart(2, '0');
+  return `Added ${months[dt.getMonth()]} ${dt.getDate()}, ${dt.getFullYear()} at ${h12}:${mm} ${ampm}`;
+}
+
+function TechFileIcon({ format, size = 18 }: { format: string; size?: number }) {
+  if (format === 'xlsx') return <FileSpreadsheet style={{ width: size, height: size, color: '#0e7490' }} />;
+  if (format === 'json') return <Braces style={{ width: size, height: size, color: '#155e75' }} />;
+  if (format === 'csv') return <FileSpreadsheet style={{ width: size, height: size, color: '#1d4ed8' }} />;
+  const fmtColor = FORMAT_COLOR_MAP[format]?.color ?? '#3B82F6';
+  return <FileText style={{ width: size, height: size, color: fmtColor }} />;
 }
 
 function buildTree(rawFiles: any[], search: string, vf: ViewFilter): Map<string, FolderNode> {
@@ -259,6 +290,16 @@ export default function SavedTechnicalFiles() {
   const [preview, setPreview]   = useState<RawFile | null>(null);
   const [searchFocus, setSearchFocus] = useState(false);
 
+  // Multi-select
+  const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set());
+  const toggleSelect = (id: number) => setSelectedFiles(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const clearSelection = () => setSelectedFiles(new Set());
+  const selectAll = () => setSelectedFiles(new Set(allFlatFiles.map(f => f.id)));
+
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ name: string; fileCount: number; onConfirm: () => void } | null>(null);
   const [infoModal, setInfoModal] = useState<{ type: 'folder' | 'file'; name: string; createdDate: string; fileCount?: number; totalSize: string; format?: string; folderName?: string; tabName?: string } | null>(null);
@@ -281,6 +322,21 @@ export default function SavedTechnicalFiles() {
 
   const tree       = useMemo(() => buildTree(rawFiles, search, viewFilter), [rawFiles, search, viewFilter]);
   const folderKeys = useMemo(() => Array.from(tree.keys()).sort(), [tree]);
+
+  // Flat list of all files for "All Files" tab — sorted by date descending
+  const allFlatFiles = useMemo(() => {
+    const allTree = buildTree(rawFiles, search, 'all');
+    const files: RawFile[] = [];
+    allTree.forEach(fn => fn.tabs.forEach(tab => files.push(...tab.files)));
+    return files.sort((a, b) => {
+      const da = new Date(a.createdAt || a.generatedAt || 0).getTime();
+      const db = new Date(b.createdAt || b.generatedAt || 0).getTime();
+      return db - da;
+    });
+  }, [rawFiles, search]);
+
+  // Expanded folders for Projects accordion view
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!menuKey) return;
@@ -834,7 +890,6 @@ export default function SavedTechnicalFiles() {
           {([
             { key:'all' as ViewFilter, label:'All Files' },
             { key:'projects' as ViewFilter, label:'Projects' },
-            { key:'tabs' as ViewFilter, label:'Tabs' },
           ]).map(({ key, label }) => {
             const active = viewFilter === key;
             return (
@@ -857,21 +912,137 @@ export default function SavedTechnicalFiles() {
       </div>
 
       <div style={{ padding:'36px 40px', maxWidth:1360, margin:'0 auto' }}>
-        {isLoading ? <LoadingState /> : rawFiles.length === 0 ? <EmptyState /> : folderKeys.length === 0 ? <FilteredEmpty viewFilter={viewFilter} search={search} /> : (
+        {isLoading ? <LoadingState /> : rawFiles.length === 0 ? <EmptyState /> : (
           <>
+            {/* ── ALL FILES: flat vertical list of every individual file ──────────── */}
+            {viewFilter === 'all' && (
+              allFlatFiles.length === 0 ? <FilteredEmpty viewFilter={viewFilter} search={search} /> : (
+                <div style={{ display:'flex', flexDirection:'column', gap: 0 }}>
+                  {/* Use table layout for >10 items */}
+                  {allFlatFiles.length > 10 ? (
+                    <div style={{
+                      background: C.card, border: `1px solid ${C.border}`, borderRadius: '0.5rem',
+                      boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', overflow: 'hidden',
+                    }}>
+                      {/* Table header */}
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
+                        padding: '10px 20px', borderBottom: `1px solid ${C.borderLight}`,
+                        background: '#F9FAFB',
+                      }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1 }}>File Name</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1, minWidth: 80, textAlign: 'center' }}>Type</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1, minWidth: 120, textAlign: 'right' }}>Date</span>
+                      </div>
+                      {/* Scrollable file rows */}
+                      <div style={{ maxHeight: 600, overflowY: 'auto' }}>
+                        {allFlatFiles.map((file, idx) => {
+                          const format = extractFormat(file.content);
+                          const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#f8fafc', color: '#64748b' };
+                          return (
+                            <div
+                              key={file.id}
+                              onClick={() => setPreview(file)}
+                              onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                              style={{
+                                display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
+                                padding: '12px 20px', cursor: 'pointer',
+                                borderBottom: idx < allFlatFiles.length - 1 ? `1px solid ${C.borderLight}` : 'none',
+                                transition: 'background 0.15s',
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.background = '#E0F2FE'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                                <FileText size={16} style={{ color: '#9CA3AF', flexShrink: 0 }} />
+                                <span style={{ fontSize: '1rem', fontWeight: 700, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {file.filename}
+                                </span>
+                              </div>
+                              <span style={{
+                                fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                                background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase',
+                                alignSelf: 'center',
+                              }}>
+                                .{FORMAT_EXT_MAP[format] ?? format}
+                              </span>
+                              <span style={{ fontSize: '0.75rem', color: '#6B7280', alignSelf: 'center', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                {fmtDate(file.createdAt || file.generatedAt)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    /* Card layout for ≤10 items */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {allFlatFiles.map(file => {
+                        const format = extractFormat(file.content);
+                        const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#f8fafc', color: '#64748b' };
+                        return (
+                          <div
+                            key={file.id}
+                            onClick={() => setPreview(file)}
+                            onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px',
+                              background: C.card, border: `1px solid ${C.border}`, borderRadius: '0.5rem',
+                              boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
+                              cursor: 'pointer', transition: 'all 0.2s ease',
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = '#E0F2FE'; e.currentTarget.style.borderColor = '#194CFF'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = C.card; e.currentTarget.style.borderColor = C.border; }}
+                          >
+                            <FileText size={18} style={{ color: '#9CA3AF', flexShrink: 0 }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {file.filename}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: '#6B7280', marginTop: 2 }}>
+                                <span style={{
+                                  fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3,
+                                  background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', marginRight: 8,
+                                }}>
+                                  .{FORMAT_EXT_MAP[format] ?? format}
+                                </span>
+                                {fmtDate(file.createdAt || file.generatedAt)}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            )}
+
+            {/* ── PROJECTS: folder grid with expandable accordion ─────────────── */}
+            {viewFilter === 'projects' && (
+              folderKeys.length === 0 ? <FilteredEmpty viewFilter={viewFilter} search={search} /> : (
+                <>
             {/* Grid view (default) */}
             {techViewMode === 'grid' && (
               <DragDropContext onDragEnd={onDragEnd}>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(360px, 1fr))', gap:24 }}>
+              <div style={{ display:'flex', flexDirection:'column', gap:24 }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(360px, 1fr))', gap:24 }}>
                 {folderKeys.map(name => {
                   const fn = tree.get(name)!;
                   return (
                     <Droppable key={name} droppableId={`folder-${name}`}>
                       {(dropProv, dropSnap) => (
-                        <div ref={dropProv.innerRef} {...dropProv.droppableProps}>
+                        <div ref={dropProv.innerRef} {...dropProv.droppableProps} style={{ position: 'relative' }}>
                     <FolderCard
                       fn={fn} menuOpen={menuKey === name}
-                      onOpen={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                      onOpen={() => {
+                        setExpandedFolders(prev => {
+                          const next = new Set(prev);
+                          if (next.has(name)) next.delete(name);
+                          else next.add(name);
+                          return next;
+                        });
+                      }}
                       onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
                       onRename={newName => renameFolder(name, newName)}
                       onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
@@ -882,6 +1053,74 @@ export default function SavedTechnicalFiles() {
                         </div>
                       )}
                     </Droppable>
+                  );
+                })}
+                </div>
+
+                {/* Expanded folder accordion — renders below the grid */}
+                {folderKeys.filter(name => expandedFolders.has(name)).map(name => {
+                  const fn = tree.get(name)!;
+                  const folderFiles = Array.from(fn.tabs.values()).flatMap(t => t.files);
+                  return (
+                    <div
+                      key={`accordion-${name}`}
+                      style={{
+                        background: 'linear-gradient(180deg, #E0F2FE 0%, #FFFFFF 100%)',
+                        borderRadius: '0.5rem',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
+                        border: `1px solid ${C.borderLight}`,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {/* Accordion header */}
+                      <div
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px',
+                          borderBottom: `1px solid ${C.borderLight}`, cursor: 'pointer',
+                        }}
+                        onClick={() => setExpandedFolders(prev => { const next = new Set(prev); next.delete(name); return next; })}
+                      >
+                        <FolderOpen size={18} style={{ color: '#194CFF', flexShrink: 0 }} />
+                        <span style={{ fontSize: 15, fontWeight: 700, color: '#0F172A', flex: 1 }}>{fn.name}</span>
+                        <span style={{ fontSize: 12, color: C.textMuted }}>{folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}</span>
+                        <ChevronDown size={16} style={{ color: C.textMuted }} />
+                      </div>
+                      {/* File list inside accordion */}
+                      <div style={{ padding: '4px 0' }}>
+                        {folderFiles.map((file, idx) => {
+                          const format = extractFormat(file.content);
+                          const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#f8fafc', color: '#64748b' };
+                          return (
+                            <div
+                              key={file.id}
+                              onClick={() => setPreview(file)}
+                              onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 24px',
+                                cursor: 'pointer', transition: 'background 0.15s',
+                                borderBottom: idx < folderFiles.length - 1 ? `1px solid ${C.borderLight}` : 'none',
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.background = '#E0F2FE'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              <FileText size={15} style={{ color: '#9CA3AF', flexShrink: 0 }} />
+                              <span style={{ fontSize: '1rem', fontWeight: 600, color: '#0F172A', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {file.filename}
+                              </span>
+                              <span style={{
+                                fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3,
+                                background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase',
+                              }}>
+                                .{FORMAT_EXT_MAP[format] ?? format}
+                              </span>
+                              <span style={{ fontSize: '0.75rem', color: '#6B7280', whiteSpace: 'nowrap' }}>
+                                {fmtDate(file.createdAt || file.generatedAt)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -1003,6 +1242,9 @@ export default function SavedTechnicalFiles() {
                 })}
               </div>
             )}
+          </>
+        )
+        )}
           </>
         )}
       </div>
@@ -1244,63 +1486,83 @@ function FolderCard({ fn, menuOpen, onOpen, onMenuToggle, onRename, onContextMen
       onContextMenu={editing ? undefined : onContextMenu}
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
       style={{
-        background: isDragOver ? '#E3F2FD' : C.card, border: `2px solid ${isActive ? '#007BFF' : C.border}`,
-        borderLeft: `4px solid ${isActive ? '#007BFF' : C.border}`, borderRadius: 14,
-        padding: '24px 22px 20px', cursor: editing ? 'default' : 'pointer', position: 'relative',
-        boxShadow: isDragOver ? '0 4px 12px rgba(0,123,255,0.15)' : '0 2px 4px rgba(0,0,0,0.05)',
+        background: isDragOver ? '#E3F2FD' : C.card, border: `1px solid ${isActive ? '#194CFF' : C.border}`,
+        borderRadius: '0.5rem',
+        padding: '1rem 22px 20px 1rem', cursor: editing ? 'default' : 'pointer', position: 'relative',
+        boxShadow: isActive ? '0 4px 12px rgba(0,0,0,0.12)' : '0 4px 6px -1px rgba(0,0,0,0.1)',
         transition: 'all 0.2s ease', userSelect: 'none',
+        transform: isActive ? 'scale(1.02)' : 'scale(1)',
       }}
+      aria-label={`Folder: ${fn.name}`}
     >
-      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:18 }}>
-        <div style={{ width:50, height:50, borderRadius:13, background: isActive ? C.tealLight : C.borderLight, display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.2s', flexShrink:0 }}>
-          <Folder size={24} style={{ color: isActive ? C.teal : C.textSub, transition:'color 0.2s' }} />
+      {/* Overflow menu — positioned top-right */}
+      <div onClick={e => e.stopPropagation()} style={{ position:'absolute', top:12, right:12 }}>
+        <button
+          onClick={e => { e.stopPropagation(); onOverflowClick(e.currentTarget); }}
+          style={{ width:32, height:32, borderRadius:8, border:'1px solid transparent', background:'transparent', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:C.textMuted, opacity: isActive ? 1 : 0, transition:'opacity 0.15s, background 0.15s' }}
+          onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.borderColor = C.border; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}
+          title="More options"
+          aria-label="More options"
+        ><MoreVertical size={16} /></button>
+      </div>
+
+      {/* Folder icon (top-left) + Title (centered right of icon) — flex row layout */}
+      <div style={{ display:'flex', flexDirection:'row', alignItems:'center', gap:0, marginBottom: editing ? 0 : 0 }}>
+        {/* Folder icon — top-left aligned */}
+        <div style={{
+          width: 40, height: 40, borderRadius: 10,
+          background: isActive ? C.tealLight : C.borderLight,
+          display:'flex', alignItems:'center', justifyContent:'center',
+          transition:'background 0.2s', flexShrink: 0,
+        }}>
+          <Folder size={22} style={{ color: isActive ? '#194CFF' : '#9CA3AF', transition:'color 0.2s' }} />
         </div>
-        <div onClick={e => e.stopPropagation()}>
-          <button
-            onClick={e => { e.stopPropagation(); onOverflowClick(e.currentTarget); }}
-            style={{ width:32, height:32, borderRadius:8, border:'1px solid transparent', background:'transparent', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:C.textMuted, opacity: isActive ? 1 : 0, transition:'opacity 0.15s, background 0.15s' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.borderColor = C.border; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}
-            title="More options"
-          ><MoreVertical size={16} /></button>
+
+        {/* Title — centered horizontally, right of icon */}
+        <div style={{ flex: 1, marginLeft: '1rem', minWidth: 0, paddingRight: 36 }}>
+          {editing ? (
+            <div onClick={e => e.stopPropagation()}>
+              <input ref={inputRef} autoFocus type="text" value={editVal} maxLength={80}
+                onChange={e => setEditVal(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') confirmEdit(); else if (e.key === 'Escape') cancelEdit(); }}
+                onBlur={confirmEdit}
+                style={{ fontSize:17, fontWeight:700, color:'#0F172A', lineHeight:1.3, width:'100%', background:'transparent', border:'none', borderBottom:'2px solid #194CFF', outline:'none', padding:'0 0 2px', margin:0, fontFamily:'inherit' }}
+                aria-label="Rename folder"
+              />
+            </div>
+          ) : (
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <h3 style={{ fontSize:'1.25rem', fontWeight:700, color:'#0F172A', margin:0, lineHeight:1.3, wordBreak:'break-word' }}>{fn.name}</h3>
+              <button onClick={startEditing} style={{ background:'transparent', border:'none', cursor:'pointer', padding:2, borderRadius:4, display:'flex', alignItems:'center', color:'#9ca3af', opacity: hov ? 1 : 0, transition:'opacity 0.15s' }} title="Rename folder" aria-label="Rename folder"><Pencil size={14} /></button>
+            </div>
+          )}
         </div>
       </div>
-      {editing ? (
-        <div style={{ margin:'0 0 5px' }} onClick={e => e.stopPropagation()}>
-          <input ref={inputRef} autoFocus type="text" value={editVal} maxLength={80}
-            onChange={e => setEditVal(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') confirmEdit(); else if (e.key === 'Escape') cancelEdit(); }}
-            onBlur={confirmEdit}
-            style={{ fontSize:17, fontWeight:700, color:C.text, lineHeight:1.3, width:'100%', background:'transparent', border:'none', borderBottom:`2px solid ${C.teal}`, outline:'none', padding:'0 0 2px', margin:0, fontFamily:'inherit' }}
-          />
-        </div>
-      ) : (
-        <div style={{ display:'flex', alignItems:'center', gap:6, margin:'0 0 5px' }}>
-          <h3 style={{ fontSize:17, fontWeight:700, color:C.text, margin:0, lineHeight:1.3, wordBreak:'break-word' }}>{fn.name}</h3>
-          <button onClick={startEditing} style={{ background:'transparent', border:'none', cursor:'pointer', padding:2, borderRadius:4, display:'flex', alignItems:'center', color:'#9ca3af', opacity: hov ? 1 : 0, transition:'opacity 0.15s' }} title="Rename folder"><Pencil size={14} /></button>
-        </div>
-      )}
-      <p style={{ fontSize:13, color:C.textSub, margin:'0 0 10px', lineHeight:1.5 }}>
-        {total} file{total !== 1 ? 's' : ''} \u00B7 {tabKeys.length} tab{tabKeys.length !== 1 ? 's' : ''}
-      </p>
-      {(() => {
-        const allFiles = tabKeys.flatMap(k => fn.tabs.get(k)!.files);
-        const counts = allFiles.reduce<Record<string, number>>((acc, f) => { const fmt = extractFormat(f.content); acc[fmt] = (acc[fmt] ?? 0) + 1; return acc; }, {});
-        const fmts = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 4);
-        if (fmts.length === 0) return null;
-        return (
-          <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginBottom:14 }}>
-            {fmts.map(([fmt, count]) => (
-              <span key={fmt} style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:5, background: (FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).bg, color: (FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).color, border: `1px solid ${(FORMAT_COLOR_MAP[fmt] ?? FORMAT_COLOR_MAP.html).color}22` }}>
-                .{FORMAT_EXT_MAP[fmt] ?? fmt} x{count}
-              </span>
-            ))}
-          </div>
-        );
-      })()}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-        <TypeBadge type={fn.folderType} />
-        <span style={{ fontSize:12, color:C.textMuted }}>{fmtDate(fn.latestDate)}</span>
+
+      {/* Hover tooltip — "Project Folder" strip */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: -28,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#D1D5DB',
+          color: '#0F172A',
+          fontSize: '0.75rem',
+          fontWeight: 500,
+          padding: '0.25rem 0.5rem',
+          borderRadius: '0.25rem',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          opacity: hov && !editing ? 1 : 0,
+          transition: 'opacity 0.3s ease-in-out',
+          zIndex: 10,
+        }}
+        aria-hidden="true"
+      >
+        Project Folder
       </div>
     </div>
   );
@@ -1597,7 +1859,7 @@ function EmptyState() {
 function FilteredEmpty({ viewFilter, search }: { viewFilter: ViewFilter; search: string }) {
   return (
     <div style={{ textAlign:'center', padding:'64px 40px', color:C.textMuted, fontSize:14 }}>
-      {search ? `No files match "${search}"` : viewFilter === 'projects' ? 'No project folders yet \u2014 save analyses with "Save all data in project" checked' : 'No tab folders yet \u2014 save analyses using "Save all data in tab"'}
+      {search ? `No files match "${search}"` : viewFilter === 'projects' ? 'No project folders yet \u2014 save analyses with "Save all data in project" checked' : 'No files yet \u2014 save analyses to see them here'}
     </div>
   );
 }

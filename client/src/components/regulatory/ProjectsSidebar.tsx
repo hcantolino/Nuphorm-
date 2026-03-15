@@ -10,7 +10,11 @@ interface ProjectsSidebarProps {
 }
 
 export default function ProjectsSidebar({ isOpen, onToggle }: ProjectsSidebarProps) {
-  const { projects, activeProjectId, setActiveProject, createProject, deleteProject } = useRegulatoryStore();
+  const projects = useRegulatoryStore((s) => s.projects);
+  const activeProjectId = useRegulatoryStore((s) => s.activeProjectId);
+  const setActiveProject = useRegulatoryStore((s) => s.setActiveProject);
+  const createProject = useRegulatoryStore((s) => s.createProject);
+  const deleteProject = useRegulatoryStore((s) => s.deleteProject);
   const [newProjectName, setNewProjectName] = useState('');
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
