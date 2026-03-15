@@ -14,7 +14,9 @@ import {
   List,
   Check,
   Paperclip,
+  Info,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import Draggable from 'react-draggable';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,6 +30,63 @@ export type { SourceFile };
 
 /** Stable empty array — avoids `?? []` creating new refs on every render */
 const EMPTY_SOURCES: SourceFile[] = [];
+
+// ── Demo pre-loaded sources (locked for demo) ───────────────────────────────
+const DEMO_REGULATORY_SOURCES = [
+  {
+    id: 'demo-reg-1',
+    shortTitle: 'InsuFlow Pro 510(k) Support Package',
+    title: 'Source 1_ Fake Regulatory Source Package – InsuFlow Pro Insulin Pump 510(k) Support Files.pdf',
+  },
+  {
+    id: 'demo-reg-2',
+    shortTitle: 'Bench Testing & Non-Clinical Report',
+    title: 'Source 2_ Bench Testing and Non-Clinical Performance Report.pdf',
+  },
+  {
+    id: 'demo-reg-3',
+    shortTitle: 'Predicate Comparison & Equivalence',
+    title: 'Source 3_ Predicate Device Comparison Table & Substantial Equivalence.pdf',
+  },
+];
+
+/** Show a demo-lock toast when the user tries to upload */
+function showDemoUploadToast() {
+  toast.custom(
+    (id) => (
+      <div
+        onClick={() => toast.dismiss(id)}
+        style={{
+          background: '#fffbeb',
+          border: '1px solid #fcd34d',
+          borderRadius: 8,
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          maxWidth: 420,
+          cursor: 'pointer',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+        }}
+      >
+        <Info style={{ width: 16, height: 16, color: '#d97706', flexShrink: 0, marginTop: 2 }} />
+        <div style={{ flex: 1 }}>
+          <p style={{ fontSize: 13, color: '#92400e', fontWeight: 500, margin: 0, lineHeight: 1.4 }}>
+            Demo sources only — This demo includes 3 pre-loaded source documents. Sign up for a full account to upload your own files.
+          </p>
+          <a
+            href="/signup"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontSize: 12, color: '#2b7de9', fontWeight: 600, textDecoration: 'none', marginTop: 4, display: 'inline-block' }}
+          >
+            Sign up →
+          </a>
+        </div>
+      </div>
+    ),
+    { duration: 5000, position: 'top-center' }
+  );
+}
 
 interface RegulatorySidebarProps {
   onProjectSelect?: (projectId: string) => void;
@@ -397,9 +456,13 @@ export default function RegulatorySidebar({
   );
 
   // Notify parent whenever the active project's sources change
+  // Note: onSourcesChange intentionally excluded from deps to prevent infinite loops
+  // (parent memoizes it with useCallback, but this is a safety guard)
+  const onSourcesChangeRef = useRef(onSourcesChange);
+  onSourcesChangeRef.current = onSourcesChange;
   useEffect(() => {
-    onSourcesChange?.(sources);
-  }, [sources, onSourcesChange]);
+    onSourcesChangeRef.current?.(sources);
+  }, [sources]);
 
   /** Read file text content client-side (CSV/TXT as text, others as truncated base64 summary) */
   const parseFileContent = useCallback(async (file: File): Promise<string> => {
@@ -429,37 +492,11 @@ export default function RegulatorySidebar({
   }, []);
 
   const handleFileUpload = useCallback(
-    (files: FileList) => {
-      const projectId = storeActiveId;
-      const fileArray = Array.from(files);
-
-      // Add new source entries immediately with 'uploading' status
-      const newSources: SourceFile[] = fileArray.map((file) => ({
-        id: Date.now().toString() + Math.random().toString(36).slice(2),
-        name: file.name,
-        type: (file.name.split('.').pop()?.toLowerCase() as 'csv' | 'pdf' | 'xlsx') || 'pdf',
-        size: file.size,
-        uploadedAt: new Date().toISOString(),
-        status: 'uploading' as const,
-      }));
-
-      setProjectSources(projectId, [...getProjectSources(projectId), ...newSources]);
-
-      // Parse each file in the background and update the store
-      fileArray.forEach(async (file, i) => {
-        const sourceId = newSources[i].id;
-
-        updateProjectSource(projectId, sourceId, { status: 'parsing' });
-
-        try {
-          const parsedContent = await parseFileContent(file);
-          updateProjectSource(projectId, sourceId, { parsedContent, status: 'ready' });
-        } catch {
-          updateProjectSource(projectId, sourceId, { status: 'error' });
-        }
-      });
+    (_files: FileList) => {
+      // Demo mode: block all uploads
+      showDemoUploadToast();
     },
-    [storeActiveId, getProjectSources, setProjectSources, updateProjectSource, parseFileContent]
+    []
   );
 
   const handleModalDrag = useCallback((e: React.DragEvent) => {
@@ -527,16 +564,7 @@ export default function RegulatorySidebar({
               <Tooltip label="Document Settings" />
             </div>
 
-            <div className="group relative">
-              <button
-                onClick={() => setShowSettings(true)}
-                aria-label="Manage Sources"
-                className="flex items-center justify-center w-full h-11 hover:bg-[#e2e8f0] transition-colors"
-              >
-                <FileText className="w-5 h-5 text-blue-400 flex-shrink-0" />
-              </button>
-              <Tooltip label="Manage Sources" />
-            </div>
+            {/* Manage Sources tab removed for demo */}
           </div>
         )}
 
@@ -620,51 +648,30 @@ export default function RegulatorySidebar({
               </button>
             </div>
 
-            {/* Sources */}
+            {/* Sources — read-only demo list */}
             <div className="p-4 flex flex-col flex-1 min-h-0">
               <h3 className="text-xs font-semibold text-[#64748b] uppercase tracking-wider mb-3 flex-shrink-0">
-                Sources
+                Sources (3)
               </h3>
 
-              {/* Read-only source list */}
               <div className="space-y-1.5 overflow-y-auto flex-1 min-h-0">
-                {sources.length === 0 ? (
-                  <p className="text-xs text-[#94a3b8] text-center py-4">
-                    No sources attached.<br />Use "Manage Sources" to upload.
-                  </p>
-                ) : (
-                  sources.map((source) => (
-                    <div
-                      key={source.id}
-                      className="group/src px-2.5 py-2 bg-[#f1f5f9]/60 rounded-lg flex items-center gap-2 hover:bg-[#e2e8f0] transition"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium truncate text-[#1e293b]">
-                          {source.name}
-                        </p>
-                        <p className="text-[10px] text-[#94a3b8]">
-                          {(source.size / 1024).toFixed(1)} KB ·{' '}
-                          {source.status === 'uploading' && <span className="text-blue-400">Uploading…</span>}
-                          {source.status === 'parsing' && <span className="text-amber-400">Parsing…</span>}
-                          {source.status === 'ready' && <span className="text-emerald-400">Ready</span>}
-                          {source.status === 'error' && <span className="text-red-400">Error</span>}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                )}
+                {DEMO_REGULATORY_SOURCES.map((src) => (
+                  <div
+                    key={src.id}
+                    className="px-2.5 py-2 bg-[#f1f5f9]/60 rounded-lg flex items-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+                    <p className="text-xs font-medium truncate text-[#1e293b] flex-1" title={src.title}>
+                      {src.shortTitle}
+                    </p>
+                    <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                  </div>
+                ))}
               </div>
 
-              {/* Manage Sources link */}
-              <button
-                onClick={() => setShowSettings(true)}
-                className="mt-3 flex items-center gap-1.5 text-xs font-medium flex-shrink-0 group/mgr"
-                style={{ color: '#007bff' }}
-              >
-                <Upload className="w-3 h-3" />
-                <span className="group-hover/mgr:underline">Manage Sources →</span>
-              </button>
+              <p className="text-[11px] mt-2 flex-shrink-0" style={{ color: '#a0afc0' }}>
+                Demo: 3 pre-loaded sources
+              </p>
             </div>
           </div>
         )}
@@ -722,117 +729,79 @@ export default function RegulatorySidebar({
                 <div className="flex-1 overflow-y-auto min-h-0">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-[#e2e8f0]">
 
-                  {/* Left column: Source Documents */}
+                  {/* Left column: Attached Sources (read-only demo) + disabled upload */}
                   <div className="p-6 space-y-4">
 
-                  {/* ── Source Documents ───────────────────────────────────── */}
+                  {/* ── Attached Sources (read-only) ─────────────────────── */}
                   <section>
                     <label className="text-xs font-semibold uppercase tracking-widest block mb-3" style={{ color: '#9ab0d0' }}>
-                      Source Documents
+                      Sources (3)
                     </label>
 
-                    {/* Repository button */}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowFileRepo(true)}
-                      className="w-full mb-4 text-xs font-medium"
-                      style={{
-                        background: 'transparent',
-                        border: '1px solid #007bff',
-                        color: '#007bff',
-                      }}
-                      onMouseEnter={(e) => {
-                        (e.currentTarget as HTMLButtonElement).style.background = 'rgba(0,123,255,0.12)';
-                      }}
-                      onMouseLeave={(e) => {
-                        (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-                      }}
-                    >
-                      <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
-                      {sourceFileIds.length > 0
-                        ? `${sourceFileIds.length} file${sourceFileIds.length !== 1 ? 's' : ''} selected from repository`
-                        : 'Select from Repository'}
-                    </Button>
-
-                    {/* Drag-and-drop upload zone */}
-                    <label
-                      htmlFor="modal-source-upload"
-                      onDragEnter={handleModalDrag}
-                      onDragLeave={handleModalDrag}
-                      onDragOver={handleModalDrag}
-                      onDrop={handleModalDrop}
-                      className="flex flex-col items-center justify-center rounded-xl cursor-pointer transition-all"
-                      style={{
-                        border: `2px dashed ${modalDragActive ? '#00cc99' : '#007bff'}`,
-                        background: modalDragActive ? 'rgba(0,204,153,0.07)' : 'rgba(0,123,255,0.05)',
-                        minHeight: '180px',
-                        padding: '28px 20px',
-                      }}
-                    >
-                      <Upload
-                        className="w-8 h-8 mb-3"
-                        style={{ color: modalDragActive ? '#00cc99' : '#007bff' }}
-                      />
-                      <p className="text-sm font-medium text-[#0f172a] mb-1">
-                        Drag files here or click to upload
-                      </p>
-                      <p className="text-xs text-center" style={{ color: '#9ab0d0' }}>
-                        CSV, PDF, XLSX · up to 100 MB<br />
-                        Clinical data, test reports, device specs
-                      </p>
-                      <input
-                        id="modal-source-upload"
-                        type="file"
-                        multiple
-                        accept=".csv,.pdf,.xlsx,.docx"
-                        onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
-                        className="hidden"
-                      />
-                    </label>
-
-                    {/* Uploaded source file list */}
-                    {sources.length > 0 && (
-                      <div
-                        className="mt-4 rounded-xl overflow-hidden"
-                        style={{ border: '1px solid #e2e8f0' }}
-                      >
-                        {sources.map((source, idx) => (
-                          <div
-                            key={source.id}
-                            className="flex items-center gap-3 px-4 py-3 group/srow transition"
-                            style={{
-                              background: idx % 2 === 0 ? '#f8fafc' : 'transparent',
-                              borderBottom: idx < sources.length - 1 ? '1px solid #f1f5f9' : 'none',
-                            }}
-                          >
-                            <FileText className="w-4 h-4 flex-shrink-0" style={{ color: '#007bff' }} />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium truncate text-[#0f172a]">{source.name}</p>
-                              <p className="text-[10px] mt-0.5" style={{ color: '#9ab0d0' }}>
-                                {(source.size / 1024).toFixed(1)} KB ·{' '}
-                                {new Date(source.uploadedAt).toLocaleDateString()} ·{' '}
-                                {source.status === 'uploading' && <span className="text-blue-400">Uploading…</span>}
-                                {source.status === 'parsing' && <span className="text-amber-400">Parsing…</span>}
-                                {source.status === 'ready' && <span style={{ color: '#00cc99' }}>Ready</span>}
-                                {source.status === 'error' && <span className="text-red-400">Error</span>}
-                              </p>
-                            </div>
-                            <button
-                              onClick={() => handleDeleteSource(source.id)}
-                              className="flex-shrink-0 p-1 rounded transition opacity-0 group-hover/srow:opacity-100"
-                              style={{ color: '#9ab0d0' }}
-                              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#ef4444'; }}
-                              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#9ab0d0'; }}
-                              title="Remove source"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                    <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #e2e8f0' }}>
+                      {DEMO_REGULATORY_SOURCES.map((src, idx) => (
+                        <div
+                          key={src.id}
+                          className="flex items-center gap-3 px-4 py-3"
+                          style={{
+                            background: idx % 2 === 0 ? '#f8fafc' : 'transparent',
+                            borderBottom: idx < DEMO_REGULATORY_SOURCES.length - 1 ? '1px solid #f1f5f9' : 'none',
+                          }}
+                        >
+                          <FileText className="w-4 h-4 flex-shrink-0 text-red-500" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium truncate text-[#0f172a]" title={src.title}>
+                              {src.shortTitle}
+                            </p>
+                            <p className="text-[10px] mt-0.5" style={{ color: '#10b981' }}>✓ Loaded</p>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] mt-2" style={{ color: '#a0afc0' }}>
+                      Demo: 3 pre-loaded sources
+                    </p>
                   </section>
+
+                  {/* ── Disabled Repository button ────────────────────────── */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => showDemoUploadToast()}
+                    className="w-full mb-2 text-xs font-medium"
+                    style={{
+                      background: 'transparent',
+                      border: '1px solid #cbd5e1',
+                      color: '#94a3b8',
+                      opacity: 0.5,
+                      cursor: 'not-allowed',
+                    }}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
+                    Select from Repository
+                  </Button>
+
+                  {/* ── Disabled upload zone ──────────────────────────────── */}
+                  <div
+                    onClick={() => showDemoUploadToast()}
+                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); showDemoUploadToast(); }}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDrop={(e) => { e.preventDefault(); e.stopPropagation(); showDemoUploadToast(); }}
+                    className="flex flex-col items-center justify-center rounded-xl"
+                    style={{
+                      border: '2px dashed #cbd5e1',
+                      background: 'rgba(0,0,0,0.02)',
+                      minHeight: '120px',
+                      padding: '20px',
+                      opacity: 0.5,
+                      cursor: 'not-allowed',
+                    }}
+                  >
+                    <Upload className="w-7 h-7 mb-2" style={{ color: '#94a3b8' }} />
+                    <p className="text-xs text-[#94a3b8] text-center">
+                      Upload disabled in demo
+                    </p>
+                  </div>
                   </div>
 
                   {/* Right column: all other settings */}
@@ -883,9 +852,9 @@ export default function RegulatorySidebar({
                         onClick={() => setSelectedTemplateId(null)}
                         className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-xs"
                         style={{
-                          background: selectedTemplateId === null ? '#eff6ff' : '#f8fafc',
+                          background: selectedTemplateId === null ? '#dbeafe' : '#f8fafc',
                           border: selectedTemplateId === null ? '1px solid rgba(0,123,255,0.35)' : '1px solid transparent',
-                          color: selectedTemplateId === null ? '#fff' : '#9ab0d0',
+                          color: selectedTemplateId === null ? '#1a2332' : '#1a2332',
                         }}
                       >
                         <div
@@ -909,9 +878,9 @@ export default function RegulatorySidebar({
                           key={template.id}
                           className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition text-xs group/tmpl"
                           style={{
-                            background: selectedTemplateId === template.id ? '#eff6ff' : '#f8fafc',
+                            background: selectedTemplateId === template.id ? '#dbeafe' : '#f8fafc',
                             border: selectedTemplateId === template.id ? '1px solid rgba(0,123,255,0.35)' : '1px solid transparent',
-                            color: selectedTemplateId === template.id ? '#fff' : '#9ab0d0',
+                            color: selectedTemplateId === template.id ? '#1a2332' : '#1a2332',
                           }}
                           onClick={() => setSelectedTemplateId(template.id)}
                         >
@@ -950,7 +919,7 @@ export default function RegulatorySidebar({
                       { label: 'Citation Format', key: 'format', options: ['MLA', 'APA', 'Chicago'] },
                     ].map(({ label, key, options }) => (
                       <div key={key}>
-                        <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>{label}</label>
+                        <label className="text-xs block mb-1" style={{ color: '#1a2332' }}>{label}</label>
                         <select
                           value={(settings as any)[key]}
                           onChange={(e) => handleSettingChange(key, e.target.value)}
@@ -968,7 +937,7 @@ export default function RegulatorySidebar({
                         { label: 'Font Family', key: 'fontFamily', options: ['Arial', 'Times New Roman', 'Calibri'] },
                       ].map(({ label, key, options }) => (
                         <div key={key}>
-                          <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>{label}</label>
+                          <label className="text-xs block mb-1" style={{ color: '#1a2332' }}>{label}</label>
                           <select
                             value={(settings as any)[key]}
                             onChange={(e) => handleSettingChange(key, e.target.value)}
@@ -986,7 +955,7 @@ export default function RegulatorySidebar({
                       { label: 'Annotation Style', key: 'annotationStyle', options: [{ v: 'MLA', l: 'MLA' }, { v: 'APA', l: 'APA' }, { v: 'Chicago', l: 'Chicago' }, { v: 'Custom', l: 'Custom' }] },
                     ].map(({ label, key, options }) => (
                       <div key={key}>
-                        <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>{label}</label>
+                        <label className="text-xs block mb-1" style={{ color: '#1a2332' }}>{label}</label>
                         <select
                           value={(settings as any)[key]}
                           onChange={(e) => handleSettingChange(key, e.target.value)}
@@ -1006,7 +975,7 @@ export default function RegulatorySidebar({
                     </label>
 
                     <div>
-                      <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>Source Restriction</label>
+                      <label className="text-xs block mb-1" style={{ color: '#1a2332' }}>Source Restriction</label>
                       <select
                         value={settings.sourceRestriction}
                         onChange={(e) => handleSettingChange('sourceRestriction', e.target.value)}
@@ -1019,7 +988,7 @@ export default function RegulatorySidebar({
                     </div>
 
                     <div>
-                      <label className="text-xs block mb-1" style={{ color: '#9ab0d0' }}>
+                      <label className="text-xs block mb-1" style={{ color: '#1a2332' }}>
                         AI Confidence Threshold: <span className="text-[#0f172a] font-medium">{settings.confidenceThreshold}%</span>
                       </label>
                       <input
@@ -1040,7 +1009,7 @@ export default function RegulatorySidebar({
                         onChange={(e) => handleSettingChange('autoAnnotate', e.target.checked)}
                         className="rounded accent-blue-500"
                       />
-                      <label htmlFor="auto-annotate" className="text-xs cursor-pointer" style={{ color: '#9ab0d0' }}>
+                      <label htmlFor="auto-annotate" className="text-xs cursor-pointer" style={{ color: '#1a2332' }}>
                         Auto-Annotate References
                       </label>
                     </div>
@@ -1056,10 +1025,10 @@ export default function RegulatorySidebar({
                 >
                   <button
                     onClick={() => setShowSettings(false)}
-                    className="w-full py-3 rounded-xl text-sm font-semibold text-[#0f172a] transition-colors"
-                    style={{ background: '#007bff' }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#3399ff'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#007bff'; }}
+                    className="w-full py-3 rounded-xl text-sm transition-colors"
+                    style={{ background: '#5ba3f7', color: '#1a2332', fontWeight: 600 }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#3d8ce6'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#5ba3f7'; }}
                   >
                     Save Settings
                   </button>

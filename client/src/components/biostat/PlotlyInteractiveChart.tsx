@@ -78,15 +78,26 @@ const KM_PALETTE = ['#0F172A', '#EC4899', '#3b82f6', '#10b981', '#f59e0b', '#8b5
 /** Trendline default color for survival charts */
 const KM_TRENDLINE_COLOR = '#D1D5DB';
 
+// Publication-quality research palette (10 colors)
+const RESEARCH_PALETTE = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be185d', '#854d0e', '#4f46e5', '#059669'];
+
+// Marker shapes per series index — Plotly symbol names
+const MARKER_SHAPES: string[] = [
+  'circle', 'square', 'triangle-up', 'diamond',
+  'triangle-down', 'hexagon', 'star', 'cross',
+  'pentagon', 'bowtie',
+];
+
 const LAYOUT_BASE: Partial<Plotly.Layout> = {
   paper_bgcolor: '#ffffff',
-  plot_bgcolor: '#f8fafc',
-  font: { family: 'Inter, system-ui, sans-serif', size: 12, color: '#0f172a' },
-  margin: { t: 48, r: 24, b: 56, l: 64 },
+  plot_bgcolor: '#ffffff',
+  font: { family: 'Arial, sans-serif', size: 12, color: '#1a2332' },
+  margin: { l: 70, r: 30, t: 50, b: 70 },
   legend: {
-    bgcolor: '#ffffffee',
-    bordercolor: '#e2e8f0',
+    bgcolor: '#ffffff',
+    bordercolor: '#d0d0d0',
     borderwidth: 1,
+    font: { size: 11 },
     x: 1,
     xanchor: 'right' as const,
     y: 1,
@@ -94,7 +105,20 @@ const LAYOUT_BASE: Partial<Plotly.Layout> = {
   hovermode: 'closest' as const,
 };
 
-const GRID_STYLE = { gridcolor: '#e2e8f0', linecolor: '#e2e8f0', zeroline: false };
+const GRID_STYLE: Record<string, any> = {
+  linecolor: '#1a2332',
+  linewidth: 1.5,
+  mirror: true,
+  ticks: 'outside',
+  tickwidth: 1.5,
+  showgrid: true,
+  gridcolor: '#e8e8e8',
+  zeroline: false,
+};
+
+const MINOR_TICKS: Record<string, any> = {
+  minor: { showgrid: true, gridcolor: '#f0f0f0' },
+};
 
 // ── Title wrapping helper ─────────────────────────────────────────────────
 // Plotly renders titles as SVG text — no auto-wrap. We insert <br> tags to
@@ -180,6 +204,7 @@ function buildSurvivalTraces(
 
   traces.forEach((trace, i) => {
     const color = trace.color ?? getTraceColor(trace.name, i, true);
+    const markerShape = MARKER_SHAPES[i % MARKER_SHAPES.length];
 
     plotData.push({
       x: trace.time,
@@ -187,9 +212,9 @@ function buildSurvivalTraces(
       mode: 'lines+markers',
       name: trace.name,
       line: { color, width: 2.5, shape: 'hv' },
-      marker: { color, size: 4 },
+      marker: { color, size: 7, symbol: markerShape },
       type: 'scatter',
-      hovertemplate: `<b>${trace.name}</b><br>Time: %{x}<br>Value: %{y:.1f}<extra></extra>`,
+      hovertemplate: `<b>${trace.name}</b><br>Time: %{x}<br>Value: %{y:.3f}<extra></extra>`,
     });
 
     if (trace.sem && trace.sem.length === trace.values.length) {
@@ -583,6 +608,70 @@ function chartDataToSurvivalTraces(chartData: any): SurvivalTrace[] | null {
   }));
 }
 
+/** Resolve error bar data from dataset or chart-level error_bars array */
+function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
+  // Dataset-level error bars
+  const errArr = ds.error_y ?? ds.sem ?? ds.error ?? ds.errorBars ?? ds.sd;
+  if (errArr && Array.isArray(errArr)) {
+    return {
+      type: 'data' as const,
+      array: errArr,
+      visible: true,
+      color: ds.color ?? '#64748b',
+      thickness: 1.5,
+      width: 4,
+    };
+  }
+  // Chart-level error_bars array (from AI prompt)
+  if (chartData.error_bars && Array.isArray(chartData.error_bars)) {
+    const match = chartData.error_bars.find((eb: any) => eb.series === seriesName);
+    if (match?.values) {
+      return {
+        type: 'data' as const,
+        array: match.values,
+        visible: true,
+        color: ds.color ?? '#64748b',
+        thickness: 1.5,
+        width: 4,
+      };
+    }
+  }
+  return undefined;
+}
+
+/** Resolve marker shape for a series index from chart_data markers array or default */
+function resolveMarkerShape(chartData: any, seriesName: string, index: number): string {
+  if (chartData.markers && Array.isArray(chartData.markers)) {
+    const match = chartData.markers.find((m: any) => m.series === seriesName);
+    if (match?.shape) return match.shape;
+  }
+  return MARKER_SHAPES[index % MARKER_SHAPES.length];
+}
+
+/** Resolve marker size from chart_data markers array or default */
+function resolveMarkerSize(chartData: any, seriesName: string): number {
+  if (chartData.markers && Array.isArray(chartData.markers)) {
+    const match = chartData.markers.find((m: any) => m.series === seriesName);
+    if (match?.size) return match.size;
+  }
+  return 8;
+}
+
+/** Build significance annotations from chart_data */
+function buildSignificanceAnnotations(chartData: any): Partial<Plotly.Annotations>[] {
+  if (!chartData.significance || !Array.isArray(chartData.significance)) return [];
+  return chartData.significance.map((sig: any) => ({
+    x: sig.x,
+    y: sig.y,
+    text: sig.text ?? '***',
+    showarrow: false,
+    font: { size: 14, color: '#1a2332' },
+    yshift: 10,
+    xref: 'x' as const,
+    yref: 'y' as const,
+  }));
+}
+
 /** Build Plotly traces from generic LLM chart_data (bar/line) */
 function buildGenericPlotlyTraces(
   chartData: any,
@@ -590,45 +679,87 @@ function buildGenericPlotlyTraces(
 ): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const labels = chartData.labels ?? [];
   const datasets = chartData.datasets ?? [];
+  const annotations = buildSignificanceAnnotations(chartData);
+
+  // Axis titles with units
+  const xTitle = chartData.x_axis ?? chartData.xLabel ?? '';
+  const yTitle = chartData.y_axis ?? chartData.yLabel ?? '';
+  const xTitleConfig = { text: xTitle, font: { size: 13, color: '#1a2332' } };
+  const yTitleConfig = { text: yTitle, font: { size: 13, color: '#1a2332' } };
+
+  // Axis tick intervals from AI
+  const axisTicks = chartData.axis_ticks ?? {};
+  const xAxisExtra: any = {};
+  const yAxisExtra: any = {};
+  if (axisTicks.x_interval) xAxisExtra.dtick = axisTicks.x_interval;
+  if (axisTicks.y_interval) yAxisExtra.dtick = axisTicks.y_interval;
+  if (axisTicks.x_minor) Object.assign(xAxisExtra, MINOR_TICKS);
+  if (axisTicks.y_minor) Object.assign(yAxisExtra, MINOR_TICKS);
+
+  // Y-axis scale (log if specified)
+  if (chartData.y_scale === 'log') {
+    yAxisExtra.type = 'log';
+  }
+
+  // Choose palette: use RESEARCH_PALETTE for >2 series, KM for survival-like
+  const palette = datasets.length > 2 ? RESEARCH_PALETTE : DEFAULT_PALETTE;
 
   if (mode === 'bar' || (!mode && !isPlotlyChartData(chartData))) {
-    const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
-      x: labels,
-      y: ds.data ?? [],
-      name: ds.label ?? `Series ${i + 1}`,
-      type: 'bar' as const,
-      marker: { color: ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
-      error_y: ds.sem
-        ? { type: 'data' as const, array: ds.sem, visible: true, color: '#64748b' }
-        : undefined,
-    }));
+    const showValues = chartData.show_values !== false; // default true for bars
+    const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
+      const color = ds.color ?? ds.borderColor ?? palette[i % palette.length];
+      const seriesName = ds.label ?? `Series ${i + 1}`;
+      return {
+        x: labels,
+        y: ds.data ?? [],
+        name: seriesName,
+        type: 'bar' as const,
+        marker: { color },
+        error_y: resolveErrorBars(ds, chartData, seriesName),
+        // Values above bars
+        ...(showValues ? {
+          text: (ds.data ?? []).map((v: number) => typeof v === 'number' ? v.toFixed(1) : String(v)),
+          textposition: 'outside' as const,
+          textfont: { size: 10, color: '#1a2332' },
+        } : {}),
+      };
+    });
 
     return {
       plotData,
       layout: {
         barmode: 'group' as const,
-        xaxis: { title: { text: chartData.xLabel ?? '' }, ...GRID_STYLE },
-        yaxis: { title: { text: chartData.yLabel ?? '' }, ...GRID_STYLE },
+        xaxis: { title: xTitleConfig, ...GRID_STYLE, ...xAxisExtra },
+        yaxis: { title: yTitleConfig, ...GRID_STYLE, ...yAxisExtra },
+        annotations,
       },
     };
   }
 
-  // Default: line chart
-  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
-    x: labels,
-    y: ds.data ?? [],
-    mode: 'lines+markers' as const,
-    name: ds.label ?? `Series ${i + 1}`,
-    line: { color: ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length], width: 2 },
-    marker: { size: 5 },
-    type: 'scatter' as const,
-  }));
+  // Default: line chart with markers
+  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
+    const color = ds.color ?? ds.borderColor ?? palette[i % palette.length];
+    const seriesName = ds.label ?? `Series ${i + 1}`;
+    const markerShape = resolveMarkerShape(chartData, seriesName, i);
+    const markerSize = resolveMarkerSize(chartData, seriesName);
+    return {
+      x: labels,
+      y: ds.data ?? [],
+      mode: 'lines+markers' as const,
+      name: seriesName,
+      line: { color, width: 2 },
+      marker: { color, size: markerSize, symbol: markerShape },
+      type: 'scatter' as const,
+      error_y: resolveErrorBars(ds, chartData, seriesName),
+    };
+  });
 
   return {
     plotData,
     layout: {
-      xaxis: { title: { text: chartData.xLabel ?? '' }, ...GRID_STYLE },
-      yaxis: { title: { text: chartData.yLabel ?? '' }, ...GRID_STYLE },
+      xaxis: { title: xTitleConfig, ...GRID_STYLE, ...xAxisExtra },
+      yaxis: { title: yTitleConfig, ...GRID_STYLE, ...yAxisExtra },
+      annotations,
     },
   };
 }
@@ -788,6 +919,7 @@ export default function PlotlyInteractiveChart({
         config.traces ?? chartDataToSurvivalTraces(config.chartData) ?? [];
       if (traces.length > 0) {
         const { plotData, annotations } = buildSurvivalTraces(traces);
+        const sigAnnotations = buildSignificanceAnnotations(chartData ?? {});
         const tc = buildTitleConfig(config.title ?? 'Mean PFS by Treatment Group');
         return {
           plotData,
@@ -795,9 +927,15 @@ export default function PlotlyInteractiveChart({
             ...LAYOUT_BASE,
             title: tc.title,
             margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
-            xaxis: { title: { text: config.xLabel ?? 'Time (Months)' }, ...GRID_STYLE },
-            yaxis: { title: { text: config.yLabel ?? 'Mean PFS (Days)' }, ...GRID_STYLE },
-            annotations,
+            xaxis: {
+              title: { text: config.xLabel ?? chartData?.x_axis ?? 'Time (Months)', font: { size: 13, color: '#1a2332' } },
+              ...GRID_STYLE,
+            },
+            yaxis: {
+              title: { text: config.yLabel ?? chartData?.y_axis ?? 'Mean PFS (Days)', font: { size: 13, color: '#1a2332' } },
+              ...GRID_STYLE,
+            },
+            annotations: [...annotations, ...sigAnnotations],
           },
         };
       }
@@ -818,6 +956,7 @@ export default function PlotlyInteractiveChart({
         const traces = chartDataToSurvivalTraces(chartData);
         if (traces && traces.length > 0) {
           const { plotData, annotations } = buildSurvivalTraces(traces);
+          const sigAnnotations = buildSignificanceAnnotations(chartData);
           const tc = buildTitleConfig(config.title ?? chartData.title ?? 'Survival Analysis');
           return {
             plotData,
@@ -825,9 +964,15 @@ export default function PlotlyInteractiveChart({
               ...LAYOUT_BASE,
               title: tc.title,
               margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
-              xaxis: { title: { text: config.xLabel ?? 'Time (Months)' }, ...GRID_STYLE },
-              yaxis: { title: { text: config.yLabel ?? 'Mean PFS (Days)' }, ...GRID_STYLE },
-              annotations,
+              xaxis: {
+                title: { text: config.xLabel ?? chartData.x_axis ?? 'Time (Months)', font: { size: 13, color: '#1a2332' } },
+                ...GRID_STYLE,
+              },
+              yaxis: {
+                title: { text: config.yLabel ?? chartData.y_axis ?? 'Mean PFS (Days)', font: { size: 13, color: '#1a2332' } },
+                ...GRID_STYLE,
+              },
+              annotations: [...annotations, ...sigAnnotations],
             },
           };
         }
@@ -894,6 +1039,34 @@ export default function PlotlyInteractiveChart({
     }
   }, [config.title]);
 
+  // ── Context menu state ──────────────────────────────────────────────────
+  const [contextMenu, setContextMenu] = useState<{
+    x: number; y: number;
+    pointX: number; pointY: number;
+    trace: string; traceIdx: number; pointIdx: number;
+  } | null>(null);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    // Only show context menu if a point was recently clicked
+    if (selectedPoint) {
+      e.preventDefault();
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        pointX: selectedPoint.x,
+        pointY: selectedPoint.y,
+        trace: selectedPoint.trace,
+        traceIdx: 0,
+        pointIdx: 0,
+      });
+    }
+  }, [selectedPoint]);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // Close context menu on outside click
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
   if (plotData.length === 0) {
     return (
       <div className="flex items-center justify-center text-sm text-slate-400" style={{ height }}>
@@ -904,9 +1077,50 @@ export default function PlotlyInteractiveChart({
 
   return (
     <div className="flex flex-col">
+      {/* Chart toolbar */}
+      <div className="flex items-center gap-1 mb-1 px-1">
+        <button
+          onClick={() => {
+            if (plotRef.current?.el) {
+              // @ts-ignore — use pre-bundled UMD dist
+              import('plotly.js/dist/plotly').then((mod: any) => {
+                const Plotly = mod.default ?? mod;
+                Plotly.relayout(plotRef.current!.el, { 'xaxis.autorange': true, 'yaxis.autorange': true });
+              }).catch(() => {});
+            }
+          }}
+          className="flex items-center gap-1 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#0f172a] hover:bg-[#f1f5f9] rounded transition-colors"
+          title="Reset zoom to fit all data"
+        >
+          Fit All
+        </button>
+        <button
+          onClick={() => {
+            onEditAction?.('add_labels', selectedPoint);
+          }}
+          className="flex items-center gap-1 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#0f172a] hover:bg-[#f1f5f9] rounded transition-colors"
+          title="Toggle data value labels"
+        >
+          Values
+        </button>
+        <button
+          onClick={() => {
+            onEditAction?.('add_trendline', selectedPoint);
+          }}
+          className="flex items-center gap-1 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#0f172a] hover:bg-[#f1f5f9] rounded transition-colors"
+          title="Add trendline"
+        >
+          Trendline
+        </button>
+        <div className="flex-1" />
+        <span className="text-[9px] text-[#94a3b8]">Click point for details \u00B7 Right-click for options</span>
+      </div>
+
       <div
+        ref={chartContainerRef}
         className="relative rounded-lg overflow-hidden"
         style={{ background: '#ffffff', border: '1px solid #e2e8f0' }}
+        onContextMenu={handleContextMenu}
       >
         <Suspense
           fallback={
@@ -949,12 +1163,67 @@ export default function PlotlyInteractiveChart({
         </Suspense>
 
         {selectedPoint && (
-          <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm border border-blue-200 rounded-lg px-3 py-2 text-xs shadow-sm">
+          <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm border border-blue-200 rounded-lg px-3 py-2 text-xs shadow-sm z-10">
             <div className="font-medium text-blue-700">{selectedPoint.trace}</div>
             <div className="text-slate-500">
               x: {selectedPoint.x}, y: {Number(selectedPoint.y).toFixed(2)}
             </div>
           </div>
+        )}
+
+        {/* Right-click context menu */}
+        {contextMenu && (
+          <>
+            <div className="fixed inset-0 z-[300]" onClick={closeContextMenu} />
+            <div
+              className="fixed z-[301] bg-white rounded-lg shadow-lg border border-[#e2e8f0] py-1 min-w-[180px]"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+            >
+              <div className="px-3 py-1.5 border-b border-[#e2e8f0]">
+                <p className="text-[10px] font-semibold text-[#0f172a]">{contextMenu.trace}</p>
+                <p className="text-[9px] text-[#94a3b8]">x: {contextMenu.pointX}, y: {Number(contextMenu.pointY).toFixed(2)}</p>
+              </div>
+              {[
+                { label: 'Add Asterisk *', action: 'add_asterisk_1' },
+                { label: 'Add Asterisk **', action: 'add_asterisk_2' },
+                { label: 'Add Asterisk ***', action: 'add_asterisk_3' },
+                { label: 'Add Error Bar', action: 'add_error_bar' },
+                { label: 'Add Label', action: 'add_point_label' },
+                { label: 'Edit Value', action: 'edit_value' },
+                { label: 'Change Color', action: 'change_point_color' },
+                { label: 'Change Shape', action: 'change_point_shape' },
+              ].map(({ label, action }) => (
+                <button
+                  key={action}
+                  className="w-full text-left px-3 py-1.5 text-xs text-[#374151] hover:bg-[#f1f5f9] hover:text-[#0f172a] transition-colors"
+                  onClick={() => {
+                    onEditAction?.(action, {
+                      x: contextMenu.pointX,
+                      y: contextMenu.pointY,
+                      trace: contextMenu.trace,
+                    });
+                    closeContextMenu();
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+              <div className="h-px bg-[#e2e8f0] my-1 mx-2" />
+              <button
+                className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                onClick={() => {
+                  onEditAction?.('delete_point', {
+                    x: contextMenu.pointX,
+                    y: contextMenu.pointY,
+                    trace: contextMenu.trace,
+                  });
+                  closeContextMenu();
+                }}
+              >
+                Delete Point
+              </button>
+            </div>
+          </>
         )}
       </div>
 

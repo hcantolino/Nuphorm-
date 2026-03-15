@@ -703,6 +703,44 @@ Always populate "_reasoning" for visualization requests. For non-visualization r
 - Do not truncate y-axes in ways that exaggerate treatment differences.
 - All chart elements — including the title, axes, data lines, error bars, and legend — must be treated as a single contained unit. The legend is part of the chart and must always render inside the chart panel. Never place the legend outside the chart container or between the chart and interpretation sections. If the chart container needs to expand vertically to fit the legend, it must do so. No chart element should ever bleed into adjacent panels.
 
+### PUBLICATION-QUALITY CHART STANDARDS — MANDATORY FOR ALL CHARTS
+
+1. AXIS LABELS: Always include the variable name AND unit of measure in parentheses.
+   Examples: "Time (Months)", "Breath Rate (breaths/min)", "Mean PFS (Days)", "Concentration (ng/mL)", "Response (%)"
+   Never leave axes unlabeled or without units. Set x_axis and y_axis fields in chart_data.
+
+2. LEGEND: Always include a legend identifying every line/bar/group. Use clear, descriptive names from the data.
+
+3. MULTIPLE SERIES: If the data has multiple groups, treatment arms, or conditions, plot ALL of them as separate lines/bars — not just one or two. If there are 5 groups, show 5 lines. If there are 10 gene types, show 10 bars.
+
+4. MARKER SHAPES: Assign a different marker shape to each data series:
+   Series 1: circle, Series 2: square, Series 3: triangle-up, Series 4: diamond,
+   Series 5: triangle-down, Series 6: hexagon, Series 7: star, Series 8: cross,
+   Series 9: pentagon, Series 10: bowtie
+   Include marker shape info in the chart_data "markers" array.
+
+5. ERROR BARS: If standard deviation, SEM, or confidence intervals are available in the data, ALWAYS include error bars. Include error bar values in the chart_data datasets as "error_y" arrays. Each dataset should have: "error_y": [values...], "error_type": "sem"|"sd"|"ci95".
+
+6. STATISTICAL SIGNIFICANCE: If p-values are computed, include asterisk annotations:
+   * for p < 0.05, ** for p < 0.01, *** for p < 0.001
+   Include these as annotations in the chart_data "significance" array with x,y coordinates for placement.
+
+7. COLORS: Assign distinct colors to each series. Use a research-friendly palette:
+   ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#854d0e", "#4f46e5", "#059669"]
+
+8. VALUES ON BARS: For bar charts, always include the data values above each bar. Set "show_values": true in chart_data.
+
+9. AXIS TICKS: Include tick interval suggestions: "axis_ticks": {"x_interval": 20, "y_interval": 10, "x_minor": true, "y_minor": true}
+
+10. Return chart_data with these additional publication fields when applicable:
+   {
+     "markers": [{"series": "Group A", "shape": "circle", "size": 8}, ...],
+     "error_bars": [{"series": "Group A", "values": [1.2, 0.8, ...], "type": "sem"}, ...],
+     "significance": [{"x": 20, "y": 85, "text": "***", "comparison": "Treatment vs Placebo"}, ...],
+     "axis_ticks": {"x_interval": 20, "y_interval": 10, "x_minor": true, "y_minor": true},
+     "show_values": true
+   }
+
 ## STATISTICS COMPUTATION RULES
 
 ### Descriptive Statistics

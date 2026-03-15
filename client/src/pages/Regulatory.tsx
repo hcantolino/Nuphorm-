@@ -37,25 +37,25 @@ const T = {
 const EMPTY_SOURCES: import('@/stores/regulatoryStore').SourceFile[] = [];
 const EMPTY_CONVERSATION: import('@/stores/regulatoryStore').ConversationMessage[] = [];
 
-// ── Fake demo sources for showcase ──────────────────────────────────────────
+// ── Demo sources for showcase (InsuFlow Pro 510(k) files) ──────────────────
 const DEMO_SOURCES = [
   {
-    name: 'Clinical_Trial_Results.csv',
-    type: 'CSV',
-    excerpt:
-      'N=240 patients enrolled across 12 sites. Primary endpoint: mean blood glucose reduction of 38.2 mg/dL (p<0.001). Device accuracy MARD 8.9%, meeting ISO 15197:2013 criteria. No serious device-related adverse events reported. 95% CI [35.1, 41.3]. Secondary endpoint: 94.2% of readings within Zone A of Clarke Error Grid.',
-  },
-  {
-    name: 'GlucoSense_Device_Specifications.pdf',
+    name: 'Source 1_ Fake Regulatory Source Package – InsuFlow Pro Insulin Pump 510(k) Support Files.pdf',
     type: 'PDF',
     excerpt:
-      'GlucoSense Pro continuous glucose monitor. Sensor: electrochemical GOx-based, 14-day wear. Range 40-500 mg/dL. Operating temp 10-45C. Bluetooth 5.0 connectivity. Biocompatible adhesive per ISO 10993-5/-10. IP27 water resistance rating. Polycarbonate housing, IR sensor array. Accuracy +/-15% vs. lab reference (n=150). Sensitivity 92%, Specificity 88%.',
+      'InsuFlow Pro Insulin Pump 510(k) regulatory source package. Device classification: Class II medical device. Intended use: subcutaneous insulin delivery for Type 1 and Type 2 diabetes management. Predicate device: K192345 (InsuPump Classic). Product code: LZG. Regulatory pathway: 510(k) premarket notification. Manufacturing facility: ISO 13485:2016 certified. Design history file reference: DHF-2025-INS-PRO. Risk management per ISO 14971:2019.',
   },
   {
-    name: 'FDA_eStar_Template_510k.docx',
-    type: 'DOCX',
+    name: 'Source 2_ Bench Testing and Non-Clinical Performance Report.pdf',
+    type: 'PDF',
     excerpt:
-      'Section 4: Substantial Equivalence. The subject device shares the same intended use, technological characteristics, and performance specifications as the predicate device (K201234). Differences in sensor chemistry do not raise new questions of safety or effectiveness. Section 2: Indications for Use - Continuous glucose monitoring for Type 2 diabetes management.',
+      'Bench testing results for InsuFlow Pro insulin pump. Flow rate accuracy: ±5% across basal rates 0.05–25 U/hr. Occlusion detection: alarm triggered within 30 minutes at 25 psi. Bolus delivery accuracy: 99.2% within ±5% of programmed dose (n=500 tests). Environmental testing per IEC 60601-1: passed electromagnetic compatibility, electrical safety, and mechanical integrity. Battery life: 72 hours continuous operation. Biocompatibility testing per ISO 10993: cytotoxicity, sensitization, and irritation all passed.',
+  },
+  {
+    name: 'Source 3_ Predicate Device Comparison Table & Substantial Equivalence.pdf',
+    type: 'PDF',
+    excerpt:
+      'Substantial equivalence comparison: InsuFlow Pro vs. predicate K192345 (InsuPump Classic). Same intended use: continuous subcutaneous insulin infusion. Same technological characteristics: peristaltic pump mechanism, Luer-lock reservoir. Performance equivalence: both deliver 0.05–25 U/hr basal, 0.1–25 U bolus. New features: Bluetooth 5.0 connectivity, color touchscreen (do not raise new safety/effectiveness questions). Materials: same medical-grade polycarbonate housing, silicone tubing. Conclusion: device is substantially equivalent.',
   },
 ];
 
@@ -94,11 +94,32 @@ export default function Regulatory() {
   const sidebarSources = useRegulatoryStore((s) =>
     s.sourcesByProject[s.activeProjectId ?? ''] ?? EMPTY_SOURCES
   );
+  const setProjectSources = useRegulatoryStore((s) => s.setProjectSources);
+
+  // ── Pre-load 3 demo sources into the store on mount ──────────────────────
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const store = useRegulatoryStore.getState();
+    const existing = store.sourcesByProject[activeProjectId];
+    // Only seed if the project has no sources yet
+    if (existing && existing.length > 0) return;
+    const demoSources: import('@/stores/regulatoryStore').SourceFile[] = DEMO_SOURCES.map((s, i) => ({
+      id: `demo-reg-${i + 1}`,
+      name: s.name,
+      type: 'pdf',
+      size: [65792, 51200, 46080][i], // approximate file sizes
+      uploadedAt: new Date().toISOString(),
+      parsedContent: s.excerpt,
+      status: 'ready',
+    }));
+    setProjectSources(activeProjectId, demoSources);
+  }, [activeProjectId, setProjectSources]);
   const safetyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastUserMessageRef = useRef<string>('');
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const pendingSaveRef = useRef(false);
+  const lastSavedSnapshotRef = useRef<string>('');
 
   // ── Auto-save mutation ──────────────────────────────────────────────────────
   const saveStateMutation = trpc.regulatory.saveProjectState.useMutation();
@@ -124,6 +145,14 @@ export default function Regulatory() {
       status: s.status,
     }));
 
+    // Only save if content actually changed since last save
+    const snapshot = JSON.stringify({
+      content: project.content,
+      sources: sourcesSnapshot.map(s => `${s.id}:${s.status}`),
+      refs: project.references?.length ?? 0,
+    });
+    if (snapshot === lastSavedSnapshotRef.current) return;
+
     setSaveStatus('saving');
     try {
       await saveStateMutation.mutateAsync({
@@ -146,6 +175,7 @@ export default function Regulatory() {
           updatedAt: new Date().toISOString(),
         },
       });
+      lastSavedSnapshotRef.current = snapshot;
       setSaveStatus('saved');
       pendingSaveRef.current = false;
       setTimeout(() => setSaveStatus('idle'), 1500);
@@ -155,14 +185,21 @@ export default function Regulatory() {
     }
   }, [saveStateMutation]);
 
-  // Debounced save: triggers 500ms after last call to avoid rapid-fire saves
+  // Debounced save: triggers 2s after last call to avoid rapid-fire saves
   const triggerAutoSave = useCallback(() => {
     pendingSaveRef.current = true;
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       saveProjectState();
-    }, 500);
+    }, 2000);
   }, [saveProjectState]);
+
+  // Stable callback for sidebar sources — memoized to prevent useEffect loops
+  const handleSourcesChange = useCallback((sources: SourceFile[]) => {
+    if (sources.some((s) => s.status === 'ready')) {
+      triggerAutoSave();
+    }
+  }, [triggerAutoSave]);
 
   // ── Restore project state on project switch ──────────────────────────────
   const loadStateQuery = trpc.regulatory.loadProjectState.useQuery(
@@ -450,7 +487,7 @@ export default function Regulatory() {
     ).join('\n\n');
 
     handleSendMessage(
-      `Generate an FDA eStar 510(k) submission document for a fictional continuous glucose monitor called "GlucoSense Pro". Use ONLY the following source documents. Structure with numbered sections, cite sources inline using [SourceName:Section] format, and list all references with annotations.\n\nSource Materials:\n${sourceSummary}`,
+      `Generate an FDA eStar 510(k) submission document for the InsuFlow Pro Insulin Pump. Use ONLY the following source documents. Structure with numbered sections, cite sources inline using [SourceName:Section] format, and list all references with annotations.\n\nSource Materials:\n${sourceSummary}`,
       '510k'
     );
   }, [isGenerating, handleSendMessage]);
@@ -486,12 +523,7 @@ export default function Regulatory() {
             setActiveProject(projectId);
             lastRestoredProjectRef.current = null; // Allow restore for new project
           }}
-          onSourcesChange={(sources) => {
-            // Sidebar writes to store directly; auto-save when sources are ready
-            if (sources.some((s) => s.status === 'ready')) {
-              triggerAutoSave();
-            }
-          }}
+          onSourcesChange={handleSourcesChange}
         />
 
         {/* Main content — light theme */}

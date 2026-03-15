@@ -10,10 +10,63 @@ export type TrendlineType = 'none' | 'linear' | 'polynomial' | 'exponential';
 export type TrendlineDashPattern = 'solid' | 'dashed' | 'dotted';
 export type DataLabelFormat = 'decimal' | 'percentage' | 'integer';
 export type ChartTheme = 'light' | 'dark';
+export type MarkerShape = 'circle' | 'square' | 'triangle-up' | 'diamond' | 'triangle-down' | 'hexagon' | 'star' | 'cross' | 'pentagon' | 'bowtie';
+export type LineStyle = 'solid' | 'dash' | 'dot' | 'dashdot';
+export type GridStyle = 'solid' | 'dashed' | 'dotted';
+export type LegendAnchor = 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left' | 'outside-right' | 'outside-bottom';
 
 export interface TableSortConfig {
   column: 'metric' | 'value';
   direction: 'asc' | 'desc';
+}
+
+/** Per-series styling overrides — one per data series */
+export interface SeriesCustomization {
+  name: string;
+  color: string;
+  lineStyle: LineStyle;
+  lineWidth: number;
+  markerShape: MarkerShape;
+  markerSize: number;
+  showErrorBars: boolean;
+  errorBarColor: string;
+  visible: boolean;
+}
+
+/** Annotation placed on the chart */
+export interface ChartAnnotation {
+  id: string;
+  type: 'text' | 'asterisk' | 'arrow' | 'line' | 'bracket' | 'rect';
+  x: number;
+  y: number;
+  text?: string;
+  fontSize?: number;
+  fontFamily?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  textColor?: string;
+  bgColor?: string;
+  borderColor?: string;
+  showBorder?: boolean;
+  showBg?: boolean;
+  opacity?: number;
+  // For arrows/lines
+  x2?: number;
+  y2?: number;
+  arrowStyle?: string;
+  lineThickness?: number;
+  // For rects
+  width?: number;
+  height?: number;
+}
+
+/** Undo stack entry */
+export interface UndoEntry {
+  description: string;
+  chartData: any;
+  annotations: ChartAnnotation[];
+  seriesOverrides: SeriesCustomization[];
 }
 
 export interface TabCustomizations {
@@ -37,7 +90,7 @@ export interface TabCustomizations {
   // X-axis bounds (numeric / scatter)
   xAxisMin: number | null;
   xAxisMax: number | null;
-  // Series styling
+  // Series styling (global defaults)
   strokeWidth: number;
   fillOpacity: number;
   markerSize: number;
@@ -69,6 +122,42 @@ export interface TabCustomizations {
   chartTheme: ChartTheme;
   // Accessibility
   altText: string;
+  // ── NEW: Publication-quality fields ─────────────────────────────────
+  /** Subtitle / reference line (e.g. "Fig. 1A") */
+  subtitle: string;
+  /** Per-series styling overrides */
+  seriesOverrides: SeriesCustomization[];
+  /** Show minor tick marks */
+  showMinorTicks: boolean;
+  /** X-axis scale */
+  xAxisScale: 'linear' | 'log';
+  /** Background color */
+  bgColor: string;
+  /** Grid color */
+  gridColor: string;
+  /** Grid style */
+  gridStyle: GridStyle;
+  /** Show chart border (box around plot area) */
+  showChartBorder: boolean;
+  /** Chart border color */
+  borderColor: string;
+  /** Legend settings */
+  legendAnchor: LegendAnchor;
+  showLegendBorder: boolean;
+  legendBgColor: string;
+  legendFontSize: number;
+  /** Show values on chart (above bars, next to points) */
+  showValues: boolean;
+  /** Value display position */
+  valuePosition: 'above' | 'below' | 'inside';
+  /** Value font size */
+  valueFontSize: number;
+  /** Chart annotations (text boxes, asterisks, arrows, etc.) */
+  annotations: ChartAnnotation[];
+  /** Undo stack */
+  undoStack: UndoEntry[];
+  /** Redo stack */
+  redoStack: UndoEntry[];
 }
 
 export const DEFAULT_CUSTOMIZATIONS: TabCustomizations = {
@@ -113,6 +202,26 @@ export const DEFAULT_CUSTOMIZATIONS: TabCustomizations = {
   chartTitle: '',
   chartTheme: 'light',
   altText: '',
+  // Publication-quality defaults
+  subtitle: '',
+  seriesOverrides: [],
+  showMinorTicks: false,
+  xAxisScale: 'linear',
+  bgColor: '#ffffff',
+  gridColor: '#e8e8e8',
+  gridStyle: 'solid',
+  showChartBorder: true,
+  borderColor: '#1a2332',
+  legendAnchor: 'top-right',
+  showLegendBorder: true,
+  legendBgColor: '#ffffff',
+  legendFontSize: 11,
+  showValues: false,
+  valuePosition: 'above',
+  valueFontSize: 10,
+  annotations: [],
+  undoStack: [],
+  redoStack: [],
 };
 
 export interface PanelResult {

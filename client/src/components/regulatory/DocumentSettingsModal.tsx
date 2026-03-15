@@ -409,9 +409,10 @@ export default function DocumentSettingsModal({
         </button>
         <button
           onClick={handleSave}
-          className="px-6 py-3 rounded-lg text-base font-semibold text-white bg-[#2563EB]
-                     hover:bg-[#1D4ED8] shadow-sm hover:shadow-md transition-all duration-200
+          className="px-6 py-3 rounded-lg text-base bg-[#5ba3f7]
+                     hover:bg-[#3d8ce6] shadow-sm hover:shadow-md transition-all duration-200
                      w-full sm:w-auto"
+          style={{ color: '#1a2332', fontWeight: 600 }}
         >
           Save Settings
         </button>

@@ -35,6 +35,8 @@ import {
   LayoutGrid,
   List,
   Columns3,
+  Users,
+  Shield,
 } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { trpc } from '@/lib/trpc';
@@ -839,415 +841,568 @@ export default function SavedTechnicalFiles() {
     );
   }
 
-  // ── Grid view ─────────────────────────────────────────────────────────────────
+
+  // ── Main view ───────────────────────────────────────────────────────────────
+
+  const selectedCount = selectedFiles.size;
+
+  const bulkDownload = () => {
+    const files = allFlatFiles.filter(f => selectedFiles.has(f.id));
+    files.forEach(dlFile);
+    toast.success(`Downloading ${files.length} file${files.length !== 1 ? 's' : ''}`);
+  };
+
+  const bulkDelete = async () => {
+    const ids = Array.from(selectedFiles);
+    if (!confirm(`Delete ${ids.length} selected file${ids.length !== 1 ? 's' : ''}?`)) return;
+    try {
+      for (const id of ids) await deleteMutation.mutateAsync({ fileId: id });
+      toast.success(`Deleted ${ids.length} file${ids.length !== 1 ? 's' : ''}`);
+      clearSelection();
+      refetch();
+    } catch { toast.error('Some files failed to delete'); }
+  };
 
   return (
-    <div style={{ minHeight:'100vh', background:C.bg, fontFamily:FONT }}>
-      <div style={{ background:C.card, borderBottom:`1px solid ${C.border}`, padding:'22px 40px 0' }}>
-        <div style={{ marginBottom:18 }}>
-          <button
-            onClick={() => setLocation('/')}
-            style={{ display:'flex', alignItems:'center', gap:5, color:C.teal, fontSize:14, fontWeight:500, background:'none', border:'none', cursor:'pointer', padding:0 }}
-            onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
-            onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-          >
-            <ArrowLeft size={14} /> Back
-          </button>
-        </div>
-        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:24, marginBottom:22, flexWrap:'wrap' }}>
-          <div>
-            <h1 style={{ fontSize:30, fontWeight:700, color:C.text, margin:'0 0 6px', lineHeight:1.2 }}>Technical Files</h1>
-            <p style={{ fontSize:15, color:C.textSub, margin:0 }}>
-              {rawFiles.length} file{rawFiles.length !== 1 ? 's' : ''} across {folderKeys.length} folder{folderKeys.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-            <div style={{ position:'relative', width:280 }}>
-            <Search size={15} style={{ position:'absolute', left:13, top:'50%', transform:'translateY(-50%)', color: searchFocus ? C.teal : C.textMuted, pointerEvents:'none', transition:'color 0.2s', flexShrink:0 }} />
-            <input
-              type="text" placeholder="Search files, folders, or tabs\u2026" value={search}
-              onChange={e => setSearch(e.target.value)}
-              onFocus={() => setSearchFocus(true)} onBlur={() => setSearchFocus(false)}
-              style={{
-                width:'100%', boxSizing:'border-box', paddingLeft:40, paddingRight:16, paddingTop:10, paddingBottom:10,
-                border:`1.5px solid ${searchFocus ? C.teal : '#D1D5DB'}`, borderRadius:10, fontSize:14, color:C.text, background:C.card,
-                outline:'none', transition:'border-color 0.2s, box-shadow 0.2s',
-                boxShadow: searchFocus ? '0 0 0 3px rgba(37,99,235,0.12)' : 'none',
-              }}
-            />
+    <div style={{ minHeight: '100vh', background: '#F8FAFC', fontFamily: FONT }}>
+      {/* ═══ STICKY HEADER ═══ */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 20, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)', borderBottom: '1px solid #E5E7EB' }}>
+        <div style={{ maxWidth: 1440, margin: '0 auto', padding: '16px 24px' }}>
+          {/* Row 1: Title + Search + Toolbar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            {/* Title section */}
+            <div style={{ flexShrink: 0, marginRight: 8 }}>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: '#111827', margin: 0, lineHeight: 1.3 }}>Technical Files</h1>
+              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+                {rawFiles.length} file{rawFiles.length !== 1 ? 's' : ''} across {folderKeys.length} folder{folderKeys.length !== 1 ? 's' : ''}
+              </p>
             </div>
-            <ViewToolbar
-              viewMode={techViewMode}
-              onViewModeChange={(mode) => { setTechViewMode(mode); saveViewMode('technical-files', mode); }}
-              groupBy={techGroupBy}
-              onGroupByChange={(group) => { setTechGroupBy(group); saveGroupBy('technical-files', group); setCollapsedGroups(new Set()); }}
-              availableViews={['grid', 'list', 'columns']}
-            />
-            <PrimaryBtn icon={<FolderPlus size={14} />} label="New Folder" onClick={() => setNewFolderModal(true)} />
+
+            {/* Search */}
+            <div style={{ position: 'relative', flex: '1 1 200px', maxWidth: 320 }}>
+              <Search size={15} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: searchFocus ? '#3B82F6' : '#9CA3AF', pointerEvents: 'none', transition: 'color 0.2s' }} />
+              <input
+                type="text"
+                placeholder="Search files, folders, or tags..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                onFocus={() => setSearchFocus(true)}
+                onBlur={() => setSearchFocus(false)}
+                style={{
+                  width: '100%', boxSizing: 'border-box', paddingLeft: 40, paddingRight: search ? 32 : 14,
+                  paddingTop: 10, paddingBottom: 10, border: `1px solid ${searchFocus ? '#3B82F6' : '#D1D5DB'}`,
+                  borderRadius: 8, fontSize: 14, color: '#111827', background: '#FFFFFF', outline: 'none',
+                  transition: 'border-color 0.2s, box-shadow 0.2s',
+                  boxShadow: searchFocus ? '0 0 0 2px rgba(59,130,246,0.3)' : 'none',
+                }}
+              />
+              {search && (
+                <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#9CA3AF', padding: 2 }}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* View toggle group */}
+            <div style={{ display: 'flex', alignItems: 'center', background: '#f3f4f6', borderRadius: 6, padding: 2, gap: 2 }}>
+              {([
+                { mode: 'grid' as ViewMode, icon: <LayoutGrid size={14} />, label: 'Grid' },
+                { mode: 'list' as ViewMode, icon: <List size={14} />, label: 'List' },
+                { mode: 'columns' as ViewMode, icon: <Columns3 size={14} />, label: 'Compact' },
+              ]).map(({ mode, icon, label }) => {
+                const active = techViewMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => { setTechViewMode(mode); saveViewMode('technical-files', mode); }}
+                    title={label}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 32, height: 32, borderRadius: 4, border: 'none', cursor: 'pointer',
+                      background: active ? '#FFFFFF' : 'transparent',
+                      color: active ? '#2b7de9' : '#8fa3b8',
+                      boxShadow: active ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {icon}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* New Folder button */}
+            <button
+              onClick={() => setNewFolderModal(true)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8,
+                border: '1px solid #1a2332', background: '#FFFFFF', color: '#1a2332',
+                fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s', flexShrink: 0,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#EFF6FF'; e.currentTarget.style.borderColor = '#3B82F6'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#FFFFFF'; e.currentTarget.style.borderColor = '#1a2332'; }}
+            >
+              <FolderPlus size={14} />
+              New Folder
+            </button>
           </div>
+
+          {/* Bulk actions bar */}
+          {selectedCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, padding: '10px 16px', background: '#EFF6FF', borderRadius: 8, border: '1px solid #BFDBFE' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#3B82F6' }}>{selectedCount} file{selectedCount !== 1 ? 's' : ''} selected</span>
+              <div style={{ flex: 1 }} />
+              <button onClick={bulkDownload} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid #D1D5DB', background: '#FFFFFF', color: '#374151', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#f3f4f6'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#FFFFFF'; }}
+              >
+                <Download size={13} /> Download All
+              </button>
+              <button onClick={clearSelection} style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: 'transparent', color: '#6b7280', fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>
+                Deselect all
+              </button>
+              <button onClick={bulkDelete} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 6, border: '1px solid #FCA5A5', background: '#FFFFFF', color: '#dc2626', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#FEF2F2'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#FFFFFF'; }}
+              >
+                <Trash2 size={13} /> Delete {selectedCount}
+              </button>
+            </div>
+          )}
         </div>
-        <div style={{ display:'flex', alignItems:'center', borderTop:`1px solid ${C.borderLight}` }}>
+
+        {/* Tab bar */}
+        <div style={{ maxWidth: 1440, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', borderTop: '1px solid #f3f4f6' }}>
           {([
-            { key:'all' as ViewFilter, label:'All Files' },
-            { key:'projects' as ViewFilter, label:'Projects' },
-          ]).map(({ key, label }) => {
+            { key: 'all' as ViewFilter, label: 'All Files', count: allFlatFiles.length },
+            { key: 'projects' as ViewFilter, label: 'Projects', count: folderKeys.length },
+          ]).map(({ key, label, count }) => {
             const active = viewFilter === key;
             return (
-              <button key={key} onClick={() => setVF(key)} style={{
-                padding:'14px 22px', fontSize:14, fontWeight: active ? 600 : 400,
-                color: active ? C.text : C.textSub, background:'none', border:'none',
-                borderBottom: active ? `2.5px solid ${C.teal}` : '2.5px solid transparent',
-                cursor:'pointer', marginBottom:-1, transition:'all 0.2s',
-              }}
-                onMouseEnter={e => { if (!active) { e.currentTarget.style.color = C.text; e.currentTarget.style.background = '#F9FAFB'; } }}
-                onMouseLeave={e => { if (!active) { e.currentTarget.style.color = C.textSub; e.currentTarget.style.background = 'none'; } }}
-              >{label}</button>
+              <button
+                key={key}
+                onClick={() => { setVF(key); clearSelection(); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '12px 20px', fontSize: 14, fontWeight: active ? 500 : 400,
+                  color: active ? '#1a2332' : '#8fa3b8', background: 'none', border: 'none',
+                  borderBottom: active ? '2px solid #2b7de9' : '2px solid transparent',
+                  cursor: 'pointer', marginBottom: -1, transition: 'all 0.2s',
+                }}
+                onMouseEnter={e => { if (!active) { e.currentTarget.style.color = '#1a2332'; e.currentTarget.style.background = '#F9FAFB'; } }}
+                onMouseLeave={e => { if (!active) { e.currentTarget.style.color = '#8fa3b8'; e.currentTarget.style.background = 'none'; } }}
+              >
+                {label}
+                <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 8px', borderRadius: 10, background: active ? '#EFF6FF' : '#f3f4f6', color: active ? '#2b7de9' : '#8fa3b8' }}>
+                  {count}
+                </span>
+              </button>
             );
           })}
-          <div style={{ flex:1 }} />
-          <span style={{ fontSize:13, color:C.textMuted, paddingRight:4, paddingBottom:14 }}>
+          <div style={{ flex: 1 }} />
+          <span style={{ fontSize: 13, color: '#8fa3b8', paddingRight: 4, paddingBottom: 12 }}>
             {folderKeys.length} folder{folderKeys.length !== 1 ? 's' : ''} shown
           </span>
         </div>
       </div>
 
-      <div style={{ padding:'36px 40px', maxWidth:1360, margin:'0 auto' }}>
+      {/* ═══ CONTENT AREA ═══ */}
+      <div style={{ maxWidth: 1440, margin: '0 auto', padding: '24px 24px 100px' }}>
         {isLoading ? <LoadingState /> : rawFiles.length === 0 ? <EmptyState /> : (
           <>
-            {/* ── ALL FILES: flat vertical list of every individual file ──────────── */}
+            {/* ── ALL FILES TAB ─────────────────────────────────────────── */}
             {viewFilter === 'all' && (
-              allFlatFiles.length === 0 ? <FilteredEmpty viewFilter={viewFilter} search={search} /> : (
-                <div style={{ display:'flex', flexDirection:'column', gap: 0 }}>
-                  {/* Use table layout for >10 items */}
-                  {allFlatFiles.length > 10 ? (
-                    <div style={{
-                      background: C.card, border: `1px solid ${C.border}`, borderRadius: '0.5rem',
-                      boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', overflow: 'hidden',
-                    }}>
-                      {/* Table header */}
-                      <div style={{
-                        display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
-                        padding: '10px 20px', borderBottom: `1px solid ${C.borderLight}`,
-                        background: '#F9FAFB',
-                      }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1 }}>File Name</span>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1, minWidth: 80, textAlign: 'center' }}>Type</span>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1, minWidth: 120, textAlign: 'right' }}>Date</span>
-                      </div>
-                      {/* Scrollable file rows */}
-                      <div style={{ maxHeight: 600, overflowY: 'auto' }}>
-                        {allFlatFiles.map((file, idx) => {
-                          const format = extractFormat(file.content);
-                          const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#f8fafc', color: '#64748b' };
-                          return (
-                            <div
-                              key={file.id}
-                              onClick={() => setPreview(file)}
-                              onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
-                              style={{
-                                display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
-                                padding: '12px 20px', cursor: 'pointer',
-                                borderBottom: idx < allFlatFiles.length - 1 ? `1px solid ${C.borderLight}` : 'none',
-                                transition: 'background 0.15s',
-                              }}
-                              onMouseEnter={e => { e.currentTarget.style.background = '#E0F2FE'; }}
-                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                            >
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                                <FileText size={16} style={{ color: '#9CA3AF', flexShrink: 0 }} />
-                                <span style={{ fontSize: '1rem', fontWeight: 700, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {file.filename}
-                                </span>
-                              </div>
-                              <span style={{
-                                fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-                                background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase',
-                                alignSelf: 'center',
-                              }}>
-                                .{FORMAT_EXT_MAP[format] ?? format}
-                              </span>
-                              <span style={{ fontSize: '0.75rem', color: '#6B7280', alignSelf: 'center', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                {fmtDate(file.createdAt || file.generatedAt)}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    /* Card layout for ≤10 items */
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              allFlatFiles.length === 0
+                ? <FilteredEmpty viewFilter={viewFilter} search={search} />
+                : techViewMode === 'grid'
+                  ? (
+                    /* Grid view — file cards */
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 20 }}>
                       {allFlatFiles.map(file => {
                         const format = extractFormat(file.content);
-                        const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#f8fafc', color: '#64748b' };
+                        const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#e2e8f0', color: '#475569' };
+                        const ext = FORMAT_EXT_MAP[format] ?? format;
+                        const sel = selectedFiles.has(file.id);
                         return (
                           <div
                             key={file.id}
                             onClick={() => setPreview(file)}
                             onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
                             style={{
-                              display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px',
-                              background: C.card, border: `1px solid ${C.border}`, borderRadius: '0.5rem',
-                              boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
-                              cursor: 'pointer', transition: 'all 0.2s ease',
+                              background: '#FFFFFF', border: `1px solid ${sel ? '#3B82F6' : '#e2e8f0'}`,
+                              borderRadius: 12, overflow: 'hidden', cursor: 'pointer',
+                              transition: 'all 0.2s', position: 'relative',
+                              boxShadow: sel ? '0 0 0 1px rgba(59,130,246,0.2)' : '0 1px 2px rgba(0,0,0,0.04)',
                             }}
-                            onMouseEnter={e => { e.currentTarget.style.background = '#E0F2FE'; e.currentTarget.style.borderColor = '#194CFF'; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = C.card; e.currentTarget.style.borderColor = C.border; }}
+                            onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(59,130,246,0.15)'; e.currentTarget.style.borderColor = '#3B82F6'; }}
+                            onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = sel ? '0 0 0 1px rgba(59,130,246,0.2)' : '0 1px 2px rgba(0,0,0,0.04)'; e.currentTarget.style.borderColor = sel ? '#3B82F6' : '#e2e8f0'; }}
                           >
-                            <FileText size={18} style={{ color: '#9CA3AF', flexShrink: 0 }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: '1rem', fontWeight: 700, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {file.filename}
+                            {/* Preview area */}
+                            <div style={{ height: 120, background: '#F8FAFC', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #DEE2E6' }}>
+                              <div style={{ width: 56, height: 56, borderRadius: 12, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <TechFileIcon format={format} size={28} />
                               </div>
-                              <div style={{ fontSize: '0.75rem', color: '#6B7280', marginTop: 2 }}>
-                                <span style={{
-                                  fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3,
-                                  background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', marginRight: 8,
-                                }}>
-                                  .{FORMAT_EXT_MAP[format] ?? format}
-                                </span>
-                                {fmtDate(file.createdAt || file.generatedAt)}
+                            </div>
+                            {/* Checkbox */}
+                            <button
+                              onClick={e => { e.stopPropagation(); toggleSelect(file.id); }}
+                              style={{ position: 'absolute', top: 8, left: 8, background: 'none', border: 'none', cursor: 'pointer', color: sel ? '#3B82F6' : '#D1D5DB', padding: 0 }}
+                            >
+                              {sel ? <CheckSquare size={16} /> : <Square size={16} />}
+                            </button>
+                            {/* Content */}
+                            <div style={{ padding: '12px 16px' }}>
+                              <p style={{ fontSize: 14, fontWeight: 600, color: '#111827', margin: '0 0 2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</p>
+                              <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {file.folder !== 'General' ? file.folder : ''}
+                              </p>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>.{ext}</span>
+                                <span style={{ fontSize: 11, color: '#94a3b8' }}>{estimateSize(file.content)}</span>
                               </div>
+                              <p style={{ fontSize: 10, color: '#94a3b8', margin: '6px 0 0' }}>{fmtDate(file.createdAt || file.generatedAt)}</p>
                             </div>
                           </div>
                         );
                       })}
                     </div>
-                  )}
-                </div>
-              )
+                  )
+                  : (
+                    /* List view — Data Library style rows */
+                    <div style={{ background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, overflow: 'hidden' }}>
+                      {/* Column headers */}
+                      <div style={{ display: 'flex', alignItems: 'center', padding: '10px 20px', borderBottom: '1px solid #e2e8f0', background: '#fafbfc' }}>
+                        <div style={{ width: 32, flexShrink: 0 }}>
+                          <button onClick={() => { if (selectedCount === allFlatFiles.length) clearSelection(); else selectAll(); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: selectedCount > 0 ? '#3B82F6' : '#D1D5DB', padding: 0 }}>
+                            {selectedCount === allFlatFiles.length && allFlatFiles.length > 0 ? <CheckSquare size={15} /> : <Square size={15} />}
+                          </button>
+                        </div>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flex: 1 }}>File Name</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 70, textAlign: 'center', flexShrink: 0 }}>Type</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 260, textAlign: 'right', flexShrink: 0 }}>Date</span>
+                        <div style={{ width: 36, flexShrink: 0 }} />
+                      </div>
+                      {/* File rows */}
+                      {allFlatFiles.map((file, idx) => {
+                        const format = extractFormat(file.content);
+                        const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#e2e8f0', color: '#475569' };
+                        const ext = FORMAT_EXT_MAP[format] ?? format;
+                        const sel = selectedFiles.has(file.id);
+                        return (
+                          <div
+                            key={file.id}
+                            onClick={() => setPreview(file)}
+                            onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                            style={{
+                              display: 'flex', alignItems: 'center', padding: '16px 20px',
+                              borderBottom: idx < allFlatFiles.length - 1 ? '1px solid #f3f4f6' : 'none',
+                              cursor: 'pointer', transition: 'all 0.15s', position: 'relative',
+                              background: sel ? '#EFF6FF' : '#FFFFFF',
+                              borderLeft: '3px solid transparent',
+                            }}
+                            onMouseEnter={e => { if (!sel) { e.currentTarget.style.borderLeftColor = '#3B82F6'; e.currentTarget.style.background = '#FAFBFC'; } }}
+                            onMouseLeave={e => { e.currentTarget.style.borderLeftColor = 'transparent'; if (!sel) e.currentTarget.style.background = '#FFFFFF'; }}
+                          >
+                            {/* Checkbox */}
+                            <div style={{ width: 32, flexShrink: 0 }}>
+                              <button
+                                onClick={e => { e.stopPropagation(); toggleSelect(file.id); }}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: sel ? '#3B82F6' : '#D1D5DB', padding: 0, transition: 'color 0.15s' }}
+                              >
+                                {sel ? <CheckSquare size={15} /> : <Square size={15} />}
+                              </button>
+                            </div>
+                            {/* File icon */}
+                            <div style={{ width: 36, height: 36, borderRadius: 8, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginRight: 14 }}>
+                              <TechFileIcon format={format} size={18} />
+                            </div>
+                            {/* Name + folder path */}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <p style={{ fontSize: 14, fontWeight: 600, color: '#1a2332', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</p>
+                              <p style={{ fontSize: 13, color: '#8fa3b8', margin: '1px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {file.folder !== 'General' ? `${file.folder} / ${file.tabName}` : file.tabName || 'General'}
+                              </p>
+                            </div>
+                            {/* Type badge */}
+                            <div style={{ width: 70, textAlign: 'center', flexShrink: 0 }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>.{ext}</span>
+                            </div>
+                            {/* Size + Date */}
+                            <div style={{ width: 260, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0 }}>
+                              <span style={{ fontSize: 12, color: '#6b7280' }}>{estimateSize(file.content)}</span>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#8fa3b8' }}>
+                                <Calendar size={12} />
+                                {fmtDateFull(file.createdAt || file.generatedAt)}
+                              </span>
+                            </div>
+                            {/* 3-dot menu */}
+                            <div style={{ width: 36, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+                              <button
+                                onClick={e => { e.stopPropagation(); openCtxMenuFromButton(e.currentTarget, buildFileCtxItems(file)); }}
+                                style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: '#9ca3af', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s' }}
+                                onMouseEnter={e => { e.currentTarget.style.background = '#EFF6FF'; e.currentTarget.style.color = '#3B82F6'; }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#9ca3af'; }}
+                              >
+                                <MoreHorizontal size={15} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
             )}
 
-            {/* ── PROJECTS: folder grid with expandable accordion ─────────────── */}
+            {/* ── PROJECTS TAB ─────────────────────────────────────────── */}
             {viewFilter === 'projects' && (
               folderKeys.length === 0 ? <FilteredEmpty viewFilter={viewFilter} search={search} /> : (
                 <>
-            {/* Grid view (default) */}
-            {techViewMode === 'grid' && (
-              <DragDropContext onDragEnd={onDragEnd}>
-              <div style={{ display:'flex', flexDirection:'column', gap:24 }}>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(360px, 1fr))', gap:24 }}>
-                {folderKeys.map(name => {
-                  const fn = tree.get(name)!;
-                  return (
-                    <Droppable key={name} droppableId={`folder-${name}`}>
-                      {(dropProv, dropSnap) => (
-                        <div ref={dropProv.innerRef} {...dropProv.droppableProps} style={{ position: 'relative' }}>
-                    <FolderCard
-                      fn={fn} menuOpen={menuKey === name}
-                      onOpen={() => {
-                        setExpandedFolders(prev => {
-                          const next = new Set(prev);
-                          if (next.has(name)) next.delete(name);
-                          else next.add(name);
-                          return next;
-                        });
-                      }}
-                      onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
-                      onRename={newName => renameFolder(name, newName)}
-                      onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
-                      onOverflowClick={btn => { setMenuKey(null); openCtxMenuFromButton(btn, buildFolderCtxItems(name, fn)); }}
-                      isDragOver={dropSnap.isDraggingOver}
-                    />
-                    {dropProv.placeholder}
-                        </div>
-                      )}
-                    </Droppable>
-                  );
-                })}
-                </div>
-
-                {/* Expanded folder accordion — renders below the grid */}
-                {folderKeys.filter(name => expandedFolders.has(name)).map(name => {
-                  const fn = tree.get(name)!;
-                  const folderFiles = Array.from(fn.tabs.values()).flatMap(t => t.files);
-                  return (
-                    <div
-                      key={`accordion-${name}`}
-                      style={{
-                        background: 'linear-gradient(180deg, #E0F2FE 0%, #FFFFFF 100%)',
-                        borderRadius: '0.5rem',
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
-                        border: `1px solid ${C.borderLight}`,
-                        overflow: 'hidden',
-                      }}
-                    >
-                      {/* Accordion header */}
-                      <div
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px',
-                          borderBottom: `1px solid ${C.borderLight}`, cursor: 'pointer',
-                        }}
-                        onClick={() => setExpandedFolders(prev => { const next = new Set(prev); next.delete(name); return next; })}
-                      >
-                        <FolderOpen size={18} style={{ color: '#194CFF', flexShrink: 0 }} />
-                        <span style={{ fontSize: 15, fontWeight: 700, color: '#0F172A', flex: 1 }}>{fn.name}</span>
-                        <span style={{ fontSize: 12, color: C.textMuted }}>{folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}</span>
-                        <ChevronDown size={16} style={{ color: C.textMuted }} />
+                  {/* Grid view (default) */}
+                  {techViewMode === 'grid' && (
+                    <DragDropContext onDragEnd={onDragEnd}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 24 }}>
+                      {folderKeys.map(name => {
+                        const fn = tree.get(name)!;
+                        return (
+                          <Droppable key={name} droppableId={`folder-${name}`}>
+                            {(dropProv, dropSnap) => (
+                              <div ref={dropProv.innerRef} {...dropProv.droppableProps} style={{ position: 'relative' }}>
+                                <FolderCard
+                                  fn={fn} menuOpen={menuKey === name}
+                                  onOpen={() => {
+                                    setExpandedFolders(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(name)) next.delete(name);
+                                      else next.add(name);
+                                      return next;
+                                    });
+                                  }}
+                                  onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
+                                  onRename={newName => renameFolder(name, newName)}
+                                  onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
+                                  onOverflowClick={btn => { setMenuKey(null); openCtxMenuFromButton(btn, buildFolderCtxItems(name, fn)); }}
+                                  isDragOver={dropSnap.isDraggingOver}
+                                />
+                                {dropProv.placeholder}
+                              </div>
+                            )}
+                          </Droppable>
+                        );
+                      })}
                       </div>
-                      {/* File list inside accordion */}
-                      <div style={{ padding: '4px 0' }}>
-                        {folderFiles.map((file, idx) => {
-                          const format = extractFormat(file.content);
-                          const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#f8fafc', color: '#64748b' };
-                          return (
+
+                      {/* Expanded folder accordion */}
+                      {folderKeys.filter(name => expandedFolders.has(name)).map(name => {
+                        const fn = tree.get(name)!;
+                        const folderFiles = Array.from(fn.tabs.values()).flatMap(t => t.files);
+                        return (
+                          <div key={`accordion-${name}`} style={{ background: '#FFFFFF', borderRadius: 12, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', border: '1px solid #E5E7EB', overflow: 'hidden' }}>
                             <div
-                              key={file.id}
-                              onClick={() => setPreview(file)}
-                              onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
-                              style={{
-                                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 24px',
-                                cursor: 'pointer', transition: 'background 0.15s',
-                                borderBottom: idx < folderFiles.length - 1 ? `1px solid ${C.borderLight}` : 'none',
-                              }}
-                              onMouseEnter={e => { e.currentTarget.style.background = '#E0F2FE'; }}
-                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}
+                              onClick={() => setExpandedFolders(prev => { const next = new Set(prev); next.delete(name); return next; })}
                             >
-                              <FileText size={15} style={{ color: '#9CA3AF', flexShrink: 0 }} />
-                              <span style={{ fontSize: '1rem', fontWeight: 600, color: '#0F172A', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {file.filename}
-                              </span>
-                              <span style={{
-                                fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3,
-                                background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase',
-                              }}>
-                                .{FORMAT_EXT_MAP[format] ?? format}
-                              </span>
-                              <span style={{ fontSize: '0.75rem', color: '#6B7280', whiteSpace: 'nowrap' }}>
-                                {fmtDate(file.createdAt || file.generatedAt)}
-                              </span>
+                              <FolderOpen size={18} style={{ color: '#3B82F6', flexShrink: 0 }} />
+                              <span style={{ fontSize: 15, fontWeight: 700, color: '#111827', flex: 1 }}>{fn.name}</span>
+                              <span style={{ fontSize: 12, color: '#8fa3b8' }}>{folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}</span>
+                              <ChevronDown size={16} style={{ color: '#8fa3b8' }} />
                             </div>
+                            {/* Column headers */}
+                            <div style={{ display: 'flex', alignItems: 'center', padding: '8px 20px', borderBottom: '1px solid #e2e8f0', background: '#fafbfc' }}>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flex: 1 }}>File Name</span>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 70, textAlign: 'center', flexShrink: 0 }}>Type</span>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 200, textAlign: 'right', flexShrink: 0 }}>Date</span>
+                            </div>
+                            {folderFiles.map((file, idx) => {
+                              const format = extractFormat(file.content);
+                              const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#e2e8f0', color: '#475569' };
+                              const ext = FORMAT_EXT_MAP[format] ?? format;
+                              return (
+                                <div
+                                  key={file.id}
+                                  onClick={() => setPreview(file)}
+                                  onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px',
+                                    cursor: 'pointer', transition: 'all 0.15s', borderLeft: '3px solid transparent',
+                                    borderBottom: idx < folderFiles.length - 1 ? '1px solid #f3f4f6' : 'none',
+                                  }}
+                                  onMouseEnter={e => { e.currentTarget.style.borderLeftColor = '#3B82F6'; e.currentTarget.style.background = '#FAFBFC'; }}
+                                  onMouseLeave={e => { e.currentTarget.style.borderLeftColor = 'transparent'; e.currentTarget.style.background = 'transparent'; }}
+                                >
+                                  <div style={{ width: 32, height: 32, borderRadius: 8, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                    <TechFileIcon format={format} size={16} />
+                                  </div>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <p style={{ fontSize: 14, fontWeight: 600, color: '#1a2332', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</p>
+                                    <p style={{ fontSize: 12, color: '#8fa3b8', margin: '1px 0 0' }}>{file.tabName || 'Analysis'}</p>
+                                  </div>
+                                  <div style={{ width: 70, textAlign: 'center', flexShrink: 0 }}>
+                                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>.{ext}</span>
+                                  </div>
+                                  <div style={{ width: 200, textAlign: 'right', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+                                    <span style={{ fontSize: 12, color: '#6b7280' }}>{estimateSize(file.content)}</span>
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#8fa3b8' }}>
+                                      <Calendar size={12} />
+                                      {fmtDate(file.createdAt || file.generatedAt)}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    </DragDropContext>
+                  )}
+
+                  {/* List view — folders as rows */}
+                  {techViewMode === 'list' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {folderKeys.map(name => {
+                        const fn = tree.get(name)!;
+                        const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
+                        return (
+                          <div
+                            key={name}
+                            onClick={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                            onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px',
+                              background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 10,
+                              cursor: 'pointer', transition: 'all 0.2s ease', borderLeft: '3px solid transparent',
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.borderLeftColor = '#3B82F6'; e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.05)'; }}
+                            onMouseLeave={e => { e.currentTarget.style.borderLeftColor = 'transparent'; e.currentTarget.style.boxShadow = 'none'; }}
+                          >
+                            <div style={{ width: 40, height: 40, borderRadius: 10, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                              <Folder size={20} style={{ color: '#3B82F6' }} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <span style={{ fontSize: 15, fontWeight: 600, color: '#111827' }}>{fn.name}</span>
+                              <span style={{ fontSize: 12, color: '#8fa3b8', marginLeft: 10 }}>{total} file{total !== 1 ? 's' : ''}</span>
+                            </div>
+                            <span style={{ fontSize: 12, color: '#8fa3b8', flexShrink: 0 }}>{fmtDate(fn.latestDate)}</span>
+                            <TypeBadge type={fn.folderType} />
+                            <button
+                              onClick={e => { e.stopPropagation(); openCtxMenuFromButton(e.currentTarget, buildFolderCtxItems(name, fn)); }}
+                              style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', color: '#9ca3af', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = '#EFF6FF'; e.currentTarget.style.color = '#3B82F6'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#9ca3af'; }}
+                            ><MoreVertical size={14} /></button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Columns view */}
+                  {techViewMode === 'columns' && (
+                    <div style={{ display: 'flex', gap: 16, minHeight: 400 }}>
+                      <div style={{ width: 240, flexShrink: 0, background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, overflowY: 'auto' }}>
+                        <div style={{ padding: '12px 14px', borderBottom: '1px solid #E5E7EB' }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: 1 }}>Folders</span>
+                        </div>
+                        {folderKeys.map(name => {
+                          const fn = tree.get(name)!;
+                          const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
+                          const isOpen = openFolder === name;
+                          return (
+                            <button
+                              key={name}
+                              onClick={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
+                              style={{
+                                width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+                                background: isOpen ? '#EFF6FF' : 'transparent', color: isOpen ? '#3B82F6' : '#374151',
+                                border: 'none', borderLeft: isOpen ? '3px solid #3B82F6' : '3px solid transparent',
+                                cursor: 'pointer', fontSize: 13, fontWeight: isOpen ? 600 : 400, transition: 'all 0.15s',
+                              }}
+                              onMouseEnter={e => { if (!isOpen) e.currentTarget.style.background = '#F9FAFB'; }}
+                              onMouseLeave={e => { if (!isOpen) e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              <Folder size={15} />
+                              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fn.name}</span>
+                              <span style={{ fontSize: 11, color: '#8fa3b8' }}>{total}</span>
+                            </button>
                           );
                         })}
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-              </DragDropContext>
-            )}
-            {/* List view */}
-            {techViewMode === 'list' && (
-              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                {folderKeys.map(name => {
-                  const fn = tree.get(name)!;
-                  const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
-                  return (
-                    <div
-                      key={name}
-                      onClick={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
-                      onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
-                      style={{
-                        display:'flex', alignItems:'center', gap:14, padding:'14px 20px',
-                        background:C.card, border:`2px solid ${C.border}`, borderRadius:10,
-                        cursor:'pointer', transition:'all 0.2s ease',
-                      }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = '#007BFF'; e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.05)'; }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = 'none'; }}
-                    >
-                      <div style={{ width:40, height:40, borderRadius:10, background:'#E3F2FD', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                        <Folder size={20} style={{ color:'#007BFF' }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {openFolder && tree.get(openFolder) ? (
+                          <div style={{ background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, overflow: 'hidden' }}>
+                            <div style={{ padding: '14px 20px', borderBottom: '1px solid #e2e8f0' }}>
+                              <p style={{ fontSize: 14, fontWeight: 600, color: '#111827', margin: 0 }}>{openFolder}</p>
+                            </div>
+                            {Array.from(tree.get(openFolder)!.tabs.values()).flatMap(t => t.files).map((file, idx, arr) => {
+                              const format = extractFormat(file.content);
+                              const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#e2e8f0', color: '#475569' };
+                              return (
+                                <div key={file.id} onClick={() => setPreview(file)} onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px',
+                                    borderBottom: idx < arr.length - 1 ? '1px solid #f3f4f6' : 'none',
+                                    cursor: 'pointer', transition: 'all 0.15s', borderLeft: '3px solid transparent',
+                                  }}
+                                  onMouseEnter={e => { e.currentTarget.style.background = '#FAFBFC'; e.currentTarget.style.borderLeftColor = '#3B82F6'; }}
+                                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderLeftColor = 'transparent'; }}
+                                >
+                                  <div style={{ width: 32, height: 32, borderRadius: 8, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                    <TechFileIcon format={format} size={16} />
+                                  </div>
+                                  <span style={{ fontSize: 13, color: '#111827', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</span>
+                                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase' }}>
+                                    .{FORMAT_EXT_MAP[format] ?? format}
+                                  </span>
+                                  <span style={{ fontSize: 11, color: '#8fa3b8' }}>{fmtDate(file.createdAt || file.generatedAt)}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#8fa3b8', fontSize: 14 }}>
+                            Select a folder to view its contents
+                          </div>
+                        )}
                       </div>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <span style={{ fontSize:15, fontWeight:600, color:'#007BFF' }}>{fn.name}</span>
-                        <span style={{ fontSize:12, color:C.textSub, marginLeft:10 }}>{total} file{total !== 1 ? 's' : ''}</span>
-                      </div>
-                      <span style={{ fontSize:12, color:C.textMuted, flexShrink:0 }}>{fmtDate(fn.latestDate)}</span>
-                      <TypeBadge type={fn.folderType} />
-                      <button
-                        onClick={e => { e.stopPropagation(); openCtxMenuFromButton(e.currentTarget, buildFolderCtxItems(name, fn)); }}
-                        style={{ width:28, height:28, borderRadius:6, border:'none', background:'transparent', cursor:'pointer', color:C.textMuted, display:'flex', alignItems:'center', justifyContent:'center' }}
-                        onMouseEnter={e => { e.currentTarget.style.background = '#F3F4F6'; e.currentTarget.style.color = C.text; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textMuted; }}
-                      ><MoreVertical size={14} /></button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {/* Columns view */}
-            {techViewMode === 'columns' && (
-              <div style={{ display:'flex', gap:16, minHeight:400 }}>
-                {/* Folders column */}
-                <div style={{ width:240, flexShrink:0, background:C.card, border:`1px solid ${C.border}`, borderRadius:10, overflowY:'auto' }}>
-                  <div style={{ padding:'12px 14px', borderBottom:`1px solid ${C.border}` }}>
-                    <span style={{ fontSize:11, fontWeight:700, color:C.textMuted, textTransform:'uppercase', letterSpacing:1 }}>Folders</span>
-                  </div>
-                  {folderKeys.map(name => {
-                    const fn = tree.get(name)!;
-                    const total = Array.from(fn.tabs.values()).reduce((s, t) => s + t.files.length, 0);
-                    const isOpen = openFolder === name;
-                    return (
-                      <button
-                        key={name}
-                        onClick={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
-                        style={{
-                          width:'100%', textAlign:'left', display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
-                          background: isOpen ? '#E3F2FD' : 'transparent', color: isOpen ? '#007BFF' : C.textMid,
-                          border:'none', cursor:'pointer', fontSize:13, fontWeight: isOpen ? 600 : 400, transition:'all 0.15s',
-                        }}
-                        onMouseEnter={e => { if (!isOpen) e.currentTarget.style.background = '#F9FAFB'; }}
-                        onMouseLeave={e => { if (!isOpen) e.currentTarget.style.background = 'transparent'; }}
-                      >
-                        <Folder size={15} />
-                        <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{fn.name}</span>
-                        <span style={{ fontSize:11, color:C.textMuted }}>{total}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {/* Content column */}
-                <div style={{ flex:1, minWidth:0 }}>
-                  {openFolder && tree.get(openFolder) ? (
-                    <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:16 }}>
-                      <p style={{ fontSize:14, fontWeight:600, color:C.text, marginBottom:12 }}>{openFolder}</p>
-                      {Array.from(tree.get(openFolder)!.tabs.values()).flatMap(t => t.files).map(file => (
-                        <div key={file.id} onClick={() => setPreview(file)} onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
-                          style={{
-                            display:'flex', alignItems:'center', gap:10, padding:'8px 12px', borderBottom:`1px solid ${C.borderLight}`,
-                            cursor:'pointer', transition:'all 0.2s',
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.background = '#F9FAFB'; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                        >
-                          <FileText size={14} style={{ color:'#007BFF', flexShrink:0 }} />
-                          <span style={{ fontSize:13, color:C.text, fontWeight:500, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{file.filename}</span>
-                          <span style={{ fontSize:11, color:C.textMuted }}>{fmtDate(file.createdAt || file.generatedAt)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:C.textMuted, fontSize:14 }}>
-                      Select a folder to view its contents
                     </div>
                   )}
-                </div>
-              </div>
+                </>
+              )
             )}
-            {/* Gallery view (larger cards) */}
-            {techViewMode === 'gallery' && (
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))', gap:24 }}>
-                {folderKeys.map(name => {
-                  const fn = tree.get(name)!;
-                  return (
-                    <FolderCard
-                      key={name} fn={fn} menuOpen={menuKey === name}
-                      onOpen={() => { setOpenFolder(name); setExpandedTabs(new Set()); }}
-                      onMenuToggle={e => { e.stopPropagation(); setMenuKey(menuKey === name ? null : name); }}
-                      onRename={newName => renameFolder(name, newName)}
-                      onContextMenu={e => openCtxMenu(e, buildFolderCtxItems(name, fn))}
-                      onOverflowClick={btn => { setMenuKey(null); openCtxMenuFromButton(btn, buildFolderCtxItems(name, fn)); }}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </>
-        )
-        )}
           </>
         )}
       </div>
+
+      {/* ═══ FLOATING MULTI-SELECT BAR ═══ */}
+      {selectedCount > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)',
+          background: '#FFFFFF', boxShadow: '0 -4px 12px rgba(0,0,0,0.08)',
+          borderRadius: '12px 12px 0 0', padding: '12px 24px',
+          display: 'flex', alignItems: 'center', gap: 16, zIndex: 30,
+          minWidth: 400, maxWidth: 600,
+        }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#3B82F6' }}>{selectedCount} file{selectedCount !== 1 ? 's' : ''} selected</span>
+          <div style={{ flex: 1 }} />
+          <button onClick={bulkDownload} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 14px', borderRadius: 8, border: '1px solid #D1D5DB', background: '#FFFFFF', color: '#374151', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#f3f4f6'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#FFFFFF'; }}
+          >
+            <Download size={14} /> Download
+          </button>
+          <button onClick={bulkDelete} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 14px', borderRadius: 8, border: '1px solid #FCA5A5', background: '#FFFFFF', color: '#dc2626', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#FEF2F2'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = '#FFFFFF'; }}
+          >
+            <Trash2 size={14} /> Delete
+          </button>
+          <button onClick={clearSelection} style={{ padding: '8px 14px', borderRadius: 8, border: 'none', background: 'transparent', color: '#6b7280', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {preview && <PreviewModal file={preview} onClose={() => setPreview(null)} />}
       {renderModals()}
     </div>

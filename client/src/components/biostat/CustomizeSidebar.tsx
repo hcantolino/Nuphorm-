@@ -37,11 +37,16 @@ import type {
   ControlChartType,
   PaletteName,
   LegendPosition,
+  LegendAnchor,
   TableSortConfig,
   TrendlineType,
   TrendlineDashPattern,
   DataLabelFormat,
   ChartTheme,
+  GridStyle,
+  SeriesCustomization,
+  MarkerShape,
+  LineStyle,
 } from "@/stores/aiPanelStore";
 import { PALETTES } from "./ControlPanel";
 
@@ -216,6 +221,41 @@ const LEGEND_OPTIONS: { label: string; value: LegendPosition }[] = [
   { label: "Left",   value: "left"   },
   { label: "Right",  value: "right"  },
   { label: "None",   value: "none"   },
+];
+
+const LEGEND_ANCHOR_OPTIONS: { label: string; value: LegendAnchor }[] = [
+  { label: "Top-Right",     value: "top-right" },
+  { label: "Top-Left",      value: "top-left" },
+  { label: "Bottom-Right",  value: "bottom-right" },
+  { label: "Bottom-Left",   value: "bottom-left" },
+  { label: "Outside Right", value: "outside-right" },
+  { label: "Outside Bottom",value: "outside-bottom" },
+];
+
+const MARKER_SHAPE_OPTIONS: { label: string; value: MarkerShape }[] = [
+  { label: "\u25CF Circle",        value: "circle" },
+  { label: "\u25A0 Square",        value: "square" },
+  { label: "\u25B2 Triangle Up",   value: "triangle-up" },
+  { label: "\u25C6 Diamond",       value: "diamond" },
+  { label: "\u25BC Triangle Down", value: "triangle-down" },
+  { label: "\u2B21 Hexagon",       value: "hexagon" },
+  { label: "\u2605 Star",          value: "star" },
+  { label: "\u2716 Cross",         value: "cross" },
+  { label: "\u2B1F Pentagon",      value: "pentagon" },
+  { label: "\u22C8 Bowtie",        value: "bowtie" },
+];
+
+const LINE_STYLE_OPTIONS: { label: string; value: LineStyle }[] = [
+  { label: "\u2500\u2500\u2500 Solid",     value: "solid" },
+  { label: "- - - Dashed",    value: "dash" },
+  { label: "\u00B7\u00B7\u00B7\u00B7 Dotted",     value: "dot" },
+  { label: "-\u00B7-\u00B7 Dash-Dot", value: "dashdot" },
+];
+
+const GRID_STYLE_OPTIONS: { label: string; value: GridStyle }[] = [
+  { label: "Solid",  value: "solid" },
+  { label: "Dashed", value: "dashed" },
+  { label: "Dotted", value: "dotted" },
 ];
 
 const PALETTE_LABELS: Record<PaletteName, string> = {
@@ -819,6 +859,459 @@ export const CustomizeSidebar: React.FC<CustomizeSidebarProps> = ({
               checked={customizations.zebraStriping}
               onChange={(v) => onSet("zebraStriping", v)}
             />
+          </div>
+        </Accordion>
+
+        {/* ── Titles & Labels ─────────────────────────────────────────── */}
+        <Accordion label="Titles & Labels" defaultOpen={false}>
+          <div className="space-y-3">
+            <div>
+              <SectionLabel>Chart Title</SectionLabel>
+              <input
+                type="text"
+                value={customizations.chartTitle}
+                onChange={(e) => onSet("chartTitle", e.target.value)}
+                placeholder="Enter chart title..."
+                className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8] font-semibold"
+              />
+            </div>
+            <div>
+              <SectionLabel>X-Axis Label</SectionLabel>
+              <input
+                type="text"
+                value={customizations.xLabel}
+                onChange={(e) => onSet("xLabel", e.target.value)}
+                placeholder="e.g. Time (Months)"
+                className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8]"
+              />
+            </div>
+            <div>
+              <SectionLabel>Y-Axis Label</SectionLabel>
+              <input
+                type="text"
+                value={customizations.yLabel}
+                onChange={(e) => onSet("yLabel", e.target.value)}
+                placeholder="e.g. Mean PFS (Days)"
+                className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8]"
+              />
+            </div>
+            <div>
+              <SectionLabel>Subtitle / Reference</SectionLabel>
+              <input
+                type="text"
+                value={customizations.subtitle}
+                onChange={(e) => onSet("subtitle", e.target.value)}
+                placeholder="e.g. Fig. 1A or citation"
+                className="w-full px-3 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 focus:border-[#194CFF] text-[#0f172a] placeholder:text-[#94a3b8]"
+              />
+            </div>
+          </div>
+        </Accordion>
+
+        {/* ── Grid & Background ───────────────────────────────────────── */}
+        <Accordion label="Grid & Background" defaultOpen={false}>
+          <div className="space-y-3">
+            <div>
+              <SectionLabel>Background Color</SectionLabel>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={customizations.bgColor}
+                  onChange={(e) => onSet("bgColor", e.target.value)}
+                  className="w-8 h-8 rounded border border-[#e2e8f0] cursor-pointer p-0 bg-transparent"
+                />
+                <input
+                  type="text"
+                  value={customizations.bgColor}
+                  onChange={(e) => {
+                    if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) onSet("bgColor", e.target.value);
+                  }}
+                  className="flex-1 px-2 py-1.5 text-xs font-mono border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 focus:border-[#194CFF]"
+                  maxLength={7}
+                />
+              </div>
+            </div>
+            <ToggleRow
+              label="Show Grid Lines"
+              checked={customizations.showGrid}
+              onChange={(v) => onSet("showGrid", v)}
+            />
+            {customizations.showGrid && (
+              <>
+                <div>
+                  <SectionLabel>Grid Color</SectionLabel>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={customizations.gridColor}
+                      onChange={(e) => onSet("gridColor", e.target.value)}
+                      className="w-8 h-8 rounded border border-[#e2e8f0] cursor-pointer p-0 bg-transparent"
+                    />
+                    <input
+                      type="text"
+                      value={customizations.gridColor}
+                      onChange={(e) => {
+                        if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) onSet("gridColor", e.target.value);
+                      }}
+                      className="flex-1 px-2 py-1.5 text-xs font-mono border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20"
+                      maxLength={7}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <SectionLabel>Grid Style</SectionLabel>
+                  <div className="flex gap-1.5">
+                    {GRID_STYLE_OPTIONS.map(({ label, value }) => (
+                      <button
+                        key={value}
+                        onClick={() => onSet("gridStyle", value)}
+                        className={cn(
+                          "flex-1 px-2 py-1 rounded-lg text-xs border transition-all focus:outline-none",
+                          customizations.gridStyle === value
+                            ? "bg-blue-50 border-[#194CFF] text-[#194CFF] font-medium"
+                            : "border-[#e2e8f0] bg-white text-[#64748b] hover:border-[#194CFF]"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+            <ToggleRow
+              label="Show Chart Border"
+              description="Box border around plot area"
+              checked={customizations.showChartBorder}
+              onChange={(v) => onSet("showChartBorder", v)}
+            />
+            {customizations.showChartBorder && (
+              <div>
+                <SectionLabel>Border Color</SectionLabel>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={customizations.borderColor}
+                    onChange={(e) => onSet("borderColor", e.target.value)}
+                    className="w-8 h-8 rounded border border-[#e2e8f0] cursor-pointer p-0 bg-transparent"
+                  />
+                  <input
+                    type="text"
+                    value={customizations.borderColor}
+                    onChange={(e) => {
+                      if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) onSet("borderColor", e.target.value);
+                    }}
+                    className="flex-1 px-2 py-1.5 text-xs font-mono border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20"
+                    maxLength={7}
+                  />
+                </div>
+              </div>
+            )}
+            <ToggleRow
+              label="Show Minor Ticks"
+              description="Smaller tick marks between major ticks"
+              checked={customizations.showMinorTicks}
+              onChange={(v) => onSet("showMinorTicks", v)}
+            />
+          </div>
+        </Accordion>
+
+        {/* ── Per-Series Styling ───────────────────────────────────────── */}
+        <Accordion label="Series / Lines / Bars" defaultOpen={false}>
+          <p className="text-[10px] text-[#94a3b8] mb-2">Individually style each data series</p>
+          <div className="space-y-2">
+            {Array.from({ length: count }, (_, i) => {
+              const seriesLabel = seriesLabels?.[i] ?? `Series ${i + 1}`;
+              const override = customizations.seriesOverrides[i];
+              const isExpanded = colorPickerSeries === (i + 100); // offset to avoid collision
+              const color = override?.color ?? effectiveColors[i];
+
+              return (
+                <div key={i} className="border border-[#e2e8f0] rounded-lg overflow-hidden bg-white">
+                  <button
+                    onClick={() => setColorPickerSeries(isExpanded ? null : (i + 100))}
+                    className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-[#f8fafc] transition-colors focus:outline-none"
+                  >
+                    <span className="flex items-center gap-2">
+                      <div className="w-3.5 h-3.5 rounded-sm border border-black/10" style={{ backgroundColor: color }} />
+                      <span className="font-medium text-[#0f172a] truncate max-w-[150px]">
+                        {override?.name ?? seriesLabel}
+                      </span>
+                      {override?.visible === false && (
+                        <span className="text-[9px] text-[#94a3b8] italic">hidden</span>
+                      )}
+                    </span>
+                    {isExpanded
+                      ? <ChevronDown className="w-3 h-3 text-[#94a3b8]" />
+                      : <ChevronRightIcon className="w-3 h-3 text-[#94a3b8]" />
+                    }
+                  </button>
+
+                  {isExpanded && (
+                    <div className="px-3 pb-3 space-y-2.5 border-t border-[#e2e8f0]">
+                      {/* Name */}
+                      <div className="mt-2">
+                        <span className="text-[10px] text-[#64748b]">Name</span>
+                        <input
+                          type="text"
+                          value={override?.name ?? seriesLabel}
+                          onChange={(e) => {
+                            const overrides = [...customizations.seriesOverrides];
+                            overrides[i] = {
+                              ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }),
+                              name: e.target.value,
+                            };
+                            onSet("seriesOverrides", overrides);
+                          }}
+                          className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 text-[#0f172a]"
+                        />
+                      </div>
+
+                      {/* Color — full color picker */}
+                      <div>
+                        <span className="text-[10px] text-[#64748b]">Color</span>
+                        <div className="flex items-center gap-2 mt-1">
+                          <input
+                            type="text"
+                            value={color}
+                            onChange={(e) => {
+                              if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) {
+                                handleCustomColor(i, e.target.value);
+                                const overrides = [...customizations.seriesOverrides];
+                                overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color: e.target.value, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: e.target.value, visible: true }), color: e.target.value };
+                                onSet("seriesOverrides", overrides);
+                              }
+                            }}
+                            className="flex-1 px-2 py-1.5 text-xs font-mono border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20"
+                            maxLength={7}
+                          />
+                          <input
+                            type="color"
+                            value={color}
+                            onChange={(e) => {
+                              handleCustomColor(i, e.target.value);
+                              const overrides = [...customizations.seriesOverrides];
+                              overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color: e.target.value, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: e.target.value, visible: true }), color: e.target.value };
+                              onSet("seriesOverrides", overrides);
+                            }}
+                            className="w-8 h-8 rounded border border-[#e2e8f0] cursor-pointer p-0 bg-transparent"
+                          />
+                        </div>
+                        <HexColorPicker
+                          color={color}
+                          onChange={(c) => {
+                            handleCustomColor(i, c);
+                            const overrides = [...customizations.seriesOverrides];
+                            overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color: c, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: c, visible: true }), color: c };
+                            onSet("seriesOverrides", overrides);
+                          }}
+                          style={{ width: "100%", height: "100px", marginTop: 6 }}
+                        />
+                      </div>
+
+                      {/* Line Style */}
+                      <div>
+                        <span className="text-[10px] text-[#64748b]">Line Style</span>
+                        <select
+                          value={override?.lineStyle ?? "solid"}
+                          onChange={(e) => {
+                            const overrides = [...customizations.seriesOverrides];
+                            overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }), lineStyle: e.target.value as LineStyle };
+                            onSet("seriesOverrides", overrides);
+                          }}
+                          className="w-full mt-1 px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 text-[#0f172a]"
+                        >
+                          {LINE_STYLE_OPTIONS.map(({ label, value }) => (
+                            <option key={value} value={value}>{label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Line Width */}
+                      <SliderRow
+                        label="Line Width"
+                        value={override?.lineWidth ?? 2}
+                        min={1} max={5} step={0.5}
+                        displayFn={(v) => `${v}px`}
+                        onChange={(v) => {
+                          const overrides = [...customizations.seriesOverrides];
+                          overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }), lineWidth: v };
+                          onSet("seriesOverrides", overrides);
+                        }}
+                      />
+
+                      {/* Marker Shape */}
+                      <div>
+                        <span className="text-[10px] text-[#64748b]">Marker Shape</span>
+                        <select
+                          value={override?.markerShape ?? "circle"}
+                          onChange={(e) => {
+                            const overrides = [...customizations.seriesOverrides];
+                            overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }), markerShape: e.target.value as MarkerShape };
+                            onSet("seriesOverrides", overrides);
+                          }}
+                          className="w-full mt-1 px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 text-[#0f172a]"
+                        >
+                          {MARKER_SHAPE_OPTIONS.map(({ label, value }) => (
+                            <option key={value} value={value}>{label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Marker Size */}
+                      <SliderRow
+                        label="Marker Size"
+                        value={override?.markerSize ?? 8}
+                        min={4} max={16} step={1}
+                        displayFn={(v) => `${v}px`}
+                        onChange={(v) => {
+                          const overrides = [...customizations.seriesOverrides];
+                          overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }), markerSize: v };
+                          onSet("seriesOverrides", overrides);
+                        }}
+                      />
+
+                      {/* Error Bars */}
+                      <ToggleRow
+                        label="Show Error Bars"
+                        checked={override?.showErrorBars ?? false}
+                        onChange={(v) => {
+                          const overrides = [...customizations.seriesOverrides];
+                          overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }), showErrorBars: v };
+                          onSet("seriesOverrides", overrides);
+                        }}
+                      />
+
+                      {/* Visible */}
+                      <ToggleRow
+                        label="Visible"
+                        description="Show/hide this series"
+                        checked={override?.visible !== false}
+                        onChange={(v) => {
+                          const overrides = [...customizations.seriesOverrides];
+                          overrides[i] = { ...(overrides[i] ?? { name: seriesLabel, color, lineStyle: 'solid', lineWidth: 2, markerShape: 'circle', markerSize: 8, showErrorBars: false, errorBarColor: color, visible: true }), visible: v };
+                          onSet("seriesOverrides", overrides);
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Accordion>
+
+        {/* ── Legend ───────────────────────────────────────────────────── */}
+        <Accordion label="Legend" defaultOpen={false}>
+          <div className="space-y-3">
+            <ToggleRow
+              label="Show Legend"
+              checked={customizations.legendPosition !== "none"}
+              onChange={(v) => onSet("legendPosition", v ? "top" : "none")}
+            />
+            {customizations.legendPosition !== "none" && (
+              <>
+                <div>
+                  <SectionLabel>Position</SectionLabel>
+                  <select
+                    value={customizations.legendAnchor}
+                    onChange={(e) => onSet("legendAnchor", e.target.value as LegendAnchor)}
+                    className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 text-[#0f172a]"
+                  >
+                    {LEGEND_ANCHOR_OPTIONS.map(({ label, value }) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+                <ToggleRow
+                  label="Legend Border"
+                  checked={customizations.showLegendBorder}
+                  onChange={(v) => onSet("showLegendBorder", v)}
+                />
+                <div>
+                  <SectionLabel>Legend Background</SectionLabel>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={customizations.legendBgColor}
+                      onChange={(e) => onSet("legendBgColor", e.target.value)}
+                      className="w-8 h-8 rounded border border-[#e2e8f0] cursor-pointer p-0 bg-transparent"
+                    />
+                    <input
+                      type="text"
+                      value={customizations.legendBgColor}
+                      onChange={(e) => {
+                        if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) onSet("legendBgColor", e.target.value);
+                      }}
+                      className="flex-1 px-2 py-1.5 text-xs font-mono border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20"
+                      maxLength={7}
+                    />
+                  </div>
+                </div>
+                <SliderRow
+                  label="Font Size"
+                  value={customizations.legendFontSize}
+                  min={8} max={16} step={1}
+                  displayFn={(v) => `${v}px`}
+                  onChange={(v) => onSet("legendFontSize", v)}
+                />
+              </>
+            )}
+          </div>
+        </Accordion>
+
+        {/* ── Data Values ─────────────────────────────────────────────── */}
+        <Accordion label="Data Values" defaultOpen={false}>
+          <div className="space-y-3">
+            <ToggleRow
+              label="Show Values on Chart"
+              description="Display numbers above bars or next to points"
+              checked={customizations.showValues}
+              onChange={(v) => onSet("showValues", v)}
+            />
+            {customizations.showValues && (
+              <>
+                <SliderRow
+                  label="Value Font Size"
+                  value={customizations.valueFontSize}
+                  min={8} max={16} step={1}
+                  displayFn={(v) => `${v}px`}
+                  onChange={(v) => onSet("valueFontSize", v)}
+                />
+                <div>
+                  <SectionLabel>Position</SectionLabel>
+                  <div className="flex gap-1.5">
+                    {(["above", "below", "inside"] as const).map((pos) => (
+                      <button
+                        key={pos}
+                        onClick={() => onSet("valuePosition", pos)}
+                        className={cn(
+                          "flex-1 px-2 py-1 rounded-lg text-xs border transition-all focus:outline-none capitalize",
+                          customizations.valuePosition === pos
+                            ? "bg-blue-50 border-[#194CFF] text-[#194CFF] font-medium"
+                            : "border-[#e2e8f0] bg-white text-[#64748b] hover:border-[#194CFF]"
+                        )}
+                      >
+                        {pos}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <SectionLabel>Decimal Places</SectionLabel>
+                  <select
+                    value={customizations.dataLabelDecimals}
+                    onChange={(e) => onSet("dataLabelDecimals", Number(e.target.value))}
+                    className="w-full px-2 py-1.5 text-xs border border-[#cbd5e1] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#194CFF]/20 text-[#0f172a]"
+                  >
+                    <option value={0}>0</option>
+                    <option value={1}>1</option>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                  </select>
+                </div>
+              </>
+            )}
           </div>
         </Accordion>
       </div>
