@@ -9,7 +9,7 @@
  * metadata or survival/pharma keywords detected via isPlotlyChartData().
  */
 
-import { useState, useCallback, lazy, Suspense, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, lazy, Suspense, useMemo, useRef } from 'react';
 import {
   Tag,
   BarChart2,
@@ -18,6 +18,9 @@ import {
   Percent,
   Download,
   Loader2,
+  X,
+  Palette,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -53,6 +56,29 @@ export interface PlotlyChartConfig {
 
 interface PlotlyInteractiveChartProps {
   config: PlotlyChartConfig;
+  /** Per-result customization overrides from the Customize panel */
+  customizations?: {
+    xLabel?: string;
+    yLabel?: string;
+    chartTitle?: string;
+    xAxisMin?: number | null;
+    xAxisMax?: number | null;
+    yAxisMin?: number | null;
+    yAxisMax?: number | null;
+    yAxisLog?: boolean;
+    showGrid?: boolean;
+    bgColor?: string;
+    gridColor?: string;
+    gridStyle?: string;
+    showChartBorder?: boolean;
+    borderColor?: string;
+    showMinorTicks?: boolean;
+    customColors?: string[];
+    legendPosition?: string;
+    showDataLabels?: boolean;
+    strokeWidth?: number;
+    markerSize?: number;
+  };
   onPointClick?: (point: { x: number; y: number; trace: string; data?: any }) => void;
   onEditAction?: (action: string, context?: any) => void;
   height?: number;
@@ -80,6 +106,41 @@ const KM_TRENDLINE_COLOR = '#D1D5DB';
 
 // Publication-quality research palette (10 colors)
 const RESEARCH_PALETTE = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be185d', '#854d0e', '#4f46e5', '#059669'];
+
+/** Adaptive legend/margin sizing based on series count and label length */
+function calculateChartSizing(traces: any[], chartTitle?: string, yLabel?: string): {
+  legend: Record<string, any>;
+  margin: Record<string, number>;
+} {
+  const seriesCount = traces.length;
+  // Shorten legend labels
+  traces.forEach(t => {
+    if (!t.name) return;
+    let name = t.name.replace(/\s*\(\d+\s*records?\)/gi, '').replace(/[⚠△]/g, '').trim();
+    const maxLen = seriesCount > 15 ? 12 : seriesCount > 8 ? 18 : seriesCount > 4 ? 22 : 30;
+    if (name.length > maxLen) name = name.substring(0, maxLen - 1) + '…';
+    t.name = name;
+  });
+  const longestLabel = Math.max(...traces.map(t => (t.name ?? '').length), 5);
+  const legendWidth = Math.min(longestLabel, 22) * 7 + 50;
+
+  let legend: Record<string, any>;
+  let margin: Record<string, number>;
+
+  if (seriesCount <= 3) {
+    legend = { orientation: 'h', x: 0.5, y: -0.12, xanchor: 'center', yanchor: 'top', font: { size: 11 }, bgcolor: 'rgba(255,255,255,0)', borderwidth: 0, itemwidth: 30, tracegroupgap: 15 };
+    margin = { l: 80, r: 30, t: 70, b: 80 };
+  } else if (seriesCount <= 8) {
+    legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 10 }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 25, tracegroupgap: 3 };
+    margin = { l: 80, r: Math.min(legendWidth + 20, 200), t: 70, b: 60 };
+  } else {
+    legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 9 }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 20, tracegroupgap: 1, itemsizing: 'constant' };
+    margin = { l: 80, r: Math.min(legendWidth + 15, 180), t: 70, b: 60 };
+  }
+  if (yLabel && yLabel.length > 15) margin.l = 95;
+  if (chartTitle && chartTitle.length > 60) margin.t = 90;
+  return { legend, margin };
+}
 
 // Marker shapes per series index — Plotly symbol names
 const MARKER_SHAPES: string[] = [
@@ -174,17 +235,18 @@ function buildTitleConfig(
   const { text, lineCount } = wrapPlotlyTitle(rawTitle);
   // Scale font down slightly for very long titles (>1 line)
   const fontSize = lineCount > 1 ? Math.max(12, baseFontSize - 1) : baseFontSize;
-  // Increase top margin: base 48 + 18px per extra line
-  const marginTop = 48 + (lineCount - 1) * 18;
+  // Increase top margin: base 70 for title room + 18px per extra line
+  const marginTop = rawTitle ? 70 + (lineCount - 1) * 18 : 50;
 
   return {
     title: {
-      text,
-      font: { size: fontSize, color: '#0f172a', family: 'Inter, system-ui, sans-serif' },
+      text: `<b>${text}</b>`,
+      font: { size: fontSize, color: '#1a2332', family: 'Arial, sans-serif' },
       x: 0.5,
       xanchor: 'center' as const,
       y: 0.98,
       yanchor: 'top' as const,
+      pad: { t: 10 },
     },
     marginTop,
   };
@@ -690,6 +752,19 @@ function buildSignificanceAnnotations(chartData: any): Partial<Plotly.Annotation
   } catch { return []; }
 }
 
+/** Improve axis labels — fix vague/single-word labels from the AI */
+function improveAxisLabel(label: string | undefined, axis: 'x' | 'y'): string {
+  if (!label || label === '' || label === 'undefined') return axis === 'x' ? 'Category' : 'Value';
+  const lc = label.toLowerCase().trim();
+  if (lc === 'mean') return 'Mean Value';
+  if (lc === 'count') return 'Count (n)';
+  if (lc === 'value') return 'Value';
+  if (lc === 'time') return 'Time (units)';
+  if (lc === 'subject') return 'Subject ID';
+  if (lc === 'frequency') return 'Frequency (n)';
+  return label;
+}
+
 /** Build Plotly traces from generic LLM chart_data (bar/line) */
 function buildGenericPlotlyTraces(
   chartData: any,
@@ -699,11 +774,15 @@ function buildGenericPlotlyTraces(
   const datasets = chartData.datasets ?? [];
   const annotations = buildSignificanceAnnotations(chartData);
 
-  // Axis titles with units
-  const xTitle = chartData.x_axis ?? chartData.xLabel ?? '';
-  const yTitle = chartData.y_axis ?? chartData.yLabel ?? '';
-  const xTitleConfig = { text: xTitle, font: { size: 13, color: '#1a2332' } };
-  const yTitleConfig = { text: yTitle, font: { size: 13, color: '#1a2332' } };
+  // Axis titles with units — fallback to column name from labels/datasets if AI didn't provide
+  const rawX = chartData.x_axis ?? chartData.xLabel ?? chartData.x_label
+    ?? (labels.length > 0 && typeof labels[0] === 'string' ? 'Category' : 'X');
+  const rawY = chartData.y_axis ?? chartData.yLabel ?? chartData.y_label
+    ?? (datasets.length > 0 ? (datasets[0]?.label ?? 'Value') : 'Y');
+  const xTitle = improveAxisLabel(rawX, 'x');
+  const yTitle = improveAxisLabel(rawY, 'y');
+  const xTitleConfig = { text: xTitle, font: { size: 13, color: '#1a2332', family: 'Arial, sans-serif' as const } };
+  const yTitleConfig = { text: yTitle, font: { size: 13, color: '#1a2332', family: 'Arial, sans-serif' as const } };
 
   // Axis tick intervals from AI
   const axisTicks = chartData.axis_ticks ?? {};
@@ -732,7 +811,7 @@ function buildGenericPlotlyTraces(
         y: ds.data ?? [],
         name: seriesName,
         type: 'bar' as const,
-        marker: { color },
+        marker: { color, line: { width: 1, color: '#ffffff' } },
         error_y: resolveErrorBars(ds, chartData, seriesName),
         // Values above bars
         ...(showValues ? {
@@ -765,8 +844,8 @@ function buildGenericPlotlyTraces(
       y: ds.data ?? [],
       mode: 'lines+markers' as const,
       name: seriesName,
-      line: { color, width: 2 },
-      marker: { color, size: markerSize, symbol: markerShape },
+      line: { color, width: 2.5 },
+      marker: { color, size: markerSize, symbol: markerShape, line: { width: 1.5, color: '#1a2332' } },
       type: 'scatter' as const,
       error_y: resolveErrorBars(ds, chartData, seriesName),
     };
@@ -823,6 +902,7 @@ function ActionButton({ icon: Icon, label, onClick, variant }: ActionButtonProps
 
 export default function PlotlyInteractiveChart({
   config,
+  customizations: custOverrides,
   onPointClick,
   onEditAction,
   height = 420,
@@ -834,7 +914,7 @@ export default function PlotlyInteractiveChart({
   } | null>(null);
   const plotRef = useRef<any>(null);
 
-  const { plotData, layout } = useMemo(() => {
+  const { plotData: basePlotData, layout: baseLayout } = useMemo(() => {
    try {
     const mode = config.mode ?? 'auto';
     const chartData = config.chartData;
@@ -1006,7 +1086,7 @@ export default function PlotlyInteractiveChart({
     // Generic chart from LLM chart_data (bar/line fallback)
     if (chartData) {
       const { plotData, layout: modeLayout } = buildGenericPlotlyTraces(chartData, mode);
-      const tc = buildTitleConfig(config.title ?? chartData.title ?? '');
+      const tc = buildTitleConfig(config.title ?? chartData.title ?? chartData.graphTitle ?? 'Analysis Results');
       return {
         plotData,
         layout: {
@@ -1025,29 +1105,271 @@ export default function PlotlyInteractiveChart({
    }
   }, [config]);
 
+  // Apply per-result customization overrides on top of AI-generated layout
+  const { plotData, layout } = useMemo(() => {
+    const lo: any = { ...baseLayout };
+    const pd = basePlotData.map((t: any) => ({ ...t }));
+    if (!custOverrides) return { plotData: pd, layout: lo };
+
+    // Axis labels
+    if (custOverrides.xLabel) {
+      lo.xaxis = { ...lo.xaxis, title: { ...(lo.xaxis?.title ?? {}), text: custOverrides.xLabel } };
+    }
+    if (custOverrides.yLabel) {
+      lo.yaxis = { ...lo.yaxis, title: { ...(lo.yaxis?.title ?? {}), text: custOverrides.yLabel } };
+    }
+    // Chart title
+    if (custOverrides.chartTitle) {
+      lo.title = { ...(lo.title ?? {}), text: `<b>${custOverrides.chartTitle}</b>` };
+    }
+    // Axis ranges — only override when the user has explicitly set a value.
+    // null = "auto" (user hasn't touched it) → leave AI layout range untouched.
+    // Plotly requires [number, number] with autorange: false to honour a manual range.
+    {
+      const xMin = custOverrides.xAxisMin;
+      const xMax = custOverrides.xAxisMax;
+      if (xMin != null || xMax != null) {
+        lo.xaxis = {
+          ...lo.xaxis,
+          range: [xMin ?? -1e15, xMax ?? 1e15],
+          autorange: false,
+        };
+      }
+      // Both null → don't touch; let AI/Plotly auto-range naturally
+    }
+    {
+      const yMin = custOverrides.yAxisMin;
+      const yMax = custOverrides.yAxisMax;
+      if (yMin != null || yMax != null) {
+        lo.yaxis = {
+          ...lo.yaxis,
+          range: [yMin ?? -1e15, yMax ?? 1e15],
+          autorange: false,
+        };
+      }
+      // Both null → don't touch; let AI/Plotly auto-range naturally
+    }
+    // Log scale — only apply when explicitly set to true (default is false)
+    if (custOverrides.yAxisLog === true) {
+      lo.yaxis = { ...lo.yaxis, type: 'log' };
+    }
+    // Grid
+    if (custOverrides.showGrid !== undefined) {
+      lo.xaxis = { ...lo.xaxis, showgrid: custOverrides.showGrid };
+      lo.yaxis = { ...lo.yaxis, showgrid: custOverrides.showGrid };
+    }
+    // Background — set both plot and paper
+    if (custOverrides.bgColor) {
+      lo.plot_bgcolor = custOverrides.bgColor;
+      lo.paper_bgcolor = custOverrides.bgColor;
+    }
+    // Grid color
+    if (custOverrides.gridColor) {
+      lo.xaxis = { ...lo.xaxis, gridcolor: custOverrides.gridColor };
+      lo.yaxis = { ...lo.yaxis, gridcolor: custOverrides.gridColor };
+    }
+    // Grid style — map store values to Plotly griddash values
+    if (custOverrides.gridStyle) {
+      const dashMap: Record<string, string> = { solid: 'solid', dashed: 'dash', dotted: 'dot' };
+      const griddash = dashMap[custOverrides.gridStyle] ?? 'solid';
+      lo.xaxis = { ...lo.xaxis, griddash };
+      lo.yaxis = { ...lo.yaxis, griddash };
+    }
+    // Border
+    if (custOverrides.showChartBorder !== undefined) {
+      const show = custOverrides.showChartBorder;
+      lo.xaxis = { ...lo.xaxis, showline: show, mirror: show, linewidth: show ? 1.5 : 0 };
+      lo.yaxis = { ...lo.yaxis, showline: show, mirror: show, linewidth: show ? 1.5 : 0 };
+    }
+    if (custOverrides.borderColor) {
+      lo.xaxis = { ...lo.xaxis, linecolor: custOverrides.borderColor };
+      lo.yaxis = { ...lo.yaxis, linecolor: custOverrides.borderColor };
+    }
+    // Minor ticks
+    if (custOverrides.showMinorTicks !== undefined) {
+      const minor = custOverrides.showMinorTicks
+        ? { ticks: 'outside' as const, showgrid: true, gridcolor: '#f0f0f0' }
+        : { ticks: '' as const, showgrid: false };
+      lo.xaxis = { ...lo.xaxis, minor };
+      lo.yaxis = { ...lo.yaxis, minor };
+    }
+    // Series colors
+    if (custOverrides.customColors && custOverrides.customColors.length > 0) {
+      pd.forEach((trace: any, i: number) => {
+        const c = custOverrides.customColors![i];
+        if (c) {
+          trace.marker = { ...trace.marker, color: c };
+          if (trace.line) trace.line = { ...trace.line, color: c };
+        }
+      });
+    }
+    // Marker size / line width
+    if (custOverrides.markerSize !== undefined) {
+      pd.forEach((trace: any) => {
+        if (trace.marker) trace.marker = { ...trace.marker, size: custOverrides.markerSize };
+      });
+    }
+    if (custOverrides.strokeWidth !== undefined) {
+      pd.forEach((trace: any) => {
+        if (trace.line) trace.line = { ...trace.line, width: custOverrides.strokeWidth };
+      });
+    }
+    // Apply smart legend/margin sizing based on actual trace count
+    const titleText = typeof lo.title === 'object' ? lo.title?.text : lo.title;
+    const yLabelText = typeof lo.yaxis?.title === 'object' ? lo.yaxis?.title?.text : lo.yaxis?.title;
+    const { legend: smartLegend, margin: smartMargin } = calculateChartSizing(pd, titleText, yLabelText);
+    lo.legend = { ...smartLegend, ...(lo.legend ?? {}) };
+    lo.margin = { ...smartMargin, ...(lo.margin?.t ? { t: lo.margin.t } : {}) };
+
+    return { plotData: pd, layout: lo };
+  }, [basePlotData, baseLayout, custOverrides]);
+
+  // Revision counter — increments whenever layout or data changes so react-plotly.js
+  // definitely re-renders. This is the reliable way to force Plotly updates.
+  const revision = useRef(0);
+  const prevLayoutRef = useRef(layout);
+  const prevDataRef = useRef(plotData);
+  if (layout !== prevLayoutRef.current || plotData !== prevDataRef.current) {
+    revision.current += 1;
+    prevLayoutRef.current = layout;
+    prevDataRef.current = plotData;
+  }
+
+  // Also force imperative update as a belt-and-suspenders approach
+  useEffect(() => {
+    const el = plotRef.current?.el ?? plotRef.current?.graphDiv;
+    if (!el || plotData.length === 0) return;
+    // @ts-ignore — plotly.js UMD dist has no type declarations
+    import('plotly.js/dist/plotly').then((mod: any) => {
+      const Plotly = mod.default ?? mod;
+      Plotly.react(el, plotData, { ...layout, width: undefined, height, autosize: true });
+    }).catch(() => {});
+  }, [layout, plotData, height]);
+
+  // ── Plotly imperative helpers ──────────────────────────────────────────
+  const applyRestyle = useCallback((update: Record<string, any>, traceIdx: number) => {
+    const el = plotRef.current?.el;
+    if (!el) return;
+    // @ts-ignore
+    import('plotly.js/dist/plotly').then((mod: any) => {
+      const Plotly = mod.default ?? mod;
+      Plotly.restyle(el, update, [traceIdx]);
+    }).catch(() => {});
+  }, []);
+
+  const applyRelayout = useCallback((update: Record<string, any>) => {
+    const el = plotRef.current?.el;
+    if (!el) return;
+    // @ts-ignore
+    import('plotly.js/dist/plotly').then((mod: any) => {
+      const Plotly = mod.default ?? mod;
+      Plotly.relayout(el, update);
+    }).catch(() => {});
+  }, []);
+
+  const highlightTrace = useCallback((traceIdx: number) => {
+    const el = plotRef.current?.el;
+    if (!el) return;
+    // @ts-ignore
+    import('plotly.js/dist/plotly').then((mod: any) => {
+      const Plotly = mod.default ?? mod;
+      plotData.forEach((_: any, i: number) => {
+        Plotly.restyle(el, { opacity: i === traceIdx ? 1 : 0.35 }, [i]);
+      });
+    }).catch(() => {});
+  }, [plotData]);
+
+  const resetHighlight = useCallback(() => {
+    const el = plotRef.current?.el;
+    if (!el) return;
+    // @ts-ignore
+    import('plotly.js/dist/plotly').then((mod: any) => {
+      const Plotly = mod.default ?? mod;
+      plotData.forEach((_: any, i: number) => {
+        Plotly.restyle(el, { opacity: 1 }, [i]);
+      });
+    }).catch(() => {});
+  }, [plotData]);
+
+  // ── Click-to-edit popover state ────────────────────────────────────────
+  const [editPopover, setEditPopover] = useState<{
+    traceIdx: number;
+    pointIdx: number;
+    x: any;
+    y: number;
+    trace: string;
+    color: string;
+    screenX: number;
+    screenY: number;
+    chartType: string;
+  } | null>(null);
+  const [editValues, setEditValues] = useState<{ y: string; color: string; label: string }>({ y: '', color: '', label: '' });
+  const editPopoverRef = useRef<HTMLDivElement>(null);
+
+  const closeEditPopover = useCallback(() => {
+    setEditPopover(null);
+    setSelectedPoint(null);
+    resetHighlight();
+  }, [resetHighlight]);
+
+  // Close popover on outside click or Escape
+  useEffect(() => {
+    if (!editPopover) return;
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeEditPopover(); };
+    const handleClick = (e: MouseEvent) => {
+      if (editPopoverRef.current && !editPopoverRef.current.contains(e.target as Node)) {
+        closeEditPopover();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    const timer = setTimeout(() => document.addEventListener('mousedown', handleClick), 100);
+    return () => { window.removeEventListener('keydown', handleKey); document.removeEventListener('mousedown', handleClick); clearTimeout(timer); };
+  }, [editPopover, closeEditPopover]);
+
   const handlePlotlyClick = useCallback(
     (event: any) => {
       const point = event.points?.[0];
-      if (!point) return;
+      if (!point) { setEditPopover(null); return; }
+
+      const traceIdx = point.curveNumber ?? 0;
+      const pointIdx = point.pointNumber ?? 0;
+      const traceData = point.data ?? {};
+      const chartType = traceData.type ?? 'scatter';
+      // Get per-point color or series color
+      const markerColors = traceData.marker?.color;
+      const pointColor = Array.isArray(markerColors) ? markerColors[pointIdx] : (typeof markerColors === 'string' ? markerColors : traceData.line?.color ?? '#3b82f6');
 
       const clicked = {
-        x: point.x as number,
+        x: point.x,
         y: point.y as number,
-        trace: point.data?.name ?? 'Unknown',
+        trace: traceData.name ?? 'Unknown',
         data: point,
       };
 
       setSelectedPoint({ x: clicked.x, y: clicked.y, trace: clicked.trace });
       onPointClick?.(clicked);
 
-      toast.info(
-        `${clicked.trace} — x: ${clicked.x}, y: ${Number(clicked.y).toFixed(1)}`,
-        {
-          style: { background: '#f8fafc', color: '#0f172a', borderColor: '#e2e8f0' },
-        }
-      );
+      // Get screen position from the event
+      const bbox = (event.event as MouseEvent);
+      const screenX = bbox?.clientX ?? 300;
+      const screenY = bbox?.clientY ?? 200;
+
+      setEditPopover({
+        traceIdx, pointIdx,
+        x: clicked.x, y: clicked.y, trace: clicked.trace,
+        color: pointColor,
+        screenX, screenY, chartType,
+      });
+      setEditValues({
+        y: String(clicked.y),
+        color: pointColor,
+        label: String(clicked.x),
+      });
+
+      // Highlight the clicked trace
+      highlightTrace(traceIdx);
     },
-    [onPointClick]
+    [onPointClick, highlightTrace]
   );
 
   const handleExport = useCallback(() => {
@@ -1163,6 +1485,7 @@ export default function PlotlyInteractiveChart({
         >
           <Plot
             ref={plotRef}
+            revision={revision.current}
             data={plotData as any}
             layout={
               {
@@ -1190,11 +1513,131 @@ export default function PlotlyInteractiveChart({
           />
         </Suspense>
 
-        {selectedPoint && (
-          <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm border border-blue-200 rounded-lg px-3 py-2 text-xs shadow-sm z-10">
-            <div className="font-medium text-blue-700">{selectedPoint.trace}</div>
-            <div className="text-slate-500">
-              x: {selectedPoint.x}, y: {Number(selectedPoint.y).toFixed(2)}
+        {/* Click-to-edit popover */}
+        {editPopover && (
+          <div
+            ref={editPopoverRef}
+            className="fixed z-[400] bg-white rounded-xl shadow-xl border border-[#e2e8f0]"
+            style={{
+              left: Math.min(editPopover.screenX, window.innerWidth - 240),
+              top: Math.min(editPopover.screenY - 10, window.innerHeight - 320),
+              width: 220,
+            }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-2 border-b border-[#f1f5f9]">
+              <span className="text-xs font-semibold text-[#0f172a] truncate" style={{ maxWidth: 160 }}>
+                {editPopover.trace}
+              </span>
+              <button onClick={closeEditPopover} className="p-0.5 rounded hover:bg-[#f1f5f9] text-[#94a3b8] hover:text-[#0f172a] transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="p-3 space-y-2.5">
+              {/* Value */}
+              <div>
+                <label className="text-[10px] font-medium text-[#64748b] block mb-0.5">Value (Y)</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={editValues.y}
+                  onChange={(e) => {
+                    setEditValues(v => ({ ...v, y: e.target.value }));
+                    const num = parseFloat(e.target.value);
+                    if (!isNaN(num)) {
+                      const el = plotRef.current?.el;
+                      if (!el) return;
+                      const currentY = [...(el.data?.[editPopover.traceIdx]?.y ?? [])];
+                      currentY[editPopover.pointIdx] = num;
+                      applyRestyle({ y: [currentY] }, editPopover.traceIdx);
+                    }
+                  }}
+                  className="w-full px-2 py-1.5 text-xs border border-[#e2e8f0] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-[#0f172a]"
+                />
+              </div>
+              {/* Color */}
+              <div>
+                <label className="text-[10px] font-medium text-[#64748b] block mb-0.5">Color</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={editValues.color}
+                    onChange={(e) => {
+                      setEditValues(v => ({ ...v, color: e.target.value }));
+                      const el = plotRef.current?.el;
+                      if (!el) return;
+                      const traceData = el.data?.[editPopover.traceIdx];
+                      if (!traceData) return;
+                      // For bar charts: set per-bar color array
+                      if (editPopover.chartType === 'bar') {
+                        const colors = Array.isArray(traceData.marker?.color)
+                          ? [...traceData.marker.color]
+                          : Array(traceData.y?.length ?? 1).fill(traceData.marker?.color ?? '#3b82f6');
+                        colors[editPopover.pointIdx] = e.target.value;
+                        applyRestyle({ 'marker.color': [colors] }, editPopover.traceIdx);
+                      } else {
+                        // For line/scatter: set series color
+                        applyRestyle({ 'marker.color': e.target.value, 'line.color': e.target.value }, editPopover.traceIdx);
+                      }
+                    }}
+                    className="w-7 h-7 rounded border border-[#e2e8f0] cursor-pointer p-0"
+                  />
+                  <span className="text-[10px] text-[#64748b] font-mono">{editValues.color}</span>
+                </div>
+              </div>
+              {/* Asterisk annotations */}
+              <div>
+                <label className="text-[10px] font-medium text-[#64748b] block mb-1">Add Significance</label>
+                <div className="flex gap-1">
+                  {['*', '**', '***', 'ns'].map(sig => (
+                    <button
+                      key={sig}
+                      onClick={() => {
+                        const el = plotRef.current?.el;
+                        if (!el) return;
+                        const existing = [...(el.layout?.annotations ?? [])];
+                        existing.push({
+                          x: editPopover.x,
+                          y: editPopover.y,
+                          text: `<b>${sig}</b>`,
+                          showarrow: false,
+                          font: { size: sig === 'ns' ? 10 : 14, color: '#1a2332' },
+                          yshift: 15,
+                          xref: 'x',
+                          yref: 'y',
+                        });
+                        applyRelayout({ annotations: existing });
+                        toast.success(`Added ${sig} annotation`);
+                      }}
+                      className="flex-1 px-1.5 py-1 text-[11px] font-semibold border border-[#e2e8f0] rounded hover:bg-[#f1f5f9] text-[#374151] transition-colors"
+                    >
+                      {sig}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Delete point */}
+              <button
+                onClick={() => {
+                  const el = plotRef.current?.el;
+                  if (!el) return;
+                  const traceData = el.data?.[editPopover.traceIdx];
+                  if (!traceData) return;
+                  const newX = (traceData.x ?? []).filter((_: any, i: number) => i !== editPopover.pointIdx);
+                  const newY = (traceData.y ?? []).filter((_: any, i: number) => i !== editPopover.pointIdx);
+                  applyRestyle({ x: [newX], y: [newY] }, editPopover.traceIdx);
+                  closeEditPopover();
+                  toast.success('Data point removed');
+                }}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
+              >
+                <Trash2 className="w-3 h-3" />
+                Delete Point
+              </button>
+            </div>
+            {/* Footer hint */}
+            <div className="px-3 py-1.5 border-t border-[#f1f5f9] text-[9px] text-[#94a3b8]">
+              x: {String(editPopover.x)} · Press Esc to close
             </div>
           </div>
         )}

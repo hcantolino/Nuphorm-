@@ -734,7 +734,7 @@ function AutoFitTitle({ title, className }: { title: string; className?: string 
         className="block font-bold leading-tight"
         style={{
           fontSize: `${fontSize}rem`,
-          color: "#194CFF",
+          color: "#1a2332",
           wordBreak: "break-word",
         }}
       >
@@ -1346,6 +1346,7 @@ export const GraphTablePanel: React.FC = () => {
   const {
     resultsByTab,
     activeResultIdByTab,
+    customizationsByTab,
     setActiveResult,
     clearResults,
     setCustomization,
@@ -1373,9 +1374,12 @@ export const GraphTablePanel: React.FC = () => {
     ? `${activeTabId}::${activeResult.id}`
     : activeTabId ?? "";
 
-  const customizations = customizationKey
-    ? getTabCustomizations(customizationKey)
-    : { ...DEFAULT_CUSTOMIZATIONS };
+  const customizations = useMemo(() => {
+    if (!customizationKey) return { ...DEFAULT_CUSTOMIZATIONS };
+    const stored = customizationsByTab[customizationKey];
+    if (!stored) return { ...DEFAULT_CUSTOMIZATIONS };
+    return { ...DEFAULT_CUSTOMIZATIONS, ...stored };
+  }, [customizationKey, customizationsByTab]);
 
   const activeColors = useMemo(() => resolveColors(customizations), [customizations]);
 
@@ -1501,6 +1505,24 @@ export const GraphTablePanel: React.FC = () => {
       }
     }
   }, [customizationKey, activeIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-seed chart title and axis labels from AI response into per-result customizations
+  // so the Customize panel shows pre-filled values and the Plotly chart has a title.
+  React.useEffect(() => {
+    if (!customizationKey || !activeResult) return;
+    const stored = customizationsByTab[customizationKey];
+    // Only seed if this result hasn't been customized yet (no stored entry)
+    if (stored) return;
+
+    const cd = activeResult.analysisResults?.chart_data;
+    const seedTitle = activeResult.graphTitle || cd?.title || cd?.graphTitle || '';
+    const seedX = cd?.x_axis || cd?.xLabel || cd?.x_label || '';
+    const seedY = cd?.y_axis || cd?.yLabel || cd?.y_label || '';
+
+    if (seedTitle) setCustomization(customizationKey, "chartTitle", seedTitle);
+    if (seedX) setCustomization(customizationKey, "xLabel", seedX);
+    if (seedY) setCustomization(customizationKey, "yLabel", seedY);
+  }, [customizationKey, activeResult?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // NEW: chart error state — set by ChartErrorBoundary when rendering throws
   const [chartError, setChartError] = useState(false);
@@ -1866,38 +1888,13 @@ export const GraphTablePanel: React.FC = () => {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Auto-fit title — dynamically resizes to prevent cutoff */}
+        {/* Result heading — informational, not editable (title editing is in Customize panel) */}
         {(customizations.chartTitle || displayTitle) && (
-          <div className="relative group">
-            <AutoFitTitle
-              title={customizations.chartTitle || displayTitle || ""}
-              className="px-2 py-1 -mx-2 rounded-lg hover:bg-[#eff6ff] transition-colors cursor-text"
-            />
-            {/* Editable overlay on click */}
-            <div
-              className="absolute inset-0 px-2 py-1 -mx-2"
-              contentEditable
-              suppressContentEditableWarning
-              title="Click to edit title"
-              style={{ color: "transparent", caretColor: "#194CFF" }}
-              onFocus={(e) => {
-                e.currentTarget.style.color = "#194CFF";
-                e.currentTarget.style.backgroundColor = "#eff6ff";
-                e.currentTarget.style.borderRadius = "0.5rem";
-              }}
-              onBlur={(e) => {
-                const val = e.currentTarget.textContent?.trim() ?? "";
-                e.currentTarget.style.color = "transparent";
-                e.currentTarget.style.backgroundColor = "transparent";
-                if (val) {
-                  setTitleOverride(val);
-                  if (customizationKey) setCustomization(customizationKey, "chartTitle", val);
-                }
-              }}
-            >
-              {customizations.chartTitle || displayTitle}
-            </div>
-          </div>
+          <h3
+            style={{ fontSize: 18, fontWeight: 700, color: '#1a2332', margin: 0, lineHeight: 1.3, wordBreak: 'break-word' }}
+          >
+            {customizations.chartTitle || displayTitle}
+          </h3>
         )}
 
         {/* Subtitle — shown for dataset_generation and any result with a subtitle */}
@@ -2085,6 +2082,7 @@ export const GraphTablePanel: React.FC = () => {
                           chartData: syncedChartData ?? chartData,
                           title: activeResult?.graphTitle ?? undefined,
                         }}
+                        customizations={customizations}
                         onPointClick={(pt) => {
                           console.log('[PlotlyChart] Point clicked:', pt);
                         }}

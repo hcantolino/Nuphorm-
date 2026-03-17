@@ -846,14 +846,15 @@ PK/PD:
 - Each dose group = different color + different marker shape
 - Semi-log option for absorption/elimination phases
 
-## AXIS LABELS — Always include units in parentheses
-- "Concentration (ng/mL)" not just "Concentration"
-- "Time (hours)" not just "Time"
-- "Weight (kg)" not just "Weight"
-- "Age (years)" not just "Age"
-- "AUC (h·ng/mL)" not just "AUC"
-- "Survival Probability" (unitless is OK)
-- NEVER leave axis labels blank or as just column names
+## AXIS LABELS — CRITICAL, DO NOT SKIP
+You MUST return x_axis and y_axis fields in EVERY chart_data response. These must be descriptive scientific labels, NEVER just a single word like "mean" or a raw column name.
+- For bar charts by subject: x_axis = "Subject ID", y_axis = "Record Count (n)" or "Mean Value"
+- For line/PK charts: x_axis = "Time (hours)", y_axis = "Concentration (ng/mL)"
+- For box plots: x_axis = "Clinical Variable", y_axis = "Value"
+- For survival: x_axis = "Time (months)", y_axis = "Survival Probability"
+- Always include unit in parentheses: "Weight (kg)", "Age (years)", "AUC (h·ng/mL)"
+- NEVER return x_axis: "mean" or y_axis: "Mean" — these are meaningless without context
+- NEVER leave x_axis or y_axis blank or undefined
 
 ## ERROR BARS — Include whenever possible
 - If SD is computed, include error bars showing ±SD in chart_data as error_y: { type: "data", array: [...], visible: true }
