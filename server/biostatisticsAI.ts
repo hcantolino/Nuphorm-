@@ -805,6 +805,61 @@ Compute directly from concentration-time data:
 - If SUBJID, TREATMENT, VISIT, or TIMEPOINT columns absent: ask user to map columns
 - Never drop records silently — state how many excluded and why
 
+## COLUMN SELECTION RULES — FOLLOW STRICTLY
+
+NEVER analyze these column types — always skip them:
+- Subject/Patient IDs: SUBJID, SUBJECT_ID, PATIENT_ID, PTID, RANDNO, SCREENING_NO, ENROLLMENT_NO, any column named "ID" or ending in "ID" that contains sequential numbers
+- Site identifiers: SITEID, SITE, SITE_NO, CENTER, CENTER_ID, INVESTIGATOR_ID
+- Visit/sequence numbers: VISIT, VISITNUM, SEQ, SEQUENCE
+- Date columns: any column with DATE, TIME, DT, DATETIME in the name
+- Categorical labels when computing numeric stats: TREATMENT_ARM, TRT, GROUP, SEX, GENDER, RACE, ETHNICITY, COUNTRY
+
+ALWAYS analyze these clinical measurement columns when they exist:
+- Efficacy: EFFICACY_SCORE, CHANGE_FROM_BASE, RESPONSE_RATE, PRIMARY_ENDPOINT
+- PK parameters: CMAX, AUC0T, AUC0INF, THALF, TMAX, CL, VD, KE, MRT
+- Vital signs: AGE, WEIGHT, HEIGHT, BMI, HEART_RATE, SBP, DBP, TEMP, RESP_RATE
+- Lab values: HEMOGLOBIN, WBC, PLATELETS, ALT, AST, CREATININE, ALBUMIN
+- Scores: BASELINE_SCORE, ENDPOINT_SCORE, PAIN_SCORE, QOL_SCORE
+
+When the user asks for "descriptive statistics" or "analyze my dataset", compute stats for ALL numeric clinical columns — not just one. If there are 8 numeric columns, show all 8 in the results table.
+
+## CHART TYPE RULES — based on analysis type
+
+DESCRIPTIVE STATISTICS:
+- Primary chart: Box plot (pharma_type: "box") showing distribution of each numeric variable
+- Each variable gets its own box, side by side
+- Show median line, Q1/Q3 box, whiskers at 1.5×IQR, outlier dots
+- NEVER use a bar chart of sequential IDs or site numbers
+- NEVER use a line chart for descriptive stats
+
+SURVIVAL ANALYSIS:
+- Kaplan-Meier step curves (line.shape: "hv"), pharma_type: "survival"
+- Multiple arms as different colored step-lines with unique marker shapes
+- Shaded confidence interval bands, censoring tick marks
+
+EFFICACY / COMPARISON:
+- Grouped bar chart with error bars (95% CI or SEM)
+- Treatment vs Placebo side by side for each endpoint
+
+PK/PD:
+- Line chart with markers (concentration vs time)
+- Each dose group = different color + different marker shape
+- Semi-log option for absorption/elimination phases
+
+## AXIS LABELS — Always include units in parentheses
+- "Concentration (ng/mL)" not just "Concentration"
+- "Time (hours)" not just "Time"
+- "Weight (kg)" not just "Weight"
+- "Age (years)" not just "Age"
+- "AUC (h·ng/mL)" not just "AUC"
+- "Survival Probability" (unitless is OK)
+- NEVER leave axis labels blank or as just column names
+
+## ERROR BARS — Include whenever possible
+- If SD is computed, include error bars showing ±SD in chart_data as error_y: { type: "data", array: [...], visible: true }
+- For bar charts: always show error bars when SD/SEM is available
+- For line charts: show error bars at each data point
+
 ## REGULATORY COMPLIANCE
 - PK: FDA Bioanalytical Method Validation guidance, NCA conventions
 - Efficacy: ICH E9 (Statistical Principles for Clinical Trials)
@@ -3789,11 +3844,19 @@ export async function analyzeBiostatistics(
       parsed.llmUsed = true;
 
       // Map snake_case chat_response from LLM to camelCase for frontend
-      if (parsed.chat_response && typeof parsed.chat_response.message === "string") {
+      if (parsed.chat_response) {
+        const msg = parsed.chat_response.message;
         parsed.chatResponse = {
-          message: parsed.chat_response.message,
+          message: typeof msg === "string" ? msg
+            : typeof msg === "object" ? JSON.stringify(msg)
+            : String(msg ?? "Analysis complete — results are in the Results panel."),
           suggestions: Array.isArray(parsed.chat_response.suggestions) ? parsed.chat_response.suggestions : [],
         };
+      }
+
+      // Safety: if analysis field is a raw JSON object (LLM sometimes nests), convert to string
+      if (parsed.analysis && typeof parsed.analysis === "object") {
+        parsed.analysis = parsed.analysis.message ?? parsed.analysis.text ?? JSON.stringify(parsed.analysis);
       }
 
       return parsed;

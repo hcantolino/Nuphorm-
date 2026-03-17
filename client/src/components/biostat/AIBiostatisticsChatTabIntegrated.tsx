@@ -1906,6 +1906,46 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         }
       }
 
+      // ── Last-resort fallback: fetch content from attached tab files ──────────
+      // If effectiveData is STILL empty but the user has CSV/XLSX files attached,
+      // try to fetch and parse their content so the AI gets actual data.
+      if (effectiveData.length === 0 && attachedFiles.length > 0) {
+        const csvAttachment = attachedFiles.find((f) =>
+          ["CSV", "XLSX", "XLS", "TSV", "TXT"].includes(f.type)
+        );
+        if (csvAttachment) {
+          try {
+            const fileId = parseInt(csvAttachment.id);
+            if (!isNaN(fileId)) {
+              console.log("[AIChat] Last-resort: fetching content for attached file:", csvAttachment.name);
+              const result = await trpcUtils.files.getFileContent.fetch({ fileId });
+              if (result?.content) {
+                const parsed = parseCSVData(result.content);
+                if (parsed.length > 0) {
+                  effectiveData = parsed;
+                  setFullData(parsed);
+                  useCurrentDatasetStore.getState().setCurrentDataset({
+                    filename: csvAttachment.name,
+                    rowCount: parsed.length,
+                    columns: Object.keys(parsed[0] ?? {}),
+                    rows: parsed as Record<string, unknown>[],
+                    cleaned: false,
+                  });
+                  console.log(`[AIChat] Last-resort succeeded: ${parsed.length} rows from ${csvAttachment.name}`);
+                }
+              }
+            }
+          } catch (err) {
+            console.warn("[AIChat] Last-resort file fetch failed:", err);
+          }
+        }
+      }
+
+      // Log effective data state for debugging
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[AIChat] effectiveData: ${effectiveData.length} rows, fullData: ${fullData.length} rows, cdStore: ${cdStore?.rows?.length ?? 0} rows, attachedFiles: ${attachedFiles.length}`);
+      }
+
       const effectiveClassifications =
         fullData.length > 0
           ? columnClassifications
@@ -2029,18 +2069,43 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       });
 
       const responseObj = response as any;
+
+      // Debug: log response shape to diagnose parsing issues
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[AIChat] Response keys:", Object.keys(responseObj ?? {}));
+        console.log("[AIChat] chatResponse:", responseObj.chatResponse ? "present" : "missing");
+        console.log("[AIChat] analysis type:", typeof responseObj.analysis, "length:", String(responseObj.analysis ?? "").length);
+        console.log("[AIChat] analysisResults:", responseObj.analysisResults ? "present" : "null");
+        if (responseObj.analysisResults) {
+          console.log("[AIChat] results_table:", Array.isArray(responseObj.analysisResults.results_table) ? `${responseObj.analysisResults.results_table.length} rows` : typeof responseObj.analysisResults.results_table);
+          console.log("[AIChat] chart_data:", responseObj.analysisResults.chart_data ? "present" : "null");
+        }
+      }
+
       // Track LLM availability for the status indicator
       if (responseObj.llmUnavailable) setLlmStatus('offline');
       else if (responseObj.llmUsed) setLlmStatus('online');
       // else: local-only path (shouldn't happen now, leave as-is)
 
-      // NEW: strip raw JSON dumps and code fences that the LLM sometimes leaks into
-      //      the analysis field before storing or displaying it.
-      // REMOVED: was using raw content directly — code fences rendered as plain text in the panel
-      const rawContent =
-        typeof response === "string"
-          ? response
-          : responseObj.analysis ?? "No analysis result";
+      // Strip raw JSON dumps and code fences that the LLM sometimes leaks into
+      // the analysis field before storing or displaying it.
+      let rawContent: string;
+      if (typeof response === "string") {
+        rawContent = response;
+      } else {
+        // Prefer the analysis text; if it looks like JSON, try extracting the actual text
+        const analysis = responseObj.analysis;
+        if (typeof analysis === "string" && analysis.trimStart().startsWith("{")) {
+          try {
+            const inner = JSON.parse(analysis);
+            rawContent = inner?.analysis ?? inner?.chat_response?.message ?? analysis;
+          } catch {
+            rawContent = analysis;
+          }
+        } else {
+          rawContent = analysis ?? "No analysis result";
+        }
+      }
       const content = rawContent
         .replace(/```[\s\S]*?```/g, "")   // remove full code blocks
         .replace(/^```.*$/gm, "")          // remove dangling fence lines
@@ -2102,26 +2167,37 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       }
 
       // Use chat_response.message from the LLM if available, otherwise fall back.
-      // Guard: never render raw JSON in the chat bubble — if `content` starts with '{'
-      // it's a raw JSON blob that leaked through; extract chat_response or use a stub.
+      // Guard: never render raw JSON in the chat bubble — detect JSON blobs and extract
+      // the human-readable message from them.
       const chatResp = responseObj.chatResponse as { message?: string; suggestions?: string[] } | undefined;
       let chatBubbleContent: string;
       if (chatResp?.message) {
         chatBubbleContent = chatResp.message;
       } else if (routeToPanel && !isLLMUnavailable) {
         chatBubbleContent = "Analysis complete — results are in the **Results panel** on the right.";
-      } else if (content.trimStart().startsWith("{")) {
-        // Raw JSON leaked into content — try to extract chat_response.message
-        try {
-          const parsed = JSON.parse(content);
-          chatBubbleContent = parsed?.chat_response?.message
-            || parsed?.analysis
-            || "Analysis complete — results are in the **Results panel** on the right.";
-        } catch {
-          chatBubbleContent = "Analysis complete — results are in the **Results panel** on the right.";
-        }
       } else {
-        chatBubbleContent = content;
+        // Check if content looks like raw JSON (starts with { or contains JSON structure)
+        const trimmed = content.trimStart();
+        const looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[") ||
+          (trimmed.includes('"chat_response"') && trimmed.includes('"analysisResults"')) ||
+          (trimmed.includes('"analysis"') && trimmed.includes('"results_table"'));
+
+        if (looksLikeJson) {
+          // Raw JSON leaked into content — try to extract chat_response.message
+          try {
+            const parsed = JSON.parse(trimmed);
+            chatBubbleContent = parsed?.chat_response?.message
+              || parsed?.analysis
+              || "Analysis complete — results are in the **Results panel** on the right.";
+          } catch {
+            // Not valid JSON but looks like it — use fallback
+            chatBubbleContent = hasStructuredData
+              ? "Analysis complete — results are in the **Results panel** on the right."
+              : content;
+          }
+        } else {
+          chatBubbleContent = content;
+        }
       }
 
       addChatMessage({

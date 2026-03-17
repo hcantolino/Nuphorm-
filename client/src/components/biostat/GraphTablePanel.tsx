@@ -23,7 +23,7 @@ import {
 } from "recharts";
 import { useAIPanelStore, DEFAULT_CUSTOMIZATIONS } from "@/stores/aiPanelStore";
 // NEW: ControlChartType needed for preferredType prop + auto-sync effect
-import type { TabCustomizations, ControlChartType } from "@/stores/aiPanelStore";
+import type { TabCustomizations, ControlChartType, PaletteName } from "@/stores/aiPanelStore";
 import { useTabStore } from "@/stores/tabStore";
 import { useBiostatisticsStore } from "@/stores/biostatisticsStore";
 import { Button } from "@/components/ui/button";
@@ -644,6 +644,7 @@ function MarkdownTable({ source }: { source: string }) {
 }
 
 function MarkdownContent({ content }: { content: string }) {
+  if (!content || typeof content !== 'string') return null;
   const blocks = content.split(/\n\n+/);
   return (
     <div className="space-y-2.5">
@@ -800,7 +801,7 @@ interface ChartProps {
 const VALID_CHART_TYPES = new Set<ControlChartType>(["bar", "line", "area", "scatter", "pie"]);
 
 const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors, preferredType }) => {
-  if (!chartData) return null;
+  if (!chartData || typeof chartData !== 'object') return null;
 
   let data: any[] = [];
   let datasetKeys: string[] = [];
@@ -808,21 +809,26 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   // REMOVED: was `customizations.chartType` always — ignored chart_data.type from LLM
   const type: ControlChartType = preferredType ?? customizations.chartType;
 
-  if (chartData.labels && chartData.datasets) {
-    data = chartData.labels.map((label: any, idx: number) => {
-      const point: any = { name: label };
-      chartData.datasets.forEach((ds: any) => {
-        if (ds.data?.[idx] !== undefined) point[ds.label] = ds.data[idx];
+  try {
+    if (Array.isArray(chartData.labels) && Array.isArray(chartData.datasets)) {
+      data = chartData.labels.map((label: any, idx: number) => {
+        const point: any = { name: label };
+        chartData.datasets.forEach((ds: any) => {
+          if (ds && ds.data?.[idx] !== undefined) point[ds.label ?? `series_${idx}`] = ds.data[idx];
+        });
+        return point;
       });
-      return point;
-    });
-    datasetKeys = chartData.datasets.map((ds: any) => ds.label);
-  } else if (Array.isArray(chartData.points)) {
-    data = chartData.points.map((p: any, i: number) => ({
-      name: p.x ?? i,
-      value: p.y,
-    }));
-    datasetKeys = ["value"];
+      datasetKeys = chartData.datasets.map((ds: any) => ds?.label ?? "value");
+    } else if (Array.isArray(chartData.points)) {
+      data = chartData.points.map((p: any, i: number) => ({
+        name: p?.x ?? i,
+        value: p?.y,
+      }));
+      datasetKeys = ["value"];
+    }
+  } catch (err) {
+    console.warn("[ChartRenderer] Error transforming chart data:", err);
+    return null;
   }
 
   if (data.length === 0) return null;
@@ -1362,8 +1368,13 @@ export const GraphTablePanel: React.FC = () => {
 
   const activeIndex = activeResult ? results.indexOf(activeResult) : -1;
 
-  const customizations = activeTabId
-    ? getTabCustomizations(activeTabId)
+  // Composite key: per-result customization — each result in a tab gets its own config
+  const customizationKey = activeTabId && activeResult?.id
+    ? `${activeTabId}::${activeResult.id}`
+    : activeTabId ?? "";
+
+  const customizations = customizationKey
+    ? getTabCustomizations(customizationKey)
     : { ...DEFAULT_CUSTOMIZATIONS };
 
   const activeColors = useMemo(() => resolveColors(customizations), [customizations]);
@@ -1474,8 +1485,22 @@ export const GraphTablePanel: React.FC = () => {
   //      Customize panel badge and any downstream logic reflect the correct type.
   React.useEffect(() => {
     if (!activeTabId || !llmChartType) return;
-    setCustomization(activeTabId, "chartType", llmChartType);
+    setCustomization(customizationKey, "chartType", llmChartType);
   }, [activeResult?.id, llmChartType, activeTabId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-assign a rotating palette to each new result (so results are visually distinct)
+  const PALETTE_ROTATION: PaletteName[] = ['finbox', 'publication', 'viridis', 'highContrast', 'pastel'];
+  React.useEffect(() => {
+    if (!customizationKey || activeIndex < 0) return;
+    // Only set if this result doesn't have customizations yet
+    const existing = getTabCustomizations(customizationKey);
+    if (!existing || existing.palette === DEFAULT_CUSTOMIZATIONS.palette) {
+      const rotatedPalette = PALETTE_ROTATION[activeIndex % PALETTE_ROTATION.length];
+      if (rotatedPalette !== DEFAULT_CUSTOMIZATIONS.palette) {
+        setCustomization(customizationKey, "palette", rotatedPalette);
+      }
+    }
+  }, [customizationKey, activeIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // NEW: chart error state — set by ChartErrorBoundary when rendering throws
   const [chartError, setChartError] = useState(false);
@@ -1493,10 +1518,10 @@ export const GraphTablePanel: React.FC = () => {
   // REMOVED: was always showing the stats table even when it only contained a footnote
   const isNoteOnlyTable = useMemo(() => {
     if (!isVizResult) return false;
-    const tbl: Array<{ metric: string; value: any }> =
+    const rawTbl =
       activeResult?.editedTable ??
-      activeResult?.analysisResults?.results_table ??
-      [];
+      activeResult?.analysisResults?.results_table;
+    const tbl: Array<{ metric: string; value: any }> = Array.isArray(rawTbl) ? rawTbl : [];
     return tbl.length === 1 && String(tbl[0]?.metric ?? "").toLowerCase() === "note";
   }, [isVizResult, activeResult]);
 
@@ -1535,10 +1560,12 @@ export const GraphTablePanel: React.FC = () => {
 
   // Table with sort / filter / zebra
   const displayTable = useMemo(() => {
-    let table: Array<{ metric: string; value: any }> =
+    const rawTable =
       activeResult?.editedTable ??
-      activeResult?.analysisResults?.results_table ??
-      [];
+      activeResult?.analysisResults?.results_table;
+    // Guard: ensure table is always a valid array of {metric, value} objects
+    let table: Array<{ metric: string; value: any }> =
+      Array.isArray(rawTable) ? rawTable : [];
 
     if (customizations.tableFilter) {
       const q = customizations.tableFilter.toLowerCase();
@@ -1611,21 +1638,21 @@ export const GraphTablePanel: React.FC = () => {
   // Customization handlers
   const handleSet = useCallback(
     <K extends keyof TabCustomizations>(key: K, value: TabCustomizations[K]) => {
-      if (!activeTabId) return;
+      if (!customizationKey) return;
       if (key === "chartType" && value === "scatter" && chartData && !chartData.points) {
         toast.warning("Data not suitable for Scatter — rendering as bar.", {
           description: "Try Line or Area for this label-based dataset.",
           duration: 4000,
         });
       }
-      setCustomization(activeTabId, key, value);
+      setCustomization(customizationKey, key, value);
     },
-    [activeTabId, chartData, setCustomization]
+    [customizationKey, chartData, setCustomization]
   );
 
   const handleReset = useCallback(() => {
-    if (activeTabId) resetCustomizations(activeTabId);
-  }, [activeTabId, resetCustomizations]);
+    if (customizationKey) resetCustomizations(customizationKey);
+  }, [customizationKey, resetCustomizations]);
 
 
 
@@ -1864,7 +1891,7 @@ export const GraphTablePanel: React.FC = () => {
                 e.currentTarget.style.backgroundColor = "transparent";
                 if (val) {
                   setTitleOverride(val);
-                  if (activeTabId) setCustomization(activeTabId, "chartTitle", val);
+                  if (customizationKey) setCustomization(customizationKey, "chartTitle", val);
                 }
               }}
             >
@@ -2400,12 +2427,14 @@ export const GraphTablePanel: React.FC = () => {
         {/* Diff viewer: side-by-side original vs. generated — shown when corrections detected */}
         {activeResult?.analysisResults?._dataValidation?.validated &&
           (activeResult.analysisResults._dataValidation.correctionsApplied ?? 0) > 0 &&
-          activeResult.analysisResults._dataValidation.originalGroupData?.length > 0 && (() => {
+          Array.isArray(activeResult.analysisResults._dataValidation.originalGroupData) &&
+          activeResult.analysisResults._dataValidation.originalGroupData.length > 0 && (() => {
+           try {
             const validation = activeResult.analysisResults._dataValidation;
-            const table = activeResult.analysisResults.results_table ?? [];
+            const table = Array.isArray(activeResult.analysisResults.results_table) ? activeResult.analysisResults.results_table : [];
             const groupData = validation.originalGroupData as Array<{ group: string; values: Record<string, number> }>;
             // Pick the first numeric column for display
-            const displayCol = (validation.numericColumns as string[])?.[0] ?? "";
+            const displayCol = Array.isArray(validation.numericColumns) ? (validation.numericColumns[0] ?? "") : "";
 
             // Log mismatches to console for VS Code debugging
             if (process.env.NODE_ENV !== "production") {
@@ -2492,6 +2521,10 @@ export const GraphTablePanel: React.FC = () => {
                 </CardContent>
               </Card>
             );
+           } catch (err) {
+            console.warn("[GraphTablePanel] Data validation render error:", err);
+            return null;
+           }
           })()}
 
         {/* Retry Analysis button — shown when hallucinations were corrected */}

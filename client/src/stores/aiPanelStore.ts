@@ -397,7 +397,13 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
     set((state) => {
       const { [tabId]: _r, ...restResults } = state.resultsByTab;
       const { [tabId]: _a, ...restActive } = state.activeResultIdByTab;
-      const { [tabId]: _c, ...restCustom } = state.customizationsByTab;
+      // Remove all customization entries for this tab (keys are tabId or tabId::resultId)
+      const restCustom: Record<string, TabCustomizations> = {};
+      for (const key of Object.keys(state.customizationsByTab)) {
+        if (key !== tabId && !key.startsWith(`${tabId}::`)) {
+          restCustom[key] = state.customizationsByTab[key];
+        }
+      }
       return {
         resultsByTab: restResults,
         activeResultIdByTab: restActive,
@@ -439,7 +445,8 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
       customizationsByTab: {
         ...state.customizationsByTab,
         [tabId]: {
-          ...(state.customizationsByTab[tabId] ?? DEFAULT_CUSTOMIZATIONS),
+          ...DEFAULT_CUSTOMIZATIONS,
+          ...(state.customizationsByTab[tabId] ?? {}),
           [key]: value,
         },
       },
@@ -460,6 +467,11 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
   getTabActiveResultId: (tabId) =>
     get().activeResultIdByTab[tabId] ?? null,
 
-  getTabCustomizations: (tabId) =>
-    get().customizationsByTab[tabId] ?? { ...DEFAULT_CUSTOMIZATIONS },
+  getTabCustomizations: (tabId) => {
+    const stored = get().customizationsByTab[tabId];
+    if (!stored) return { ...DEFAULT_CUSTOMIZATIONS };
+    // Merge with defaults so newly added fields are always present
+    // even if the stored object predates them.
+    return { ...DEFAULT_CUSTOMIZATIONS, ...stored };
+  },
 }));

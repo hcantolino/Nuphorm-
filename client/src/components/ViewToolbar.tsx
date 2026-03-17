@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  LayoutGrid, List, Columns3, Image, ChevronDown,
+  LayoutGrid, List, Image, ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ViewMode = "grid" | "list" | "columns" | "gallery";
+export type ViewMode = "grid" | "list" | "gallery";
 
 export type GroupByOption =
   | "none"
@@ -20,7 +20,6 @@ export type GroupByOption =
 export const VIEW_MODES: { key: ViewMode; label: string; icon: React.ReactNode }[] = [
   { key: "grid",    label: "Grid",    icon: <LayoutGrid className="w-3.5 h-3.5" /> },
   { key: "list",    label: "List",    icon: <List className="w-3.5 h-3.5" /> },
-  { key: "columns", label: "Columns", icon: <Columns3 className="w-3.5 h-3.5" /> },
   { key: "gallery", label: "Gallery", icon: <Image className="w-3.5 h-3.5" /> },
 ];
 

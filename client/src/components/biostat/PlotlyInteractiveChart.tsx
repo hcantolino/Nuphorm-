@@ -92,17 +92,19 @@ const LAYOUT_BASE: Partial<Plotly.Layout> = {
   paper_bgcolor: '#ffffff',
   plot_bgcolor: '#ffffff',
   font: { family: 'Arial, sans-serif', size: 12, color: '#1a2332' },
-  margin: { l: 70, r: 30, t: 50, b: 70 },
+  margin: { l: 80, r: 120, t: 60, b: 80 },
+  showlegend: true,
   legend: {
-    bgcolor: '#ffffff',
-    bordercolor: '#d0d0d0',
+    bgcolor: 'rgba(255,255,255,0.9)',
+    bordercolor: '#cccccc',
     borderwidth: 1,
-    font: { size: 11 },
-    x: 1,
-    xanchor: 'right' as const,
+    font: { size: 11, family: 'Arial, sans-serif' },
+    x: 1.02,
     y: 1,
+    xanchor: 'left' as const,
   },
   hovermode: 'closest' as const,
+  hoverlabel: { bgcolor: '#1a2332', font: { color: '#ffffff', size: 12 } },
 };
 
 const GRID_STYLE: Record<string, any> = {
@@ -110,10 +112,16 @@ const GRID_STYLE: Record<string, any> = {
   linewidth: 1.5,
   mirror: true,
   ticks: 'outside',
-  tickwidth: 1.5,
+  tickwidth: 1,
+  ticklen: 5,
+  tickcolor: '#1a2332',
+  tickfont: { size: 11, color: '#333333' },
   showgrid: true,
   gridcolor: '#e8e8e8',
+  gridwidth: 0.5,
   zeroline: false,
+  showline: true,
+  title: { font: { size: 13, color: '#1a2332' }, standoff: 15 },
 };
 
 const MINOR_TICKS: Record<string, any> = {
@@ -610,66 +618,76 @@ function chartDataToSurvivalTraces(chartData: any): SurvivalTrace[] | null {
 
 /** Resolve error bar data from dataset or chart-level error_bars array */
 function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
-  // Dataset-level error bars
-  const errArr = ds.error_y ?? ds.sem ?? ds.error ?? ds.errorBars ?? ds.sd;
-  if (errArr && Array.isArray(errArr)) {
-    return {
-      type: 'data' as const,
-      array: errArr,
-      visible: true,
-      color: ds.color ?? '#64748b',
-      thickness: 1.5,
-      width: 4,
-    };
-  }
-  // Chart-level error_bars array (from AI prompt)
-  if (chartData.error_bars && Array.isArray(chartData.error_bars)) {
-    const match = chartData.error_bars.find((eb: any) => eb.series === seriesName);
-    if (match?.values) {
+  try {
+    // Dataset-level error bars
+    const errArr = ds?.error_y ?? ds?.sem ?? ds?.error ?? ds?.errorBars ?? ds?.sd;
+    if (errArr && Array.isArray(errArr) && errArr.length > 0) {
       return {
         type: 'data' as const,
-        array: match.values,
+        array: errArr,
         visible: true,
-        color: ds.color ?? '#64748b',
+        color: ds?.color ?? '#64748b',
         thickness: 1.5,
         width: 4,
       };
     }
-  }
+    // Chart-level error_bars array (from AI prompt)
+    if (chartData?.error_bars && Array.isArray(chartData.error_bars)) {
+      const match = chartData.error_bars.find((eb: any) => eb?.series === seriesName);
+      if (match?.values && Array.isArray(match.values)) {
+        return {
+          type: 'data' as const,
+          array: match.values,
+          visible: true,
+          color: ds?.color ?? '#64748b',
+          thickness: 1.5,
+          width: 4,
+        };
+      }
+    }
+  } catch { /* ignore — no error bars */ }
   return undefined;
 }
 
 /** Resolve marker shape for a series index from chart_data markers array or default */
 function resolveMarkerShape(chartData: any, seriesName: string, index: number): string {
-  if (chartData.markers && Array.isArray(chartData.markers)) {
-    const match = chartData.markers.find((m: any) => m.series === seriesName);
-    if (match?.shape) return match.shape;
-  }
+  try {
+    if (chartData?.markers && Array.isArray(chartData.markers)) {
+      const match = chartData.markers.find((m: any) => m?.series === seriesName);
+      if (match?.shape) return match.shape;
+    }
+  } catch { /* ignore */ }
   return MARKER_SHAPES[index % MARKER_SHAPES.length];
 }
 
 /** Resolve marker size from chart_data markers array or default */
 function resolveMarkerSize(chartData: any, seriesName: string): number {
-  if (chartData.markers && Array.isArray(chartData.markers)) {
-    const match = chartData.markers.find((m: any) => m.series === seriesName);
-    if (match?.size) return match.size;
-  }
+  try {
+    if (chartData?.markers && Array.isArray(chartData.markers)) {
+      const match = chartData.markers.find((m: any) => m?.series === seriesName);
+      if (typeof match?.size === 'number') return match.size;
+    }
+  } catch { /* ignore */ }
   return 8;
 }
 
 /** Build significance annotations from chart_data */
 function buildSignificanceAnnotations(chartData: any): Partial<Plotly.Annotations>[] {
-  if (!chartData.significance || !Array.isArray(chartData.significance)) return [];
-  return chartData.significance.map((sig: any) => ({
-    x: sig.x,
-    y: sig.y,
-    text: sig.text ?? '***',
-    showarrow: false,
-    font: { size: 14, color: '#1a2332' },
-    yshift: 10,
-    xref: 'x' as const,
-    yref: 'y' as const,
-  }));
+  try {
+    if (!chartData?.significance || !Array.isArray(chartData.significance)) return [];
+    return chartData.significance
+      .filter((sig: any) => sig && typeof sig.x !== 'undefined' && typeof sig.y !== 'undefined')
+      .map((sig: any) => ({
+        x: sig.x,
+        y: sig.y,
+        text: sig.text ?? '***',
+        showarrow: false,
+        font: { size: 14, color: '#1a2332' },
+        yshift: 10,
+        xref: 'x' as const,
+        yref: 'y' as const,
+      }));
+  } catch { return []; }
 }
 
 /** Build Plotly traces from generic LLM chart_data (bar/line) */
@@ -705,7 +723,7 @@ function buildGenericPlotlyTraces(
   const palette = datasets.length > 2 ? RESEARCH_PALETTE : DEFAULT_PALETTE;
 
   if (mode === 'bar' || (!mode && !isPlotlyChartData(chartData))) {
-    const showValues = chartData.show_values !== false; // default true for bars
+    const showValues = chartData.show_values === true; // only show if explicitly requested
     const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
       const color = ds.color ?? ds.borderColor ?? palette[i % palette.length];
       const seriesName = ds.label ?? `Series ${i + 1}`;
@@ -817,6 +835,7 @@ export default function PlotlyInteractiveChart({
   const plotRef = useRef<any>(null);
 
   const { plotData, layout } = useMemo(() => {
+   try {
     const mode = config.mode ?? 'auto';
     const chartData = config.chartData;
 
@@ -1000,6 +1019,10 @@ export default function PlotlyInteractiveChart({
     }
 
     return { plotData: [], layout: LAYOUT_BASE };
+   } catch (err) {
+    console.error('[PlotlyInteractiveChart] Error building chart traces:', err);
+    return { plotData: [] as Plotly.Data[], layout: { ...LAYOUT_BASE } };
+   }
   }, [config]);
 
   const handlePlotlyClick = useCallback(

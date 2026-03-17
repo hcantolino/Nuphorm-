@@ -37,12 +37,14 @@ interface UploadedDataset {
   size: string;
   rows: number;
   columns: number;
-  format: "CSV" | "XLSX" | "JSON";
+  format: "CSV" | "XLSX" | "JSON" | "HTML";
   description?: string;
   folderId?: string;
   tags?: string[];
   fileUrl?: string;
   contentType?: string;
+  /** Which table the file came from — used for routing delete/update calls */
+  source?: "uploaded" | "technical";
 }
 
 interface UploadFileItem {
@@ -169,6 +171,7 @@ function SkeletonCard() {
 function FileIcon({ format, size = 24 }: { format: string; size?: number }) {
   if (format === "XLSX") return <FileSpreadsheet style={{ width: size, height: size }} className="text-[#3B82F6]" />;
   if (format === "JSON") return <Braces style={{ width: size, height: size }} className="text-[#3B82F6]" />;
+  if (format === "HTML") return <FileText style={{ width: size, height: size }} className="text-[#7c3aed]" />;
   return <FileText style={{ width: size, height: size }} className="text-[#3B82F6]" />;
 }
 
@@ -675,6 +678,11 @@ function DatasetCard({
                 <h3 className="font-bold text-[15px] text-[#111827] truncate">{dataset.name}</h3>
               )}
               <p className="text-[11px] text-[#6C757D] truncate mt-0.5">{dataset.fileName}</p>
+              {dataset.source === "technical" && (
+                <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-medium text-[#7c3aed] bg-[#f5f3ff] px-1.5 py-0.5 rounded">
+                  <Zap className="w-2.5 h-2.5" /> Generated
+                </span>
+              )}
             </div>
             <CardContextMenu
               onPreview={() => onPreview(dataset)}
@@ -700,8 +708,8 @@ function DatasetCard({
     );
   }
 
-  // ── List row (also used for columns) ────────────────────────────────────
-  if (viewMode === "list" || viewMode === "columns") {
+  // ── List row ────────────────────────────────────────────────────────────
+  if (viewMode === "list") {
     return (
       <div
         {...dragProps}
@@ -751,6 +759,12 @@ function DatasetCard({
             </>
           )}
         </div>
+
+        {dataset.source === "technical" && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[#7c3aed] bg-[#f5f3ff] px-1.5 py-0.5 rounded flex-shrink-0">
+            <Zap className="w-2.5 h-2.5" /> Generated
+          </span>
+        )}
 
         {/* Tags */}
         {cardTags.length > 0 && (
@@ -1419,23 +1433,65 @@ export default function DataUploaded() {
     { page: currentPage, limit: itemsPerPage },
     { enabled: true }
   );
+  // Also fetch technical files so Data Library shows everything
+  const { data: techFilesRaw = [] } = trpc.technical.getFiles.useQuery();
   const deleteFilesMutation = trpc.files.delete.useMutation();
+  const deleteTechMutation = trpc.technical.deleteFile.useMutation();
   const updateFileMutation = trpc.files.update.useMutation();
   const bulkMoveMutation = trpc.files.bulkMove.useMutation();
   const utils = trpc.useUtils();
 
+  // Convert technical files into the UploadedDataset shape
+  const technicalAsDatasets: UploadedDataset[] = useMemo(() => {
+    return (techFilesRaw as any[]).map((tf: any) => {
+      // Extract folder and filename from title (format: "Folder / Tab / filename")
+      const parts = (tf.title ?? "").split(" / ");
+      const fileName = parts[parts.length - 1] || tf.title || "Untitled";
+      const folderName = parts.length > 1 ? parts[0] : undefined;
+      const sizeEstimate = tf.content ? `${Math.round(tf.content.length / 1024)} KB` : "—";
+      return {
+        id: `tech-${tf.id}`,
+        name: fileName,
+        fileName,
+        uploadDate: tf.createdAt ? new Date(tf.createdAt).toISOString() : new Date().toISOString(),
+        size: sizeEstimate,
+        rows: 0,
+        columns: 0,
+        format: "HTML" as const,
+        description: folderName ? `Generated analysis · ${folderName}` : "Generated analysis",
+        folderId: undefined,
+        tags: [],
+        source: "technical" as const,
+      };
+    });
+  }, [techFilesRaw]);
+
   useEffect(() => {
     if (filesData?.data && Array.isArray(filesData.data) && filesData.data.length > 0) {
       setDatasets((prev) => {
-        const apiData = filesData.data as UploadedDataset[];
+        const apiData = (filesData.data as UploadedDataset[]).map(f => ({ ...f, source: "uploaded" as const }));
         const apiIds = new Set(apiData.map((f) => String(f.id)));
-        const kept = prev.filter((d) => !apiIds.has(String(d.id)));
+        // Keep sample data that doesn't collide with real API data
+        const kept = prev.filter((d) => d.source === "technical" || !apiIds.has(String(d.id)));
         const merged = [...apiData, ...kept];
         if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
         return merged;
       });
     }
   }, [filesData?.data]);
+
+  // Merge technical files into datasets whenever they change
+  useEffect(() => {
+    if (technicalAsDatasets.length === 0) return;
+    setDatasets((prev) => {
+      const techIds = new Set(technicalAsDatasets.map(t => t.id));
+      const withoutOldTech = prev.filter(d => !techIds.has(d.id) && d.source !== "technical");
+      const merged = [...withoutOldTech, ...technicalAsDatasets];
+      merged.sort((a, b) => new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime());
+      if (JSON.stringify(prev) === JSON.stringify(merged)) return prev;
+      return merged;
+    });
+  }, [technicalAsDatasets]);
 
   // ── Compute live folder & tag counts from actual datasets ─────────────
   const liveFolders = useMemo(() =>
@@ -1523,8 +1579,29 @@ export default function DataUploaded() {
   }, []);
 
   const handleDelete = useCallback(async (id: string | number) => {
-    const numericId = Number(id);
+    const sid = String(id);
+    const dataset = datasets.find(d => d.id === sid);
     setDeleteTarget(null);
+
+    // Technical file — id looks like "tech-123"
+    if (sid.startsWith("tech-")) {
+      const techId = parseInt(sid.replace("tech-", ""), 10);
+      if (!Number.isNaN(techId)) {
+        try {
+          await deleteTechMutation.mutateAsync({ fileId: techId });
+          removeFromUI(sid);
+          toast.success("File deleted");
+          utils.technical.getFiles.invalidate();
+        } catch (e) {
+          console.error("[Delete Technical Error]", e);
+          toast.error("Failed to delete file. Please try again.");
+        }
+        return;
+      }
+    }
+
+    // Uploaded file — numeric id
+    const numericId = Number(id);
     if (!Number.isNaN(numericId) && numericId > 0) {
       try {
         await deleteFilesMutation.mutateAsync({ fileIds: [numericId] });
@@ -1540,7 +1617,7 @@ export default function DataUploaded() {
       removeFromUI(id);
       toast.success("File deleted");
     }
-  }, [deleteFilesMutation, removeFromUI, utils.files.list]);
+  }, [datasets, deleteFilesMutation, deleteTechMutation, removeFromUI, utils.files.list, utils.technical.getFiles]);
 
   const handleDeleteConfirm = useCallback((id: string) => {
     const dataset = datasets.find((d) => d.id === id);
@@ -1561,29 +1638,48 @@ export default function DataUploaded() {
 
   const handleBulkDelete = useCallback(async () => {
     const stringIds = Array.from(selectedFileIds);
-    const numericIds = stringIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n) && n > 0);
-    const sampleIds = stringIds.filter((id) => { const n = parseInt(id, 10); return Number.isNaN(n) || n <= 0; });
+    // Separate into uploaded IDs, technical IDs, and sample IDs
+    const uploadedIds: number[] = [];
+    const techIds: number[] = [];
+    const sampleIds: string[] = [];
+    for (const sid of stringIds) {
+      if (sid.startsWith("tech-")) {
+        const n = parseInt(sid.replace("tech-", ""), 10);
+        if (!Number.isNaN(n)) techIds.push(n);
+        else sampleIds.push(sid);
+      } else {
+        const n = parseInt(sid, 10);
+        if (!Number.isNaN(n) && n > 0) uploadedIds.push(n);
+        else sampleIds.push(sid);
+      }
+    }
     setBulkDeleteConfirm(false);
     try {
-      if (numericIds.length > 0) {
-        await deleteFilesMutation.mutateAsync({ fileIds: numericIds });
+      const promises: Promise<any>[] = [];
+      if (uploadedIds.length > 0) {
+        promises.push(deleteFilesMutation.mutateAsync({ fileIds: uploadedIds }));
       }
+      // Technical files must be deleted one at a time (API takes single fileId)
+      for (const tid of techIds) {
+        promises.push(deleteTechMutation.mutateAsync({ fileId: tid }));
+      }
+      await Promise.all(promises);
       // Remove all from UI
       stringIds.forEach(removeFromUI);
       setSelectedFileIds(new Set());
       toast.success(`Deleted ${stringIds.length} file(s)`);
       utils.files.list.invalidate();
+      if (techIds.length > 0) utils.technical.getFiles.invalidate();
     } catch (e) {
       console.error("[Bulk Delete Error]", e);
-      // Remove sample data that doesn't need backend
       sampleIds.forEach(removeFromUI);
-      if (sampleIds.length > 0 && numericIds.length > 0) {
+      if (sampleIds.length > 0 && (uploadedIds.length > 0 || techIds.length > 0)) {
         toast.error(`Deleted ${sampleIds.length} of ${stringIds.length} files. Some files could not be deleted.`);
       } else {
         toast.error("Failed to delete files. Please try again.");
       }
     }
-  }, [selectedFileIds, deleteFilesMutation, removeFromUI, utils.files.list]);
+  }, [selectedFileIds, deleteFilesMutation, deleteTechMutation, removeFromUI, utils.files.list, utils.technical.getFiles]);
 
   const handleSelectFile = useCallback((id: string, sel: boolean) => {
     setSelectedFileIds((p) => { const s = new Set(p); sel ? s.add(id) : s.delete(id); return s; });
@@ -1992,65 +2088,8 @@ export default function DataUploaded() {
                 </div>
               )}
 
-              {/* Columns view: sidebar + content side-by-side */}
-              {viewMode === "columns" && (
-                <div className="flex gap-4 min-h-[400px]">
-                  {/* Folders column */}
-                  <div className="w-56 flex-shrink-0 bg-white border border-[#DEE2E6] rounded-lg overflow-y-auto">
-                    <div className="p-3 border-b border-[#DEE2E6]">
-                      <p className="text-xs font-bold text-[#6C757D] uppercase tracking-wider">Folders</p>
-                    </div>
-                    <button
-                      onClick={() => { setSelectedFolderId(null); setSelectedTagId(null); }}
-                      className={cn("w-full text-left flex items-center gap-2 px-3 py-2.5 text-sm transition-colors",
-                        !selectedFolderId ? "bg-[#E3F2FD] text-[#007BFF] font-medium" : "text-[#374151] hover:bg-[#F9FAFB]"
-                      )}
-                    >
-                      <Database className="w-4 h-4" /> All Files
-                    </button>
-                    {liveFolders.map((f) => (
-                      <button
-                        key={f.id}
-                        onClick={() => setSelectedFolderId(f.id === selectedFolderId ? null : f.id)}
-                        className={cn("w-full text-left flex items-center gap-2 px-3 py-2.5 text-sm transition-colors",
-                          selectedFolderId === f.id ? "bg-[#E3F2FD] text-[#007BFF] font-medium" : "text-[#374151] hover:bg-[#F9FAFB]"
-                        )}
-                      >
-                        <Folder className="w-4 h-4" />
-                        <span className="flex-1 truncate">{f.name}</span>
-                        <span className="text-xs text-[#9CA3AF]">{f.fileCount}</span>
-                      </button>
-                    ))}
-                  </div>
-                  {/* Files column */}
-                  <div className="flex-1 min-w-0">
-                    <Droppable droppableId="main-grid" direction="vertical">
-                      {(provided: DroppableProvided) => (
-                        <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-2">
-                          {filteredDatasets.length === 0
-                            ? <EmptyState hasFilters={hasActiveFilters} onClear={clearAll} onUpload={() => setShowUpload(true)} isDragOver={desktopDragOver} />
-                            : filteredDatasets.map((d, index) => (
-                                <Draggable key={d.id} draggableId={`file-${d.id}`} index={index}>
-                                  {(dragProvided: DraggableProvided) => (
-                                    <DatasetCard dataset={d} selected={selectedFileIds.has(d.id)} viewMode="list" allTags={tags}
-                                      onSelect={handleSelectFile} onPreview={handlePreview} onDownload={handleDownload}
-                                      onDelete={handleDeleteConfirm} onClick={(ds) => handleCtrlClick(ds, { ctrlKey: false, metaKey: false, preventDefault: () => {} } as any)}
-                                      onRename={setRenamingId} onMove={setMovingFileId} onAddTag={setTagPickerFileId} onContextMenu={handleFileContextMenu}
-                                      renamingId={renamingId} onRenameSubmit={handleRenameSubmit} onRenameCancel={() => setRenamingId(null)} provided={dragProvided} />
-                                  )}
-                                </Draggable>
-                              ))
-                          }
-                          {provided.placeholder}
-                        </div>
-                      )}
-                    </Droppable>
-                  </div>
-                </div>
-              )}
-
               {/* Grid / List / Gallery views with grouping */}
-              {viewMode !== "columns" && (
+              {(
                 <Droppable droppableId="main-grid" direction={viewMode === "grid" || viewMode === "gallery" ? "horizontal" : "vertical"}>
                   {(provided: DroppableProvided) => (
                     <div ref={provided.innerRef} {...provided.droppableProps}>
