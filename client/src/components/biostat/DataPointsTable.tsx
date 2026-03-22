@@ -147,7 +147,7 @@ export const DataPointsTable: React.FC<DataPointsTableProps> = ({
     <div className="bg-white rounded-xl border border-[#e2e8f0] shadow-sm overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-[#e2e8f0]">
-        <h3 className="text-[#194CFF] font-bold" style={{ fontSize: "1.25rem" }}>
+        <h3 className="text-[#1a2332] font-bold" style={{ fontSize: "1.125rem" }}>
           Data Points Used in Chart — Edit to Update Graph
         </h3>
         <p className="text-[10px] text-[#94a3b8] mt-1">

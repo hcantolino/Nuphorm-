@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   Upload, FileText, DownloadCloud, Trash2, Eye, Calendar, HardDrive,
   Search, X, LayoutGrid, List, Folder, FolderOpen, Tag, ChevronDown, ChevronRight, Plus,
@@ -191,6 +192,8 @@ interface ContextMenuProps {
 function CardContextMenu(props: ContextMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -199,6 +202,20 @@ function CardContextMenu(props: ContextMenuProps) {
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  // Position the portal dropdown near the trigger button
+  useEffect(() => {
+    if (!open || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    const menuW = 192; // w-48 = 12rem = 192px
+    const menuH = 320; // rough max height
+    let top = rect.bottom + 4;
+    let left = rect.right - menuW;
+    // Clamp to viewport
+    if (left < 8) left = 8;
+    if (top + menuH > window.innerHeight) top = rect.top - menuH - 4;
+    setPos({ top, left });
   }, [open]);
 
   const item = (icon: React.ReactNode, label: string, onClick: () => void, danger = false) => (
@@ -220,16 +237,22 @@ function CardContextMenu(props: ContextMenuProps) {
   const sep = () => <div className="h-px bg-[#f3f4f6] my-1" />;
 
   return (
-    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
       <button
+        ref={btnRef}
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         className="p-1.5 rounded-md text-[#9ca3af] hover:text-[#3B82F6] hover:bg-[#EFF6FF] transition-colors opacity-0 group-hover:opacity-100"
         title="More options"
       >
         <MoreHorizontal className="w-4 h-4" />
       </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-[#e2e8f0] rounded-xl shadow-lg z-30 p-1">
+      {open && pos && createPortal(
+        <div
+          ref={ref}
+          className="fixed w-48 bg-white border border-[#e2e8f0] rounded-xl shadow-lg p-1"
+          style={{ top: pos.top, left: pos.left, zIndex: 9999 }}
+          onClick={(e) => e.stopPropagation()}
+        >
           {item(<Eye className="w-3.5 h-3.5" />, "Preview", props.onPreview)}
           {item(<DownloadCloud className="w-3.5 h-3.5" />, "Download", props.onDownload)}
           {sep()}
@@ -240,7 +263,8 @@ function CardContextMenu(props: ContextMenuProps) {
           {props.onShare && item(<Share2 className="w-3.5 h-3.5" />, "Share", props.onShare)}
           {sep()}
           {item(<Trash2 className="w-3.5 h-3.5" />, "Delete", props.onDelete, true)}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -899,30 +923,6 @@ function DatasetCard({
           </div>
         )}
 
-        {/* Hover quick actions */}
-        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-          <button
-            onClick={(e) => { e.stopPropagation(); onPreview(dataset); }}
-            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-md border border-[#3B82F6] text-[#3B82F6] text-[12px] font-semibold hover:bg-[#EFF6FF] transition-colors"
-          >
-            <Zap className="w-3.5 h-3.5" />
-            Analyze with AI
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onPreview(dataset); }}
-            title="Preview"
-            className="p-2 rounded-md bg-[#f3f4f6] text-[#374151] hover:bg-[#e5e7eb] transition-colors"
-          >
-            <Eye className="w-4 h-4" />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onDownload(dataset); }}
-            title="Download"
-            className="p-2 rounded-md bg-[#f3f4f6] text-[#374151] hover:bg-[#e5e7eb] transition-colors"
-          >
-            <DownloadCloud className="w-4 h-4" />
-          </button>
-        </div>
       </div>
     </div>
   );

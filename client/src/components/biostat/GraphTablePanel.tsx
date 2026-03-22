@@ -1529,11 +1529,8 @@ export const GraphTablePanel: React.FC = () => {
   // Reset chart error whenever the active result changes
   React.useEffect(() => { setChartError(false); }, [activeResult?.id]);
 
-  // Dataset table pagination
-  const DATASET_PAGE_SIZE = 20;
-  const [datasetPage, setDatasetPage] = useState(0);
-  // Reset page when result changes
-  React.useEffect(() => { setDatasetPage(0); }, [activeResult?.id]);
+  // Dataset table pagination removed — bottom "Dataset" table was removed to avoid duplication
+  // with the DataPointsTable above.
 
   // NEW: for llm_chart results the stats table is often just a "Note" row — suppress it
   //      so the chart is the primary visual and the note appears as a small italic caption.
@@ -2579,123 +2576,7 @@ export const GraphTablePanel: React.FC = () => {
             </div>
           )}
 
-        {/* Raw data table */}
-        {activeResult?.tableData?.rows?.length > 0 && (() => {
-          const allRows: any[][] = activeResult.tableData.rows;
-          const totalRows = allRows.length;
-          const totalPages = Math.ceil(totalRows / DATASET_PAGE_SIZE);
-          const startIdx = datasetPage * DATASET_PAGE_SIZE;
-          const endIdx = Math.min(startIdx + DATASET_PAGE_SIZE, totalRows);
-          const pageRows = allRows.slice(startIdx, endIdx);
-
-          return (
-            <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden">
-              <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-                <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
-                  <span className="flex items-center gap-2">
-                    <Table2 className="w-4 h-4 text-[#3b82f6]" />
-                    Dataset
-                    <span className="text-xs font-normal text-[#64748b]">
-                      — {totalRows} observation{totalRows !== 1 ? "s" : ""}
-                    </span>
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 px-2 text-[10px] text-[#64748b] border-[#e2e8f0] hover:bg-[#f8fafc] hover:text-[#0f172a] gap-1"
-                    onClick={() =>
-                      downloadDatasetAsCSV(
-                        activeResult!.tableData.headers,
-                        activeResult!.tableData.rows,
-                        buildCSVFilename("dataset", activeResult?.query)
-                      )
-                    }
-                  >
-                    <Download className="w-3 h-3" />
-                    CSV
-                  </Button>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-0 pb-0">
-                <div className="overflow-x-auto" style={{ maxWidth: "100%" }}>
-                  <table className="text-sm" style={{ minWidth: `${activeResult.tableData.headers.length * 100}px` }}>
-                    <thead className="sticky top-0 bg-[#f8fafc] z-10">
-                      <tr className="border-b border-[#e2e8f0]">
-                        {activeResult.tableData.headers.map((h: string, i: number) => (
-                          <th
-                            key={i}
-                            className="text-left py-2 px-3 text-xs font-semibold text-[#64748b] uppercase tracking-wide whitespace-nowrap"
-                            style={{ minWidth: "100px" }}
-                          >
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pageRows.map((row: any[], rowIdx: number) => (
-                        <tr
-                          key={startIdx + rowIdx}
-                          className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#eff6ff] transition-colors"
-                          style={
-                            customizations.zebraStriping && rowIdx % 2 === 0
-                              ? { backgroundColor: "#f1f5f9" }
-                              : undefined
-                          }
-                        >
-                          {row.map((cell: any, cellIdx: number) => (
-                            <td
-                              key={cellIdx}
-                              className="py-1.5 px-3 font-mono text-xs text-[#0f172a] whitespace-nowrap"
-                              style={{ minWidth: "100px" }}
-                            >
-                              {typeof cell === "number" && !Number.isInteger(cell)
-                                ? cell.toFixed(4)
-                                : String(cell ?? "")}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Pagination footer */}
-                {totalPages > 1 && (
-                  <div className="flex items-center justify-between px-4 py-2 border-t border-[#e2e8f0] bg-[#f8fafc]">
-                    <span className="text-xs text-[#64748b]">
-                      Showing rows {startIdx + 1}–{endIdx} of {totalRows}
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => setDatasetPage((p) => Math.max(0, p - 1))}
-                        disabled={datasetPage === 0}
-                        className="text-xs px-2.5 py-1 rounded border border-[#e2e8f0] text-[#374151] hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        Previous
-                      </button>
-                      <span className="text-xs text-[#64748b] tabular-nums">
-                        {datasetPage + 1} / {totalPages}
-                      </span>
-                      <button
-                        onClick={() => setDatasetPage((p) => Math.min(totalPages - 1, p + 1))}
-                        disabled={datasetPage >= totalPages - 1}
-                        className="text-xs px-2.5 py-1 rounded border border-[#e2e8f0] text-[#374151] hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {/* Table note (synthetic data disclaimer, etc.) */}
-                {activeResult.analysisResults?.tableNote && (
-                  <p className="text-xs italic text-[#94a3b8] px-4 py-2.5 border-t border-[#e2e8f0]">
-                    {activeResult.analysisResults.tableNote}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })()}
+        {/* Bottom "Dataset" table removed — DataPointsTable above is the single editable table */}
 
         {/* AI interpretation / analysis text.
             Show when: no structured table/chart (fallback), OR analysis is pure narrative

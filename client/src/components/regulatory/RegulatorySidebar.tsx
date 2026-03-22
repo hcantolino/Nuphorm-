@@ -342,6 +342,7 @@ export default function RegulatorySidebar({
   const storeActiveId = useRegulatoryStore((s) => s.activeProjectId) ?? '1';
   const storeCreateProject = useRegulatoryStore((s) => s.createProject);
   const storeDeleteProject = useRegulatoryStore((s) => s.deleteProject);
+  const storeUpdateProjectName = useRegulatoryStore((s) => s.updateProjectName);
   const storeSetActive = useRegulatoryStore((s) => s.setActiveProject);
   const getProjectSources = useRegulatoryStore((s) => s.getProjectSources);
   const setProjectSources = useRegulatoryStore((s) => s.setProjectSources);
@@ -354,6 +355,14 @@ export default function RegulatorySidebar({
   // ── Project state (backed by store, no local state needed) ────────────────
   const [searchQuery, setSearchQuery] = useState('');
   const [modalDragActive, setModalDragActive] = useState(false);
+
+  // ── Inline project rename state ─────────────────────────────────────────
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Context menu state ──────────────────────────────────────────────────
+  const [ctxMenu, setCtxMenu] = useState<{ projectId: string; x: number; y: number } | null>(null);
 
   // ── Settings dialog state ─────────────────────────────────────────────────
   const [showSettings, setShowSettings] = useState(false);
@@ -445,15 +454,74 @@ export default function RegulatorySidebar({
   );
 
   const handleCreateProject = useCallback(() => {
-    storeCreateProject(`Project ${storeProjects.length + 1}`, '');
-  }, [storeCreateProject, storeProjects.length]);
+    storeCreateProject('Untitled Project', '');
+    // The store sets the new project as active and returns void.
+    // We need the new project's id to enter edit mode — it's Date.now().toString().
+    // Grab it after the store update on next tick.
+    setTimeout(() => {
+      const latest = useRegulatoryStore.getState().projects;
+      const newest = latest[latest.length - 1];
+      if (newest) {
+        setEditingProjectId(newest.id);
+        setEditDraft(newest.name);
+      }
+    }, 0);
+  }, [storeCreateProject]);
 
   const handleDeleteProject = useCallback(
     (projectId: string) => {
       storeDeleteProject(projectId);
+      if (editingProjectId === projectId) setEditingProjectId(null);
     },
-    [storeDeleteProject]
+    [storeDeleteProject, editingProjectId]
   );
+
+  const startRename = useCallback((projectId: string, currentName: string) => {
+    setEditingProjectId(projectId);
+    setEditDraft(currentName);
+  }, []);
+
+  const commitRename = useCallback(() => {
+    if (!editingProjectId) return;
+    const trimmed = editDraft.trim();
+    if (trimmed) {
+      storeUpdateProjectName(editingProjectId, trimmed);
+      toast.success('Renamed', { duration: 1500 });
+    }
+    setEditingProjectId(null);
+  }, [editingProjectId, editDraft, storeUpdateProjectName]);
+
+  const cancelRename = useCallback(() => {
+    setEditingProjectId(null);
+  }, []);
+
+  const handleDuplicateProject = useCallback((projectId: string) => {
+    const project = storeProjects.find((p) => p.id === projectId);
+    if (!project) return;
+    storeCreateProject(`Copy of ${project.name}`, project.description);
+    toast.success(`Duplicated "${project.name}"`, { duration: 2000 });
+  }, [storeProjects, storeCreateProject]);
+
+  // Auto-focus the rename input when entering edit mode
+  useEffect(() => {
+    if (editingProjectId && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingProjectId]);
+
+  // Close context menu on outside click or Escape
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handleClick = () => setCtxMenu(null);
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCtxMenu(null); };
+    window.addEventListener('click', handleClick);
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('click', handleClick);
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [ctxMenu]);
 
   // Notify parent whenever the active project's sources change
   // Note: onSourcesChange intentionally excluded from deps to prevent infinite loops
@@ -609,20 +677,47 @@ export default function RegulatorySidebar({
                 />
               </div>
 
-              <div className="space-y-1 overflow-y-auto max-h-40">
+              <div className="space-y-1 overflow-y-auto max-h-40 relative">
                 {filteredProjects.map((project) => (
                   <div
                     key={project.id}
-                    onClick={() => handleProjectSelect(project.id)}
+                    onClick={() => {
+                      if (editingProjectId !== project.id) handleProjectSelect(project.id);
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      startRename(project.id, project.name);
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setCtxMenu({ projectId: project.id, x: e.clientX, y: e.clientY });
+                    }}
                     className={`group/item p-2 rounded cursor-pointer transition flex items-center justify-between ${
                       storeActiveId === project.id
                         ? 'bg-[#eff6ff] text-[#1d4ed8] border border-[#bfdbfe]'
                         : 'bg-white hover:bg-[#f1f5f9] text-[#475569] border border-transparent'
                     }`}
                   >
-                    <span className="text-xs font-medium truncate flex-1">
-                      {project.name}
-                    </span>
+                    {editingProjectId === project.id ? (
+                      <input
+                        ref={editInputRef}
+                        type="text"
+                        value={editDraft}
+                        onChange={(e) => setEditDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                          if (e.key === 'Escape') { e.preventDefault(); cancelRename(); }
+                        }}
+                        onBlur={commitRename}
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-xs font-medium flex-1 bg-[#f8fafc] border border-[#3b82f6] rounded px-2 py-1 outline-none text-[#0f172a]"
+                        style={{ minWidth: 0 }}
+                      />
+                    ) : (
+                      <span className="text-xs font-medium truncate flex-1">
+                        {project.name}
+                      </span>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -634,6 +729,52 @@ export default function RegulatorySidebar({
                     </button>
                   </div>
                 ))}
+
+                {/* Right-click context menu */}
+                {ctxMenu && (
+                  <div
+                    className="fixed z-50 bg-white rounded-lg shadow-lg border border-[#e2e8f0] py-1 min-w-[160px]"
+                    style={{
+                      left: ctxMenu.x,
+                      top: ctxMenu.y,
+                      boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      className="w-full text-left px-4 py-2 text-xs text-[#0f172a] hover:bg-[#f0f4f8] transition"
+                      onClick={() => {
+                        const p = storeProjects.find((pr) => pr.id === ctxMenu.projectId);
+                        if (p) startRename(p.id, p.name);
+                        setCtxMenu(null);
+                      }}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      className="w-full text-left px-4 py-2 text-xs text-[#0f172a] hover:bg-[#f0f4f8] transition"
+                      onClick={() => {
+                        handleDuplicateProject(ctxMenu.projectId);
+                        setCtxMenu(null);
+                      }}
+                    >
+                      Duplicate
+                    </button>
+                    <div className="border-t border-[#e2e8f0] my-1" />
+                    <button
+                      className="w-full text-left px-4 py-2 text-xs text-[#ef4444] hover:bg-[#fef2f2] transition"
+                      onClick={() => {
+                        const p = storeProjects.find((pr) => pr.id === ctxMenu.projectId);
+                        if (p && confirm(`Delete "${p.name}"? This will not delete the documents inside.`)) {
+                          handleDeleteProject(p.id);
+                        }
+                        setCtxMenu(null);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 

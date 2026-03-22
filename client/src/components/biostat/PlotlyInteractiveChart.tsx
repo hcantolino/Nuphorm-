@@ -75,6 +75,7 @@ interface PlotlyInteractiveChartProps {
     showMinorTicks?: boolean;
     customColors?: string[];
     legendPosition?: string;
+    legendAnchor?: string;
     showDataLabels?: boolean;
     strokeWidth?: number;
     markerSize?: number;
@@ -129,16 +130,16 @@ function calculateChartSizing(traces: any[], chartTitle?: string, yLabel?: strin
 
   if (seriesCount <= 3) {
     legend = { orientation: 'h', x: 0.5, y: -0.12, xanchor: 'center', yanchor: 'top', font: { size: 11 }, bgcolor: 'rgba(255,255,255,0)', borderwidth: 0, itemwidth: 30, tracegroupgap: 15 };
-    margin = { l: 80, r: 30, t: 70, b: 80 };
+    margin = { l: 80, r: 30, t: 80, b: 80 };
   } else if (seriesCount <= 8) {
     legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 10 }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 25, tracegroupgap: 3 };
-    margin = { l: 80, r: Math.min(legendWidth + 20, 200), t: 70, b: 60 };
+    margin = { l: 80, r: Math.min(legendWidth + 20, 200), t: 80, b: 60 };
   } else {
     legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 9 }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 20, tracegroupgap: 1, itemsizing: 'constant' };
-    margin = { l: 80, r: Math.min(legendWidth + 15, 180), t: 70, b: 60 };
+    margin = { l: 80, r: Math.min(legendWidth + 15, 180), t: 80, b: 60 };
   }
   if (yLabel && yLabel.length > 15) margin.l = 95;
-  if (chartTitle && chartTitle.length > 60) margin.t = 90;
+  if (chartTitle && chartTitle.length > 60) margin.t = 100;
   return { legend, margin };
 }
 
@@ -153,7 +154,8 @@ const LAYOUT_BASE: Partial<Plotly.Layout> = {
   paper_bgcolor: '#ffffff',
   plot_bgcolor: '#ffffff',
   font: { family: 'Arial, sans-serif', size: 12, color: '#1a2332' },
-  margin: { l: 80, r: 120, t: 60, b: 80 },
+  margin: { l: 80, r: 120, t: 80, b: 80 },
+  modebar: { orientation: 'h', bgcolor: 'transparent', color: '#8fa3b8', activecolor: '#2b7de9' } as any,
   showlegend: true,
   legend: {
     bgcolor: 'rgba(255,255,255,0.9)',
@@ -756,13 +758,32 @@ function buildSignificanceAnnotations(chartData: any): Partial<Plotly.Annotation
 function improveAxisLabel(label: string | undefined, axis: 'x' | 'y'): string {
   if (!label || label === '' || label === 'undefined') return axis === 'x' ? 'Category' : 'Value';
   const lc = label.toLowerCase().trim();
-  if (lc === 'mean') return 'Mean Value';
-  if (lc === 'count') return 'Count (n)';
-  if (lc === 'value') return 'Value';
-  if (lc === 'time') return 'Time (units)';
-  if (lc === 'subject') return 'Subject ID';
-  if (lc === 'frequency') return 'Frequency (n)';
-  return label;
+  const badLabels: Record<string, string> = {
+    'mean': 'Mean Value',
+    'count': 'Count (n)',
+    'value': 'Value',
+    'time': 'Time (units)',
+    'subject': 'Subject ID',
+    'frequency': 'Frequency (n)',
+    'x': axis === 'x' ? 'Category' : 'Value',
+    'y': axis === 'y' ? 'Value' : 'Category',
+    'index': 'Index',
+    'subjid': 'Subject ID',
+    'siteid': 'Site ID',
+    'age': 'Age (years)',
+    'weight': 'Weight (kg)',
+    'height': 'Height (cm)',
+    'dose': 'Dose (mg)',
+    'concentration': 'Concentration (ng/mL)',
+    'auc': 'AUC (h·ng/mL)',
+    'cmax': 'Cmax (ng/mL)',
+    'tmax': 'Tmax (hours)',
+    'percent': 'Percentage (%)',
+    'pct': 'Percentage (%)',
+    'n': 'Count (n)',
+    'number': 'Number',
+  };
+  return badLabels[lc] || label;
 }
 
 /** Build Plotly traces from generic LLM chart_data (bar/line) */
@@ -1221,30 +1242,62 @@ export default function PlotlyInteractiveChart({
     lo.legend = { ...smartLegend, ...(lo.legend ?? {}) };
     lo.margin = { ...smartMargin, ...(lo.margin?.t ? { t: lo.margin.t } : {}) };
 
+    // Legend position — applied AFTER smart sizing so user choice wins
+    if (custOverrides.legendPosition) {
+      const legendMap: Record<string, Partial<Plotly.Layout['legend']>> = {
+        'top-right':    { x: 1, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' },
+        'top-left':     { x: 0, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
+        'bottom-right': { x: 1, y: 0, xanchor: 'right', yanchor: 'bottom', orientation: 'v' },
+        'bottom-left':  { x: 0, y: 0, xanchor: 'left', yanchor: 'bottom', orientation: 'v' },
+        'bottom':       { x: 0.5, y: -0.15, xanchor: 'center', yanchor: 'top', orientation: 'h' },
+        'top':          { x: 0.5, y: 1.02, xanchor: 'center', yanchor: 'bottom', orientation: 'h' },
+        'right':        { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
+        'left':         { x: -0.15, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' },
+        'none':         { visible: false } as any,
+      };
+      const pos = legendMap[custOverrides.legendPosition];
+      if (pos) {
+        lo.legend = { ...lo.legend, ...pos };
+        if (custOverrides.legendPosition === 'none') {
+          lo.showlegend = false;
+        } else {
+          lo.showlegend = true;
+        }
+      }
+    }
+
+    // Legend anchor (fine-grained position: top-right, bottom-left, etc.)
+    if (custOverrides.legendAnchor) {
+      const anchorMap: Record<string, Partial<Plotly.Layout['legend']>> = {
+        'top-right':      { x: 1, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' },
+        'top-left':       { x: 0, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
+        'bottom-right':   { x: 1, y: 0, xanchor: 'right', yanchor: 'bottom', orientation: 'v' },
+        'bottom-left':    { x: 0, y: 0, xanchor: 'left', yanchor: 'bottom', orientation: 'v' },
+        'outside-right':  { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
+        'outside-bottom': { x: 0.5, y: -0.15, xanchor: 'center', yanchor: 'top', orientation: 'h' },
+      };
+      const pos = anchorMap[custOverrides.legendAnchor];
+      if (pos) {
+        lo.legend = { ...lo.legend, ...pos };
+        lo.showlegend = true;
+      }
+    }
+
+    // Legend text color — always black, never trace-colored
+    lo.legend = {
+      ...lo.legend,
+      font: { ...(lo.legend?.font ?? {}), color: '#1a2332', family: 'Arial, sans-serif' },
+    };
+
     return { plotData: pd, layout: lo };
   }, [basePlotData, baseLayout, custOverrides]);
 
-  // Revision counter — increments whenever layout or data changes so react-plotly.js
-  // definitely re-renders. This is the reliable way to force Plotly updates.
-  const revision = useRef(0);
-  const prevLayoutRef = useRef(layout);
-  const prevDataRef = useRef(plotData);
-  if (layout !== prevLayoutRef.current || plotData !== prevDataRef.current) {
-    revision.current += 1;
-    prevLayoutRef.current = layout;
-    prevDataRef.current = plotData;
-  }
-
-  // Also force imperative update as a belt-and-suspenders approach
+  // Revision counter — state-based so React actually re-renders the <Plot> component.
+  // react-plotly.js compares the `revision` prop and calls Plotly.react when it changes.
+  const [plotRevision, setPlotRevision] = useState(0);
   useEffect(() => {
-    const el = plotRef.current?.el ?? plotRef.current?.graphDiv;
-    if (!el || plotData.length === 0) return;
-    // @ts-ignore — plotly.js UMD dist has no type declarations
-    import('plotly.js/dist/plotly').then((mod: any) => {
-      const Plotly = mod.default ?? mod;
-      Plotly.react(el, plotData, { ...layout, width: undefined, height, autosize: true });
-    }).catch(() => {});
-  }, [layout, plotData, height]);
+    setPlotRevision((r) => r + 1);
+  }, [layout, plotData]);
 
   // ── Plotly imperative helpers ──────────────────────────────────────────
   const applyRestyle = useCallback((update: Record<string, any>, traceIdx: number) => {
@@ -1427,8 +1480,8 @@ export default function PlotlyInteractiveChart({
 
   return (
     <div className="flex flex-col">
-      {/* Chart toolbar */}
-      <div className="flex items-center gap-1 mb-1 px-1">
+      {/* Chart action buttons — dedicated row above chart */}
+      <div className="flex items-center gap-1 px-3 py-1.5 flex-shrink-0">
         <button
           onClick={() => {
             if (plotRef.current?.el) {
@@ -1462,14 +1515,13 @@ export default function PlotlyInteractiveChart({
         >
           Trendline
         </button>
-        <div className="flex-1" />
-        <span className="text-[9px] text-[#94a3b8]">Click point for details \u00B7 Right-click for options</span>
       </div>
 
+      {/* Chart container */}
       <div
         ref={chartContainerRef}
-        className="relative rounded-lg overflow-hidden"
-        style={{ background: '#ffffff', border: '1px solid #e2e8f0' }}
+        className="relative rounded-lg overflow-hidden flex-1"
+        style={{ background: '#ffffff', border: '1px solid #e2e8f0', minHeight: 400 }}
         onContextMenu={handleContextMenu}
       >
         <Suspense
@@ -1485,7 +1537,7 @@ export default function PlotlyInteractiveChart({
         >
           <Plot
             ref={plotRef}
-            revision={revision.current}
+            revision={plotRevision}
             data={plotData as any}
             layout={
               {
@@ -1498,7 +1550,7 @@ export default function PlotlyInteractiveChart({
             config={{
               responsive: true,
               displayModeBar: true,
-              modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
+              modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
               displaylogo: false,
               toImageButtonOptions: {
                 format: 'png',
