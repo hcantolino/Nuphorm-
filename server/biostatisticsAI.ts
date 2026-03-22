@@ -987,6 +987,20 @@ PK/PD:
 - Each dose group = different color + different marker shape
 - Semi-log option for absorption/elimination phases
 
+BOX PLOT — EXACT RESPONSE TEMPLATE:
+When the user requests a box plot, you MUST return this exact structure:
+{
+  "chart_data": {
+    "pharma_type": "box",
+    "type": "box",
+    "datasets": [
+      { "label": "Group A", "data": [raw individual values, NOT summary stats] },
+      { "label": "Group B", "data": [raw individual values, NOT summary stats] }
+    ]
+  }
+}
+CRITICAL: Box plot datasets MUST contain raw individual observation values (e.g. [23.1, 25.4, 19.8, ...]), NOT summary statistics (mean, median, etc.). Plotly computes the box/whiskers/median from the raw values. If you only have summary stats, return a bar chart instead.
+
 ## AXIS LABELS — CRITICAL, DO NOT SKIP
 You MUST return x_axis and y_axis fields in EVERY chart_data response. These must be descriptive scientific labels, NEVER just a single word like "mean" or a raw column name.
 - For bar charts by subject: x_axis = "Subject ID", y_axis = "Record Count (n)" or "Mean Value"
@@ -3907,47 +3921,95 @@ export async function analyzeBiostatistics(
       // Log the cleaned result
       console.log("[analyzeBiostatistics] CLEANED response (first 500 chars):", cleaned.slice(0, 500));
 
-      // Step 5: Attempt JSON.parse on the cleaned string
+      // Step 5: Attempt JSON.parse on the cleaned string — with fallback strategies
       let parsed: any;
       try {
         parsed = JSON.parse(cleaned);
       } catch (parseErr) {
-        // Step 6: Only trigger "Analysis blocked" if parsing still fails after all cleaning
-        console.error("[analyzeBiostatistics] JSON.parse failed AFTER cleaning. Raw content:", content.slice(0, 300));
-        console.error("[analyzeBiostatistics] Cleaned content:", cleaned.slice(0, 300));
+        console.warn("[analyzeBiostatistics] JSON.parse failed on cleaned string, trying recovery strategies...");
 
-        logChartDecision("JSON parse failed", userQuery, { isVizQuery, rawContentHead: content.slice(0, 120) });
+        // Recovery strategy A: Try to fix common JSON issues (trailing commas, unescaped newlines)
+        let repaired = cleaned
+          .replace(/,\s*([\]}])/g, '$1')          // trailing commas before ] or }
+          .replace(/([^\\])\\n/g, '$1\\\\n')       // literal \n → \\n in values
+          .replace(/[\x00-\x1f]/g, ' ');            // control chars
+        try { parsed = JSON.parse(repaired); console.log("[analyzeBiostatistics] ✓ Recovery A (repair) succeeded"); } catch {}
 
-        if (isVizQuery) {
-          console.error(`[analyzeBiostatistics] ✗ BLOCKED synthetic chart — JSON parse failed on viz query`);
+        // Recovery strategy B: Try every { ... } substring (greedy outer match)
+        if (!parsed) {
+          const braceStack: number[] = [];
+          let bestStart = -1, bestEnd = -1, bestLen = 0;
+          for (let i = 0; i < cleaned.length; i++) {
+            if (cleaned[i] === '{') { braceStack.push(i); }
+            else if (cleaned[i] === '}' && braceStack.length > 0) {
+              const start = braceStack[0]; // outermost open brace
+              const len = i - start + 1;
+              if (len > bestLen) { bestStart = start; bestEnd = i; bestLen = len; }
+              braceStack.pop();
+            }
+          }
+          if (bestStart >= 0) {
+            const candidate = cleaned.slice(bestStart, bestEnd + 1);
+            try { parsed = JSON.parse(candidate); console.log("[analyzeBiostatistics] ✓ Recovery B (brace extraction) succeeded"); } catch {
+              // Also try repair on the extracted substring
+              const candidateRepaired = candidate.replace(/,\s*([\]}])/g, '$1').replace(/[\x00-\x1f]/g, ' ');
+              try { parsed = JSON.parse(candidateRepaired); console.log("[analyzeBiostatistics] ✓ Recovery B+repair succeeded"); } catch {}
+            }
+          }
+        }
+
+        // Recovery strategy C: If there's a markdown table in the raw text, use it as fallback
+        if (!parsed) {
+          const mdTable = parseMarkdownTableToResults(content);
+          if (mdTable && mdTable.length > 0) {
+            console.log(`[analyzeBiostatistics] ✓ Recovery C — extracted ${mdTable.length} rows from markdown table`);
+            parsed = {
+              analysis: content.replace(/\|[^\n]+\|/g, '').replace(/\n{3,}/g, '\n\n').trim(),
+              analysisResults: {
+                analysis_type: "llm_table",
+                results_table: mdTable,
+              },
+              suggestions: ["Try refining your query", "Ask for a specific chart type"],
+            };
+          }
+        }
+
+        // If ALL recovery strategies failed, then block or return text
+        if (!parsed) {
+          console.error("[analyzeBiostatistics] All JSON recovery strategies failed. Raw (first 300):", content.slice(0, 300));
+          logChartDecision("JSON parse failed — all recovery exhausted", userQuery, { isVizQuery, rawContentHead: content.slice(0, 120) });
+
+          if (isVizQuery) {
+            console.error(`[analyzeBiostatistics] ✗ BLOCKED — JSON parse failed after all recovery attempts`);
+            return {
+              analysis: "The AI response could not be parsed. Please try rephrasing your request with specific column names from your data.",
+              suggestions: ["Rephrase your chart request with specific column names", "Re-upload your data file and try again"],
+              measurements: [],
+              chartSuggestions: [],
+              analysisResults: {
+                analysis_type: "llm_table",
+                results_table: [{ metric: "Note", value: "Chart generation failed — the AI response was not in the expected format. Try asking again with specific column names." }],
+              },
+              chartConfig,
+              tableData,
+              llmUsed: false,
+            };
+          }
+
+          // Non-viz JSON parse failure — return raw text + local stats as before
           return {
-            analysis: "**Analysis blocked:** The AI did not return verifiable data from the uploaded file. The response was not valid JSON and no chart could be extracted. Please rephrase your query or re-upload your data.",
-            suggestions: ["Rephrase your chart request with specific column names", "Re-upload your data file and try again"],
+            analysis: analysisResults
+              ? `${buildAnalysisText(analysisResults, userQuery)}\n\n---\n${content}`
+              : content,
+            suggestions: ["Try a more specific query", "Upload data and ask about a column"],
             measurements: [],
             chartSuggestions: [],
-            analysisResults: {
-              analysis_type: "llm_table",
-              results_table: [{ metric: "Error", value: "Analysis blocked — AI returned non-JSON. No synthetic or fabricated data will be shown." }],
-            },
+            analysisResults,
             chartConfig,
             tableData,
             llmUsed: false,
           };
         }
-
-        // Non-viz JSON parse failure — return raw text + local stats as before
-        return {
-          analysis: analysisResults
-            ? `${buildAnalysisText(analysisResults, userQuery)}\n\n---\n${content}`
-            : content,
-          suggestions: ["Try a more specific query", "Upload data and ask about a column"],
-          measurements: [],
-          chartSuggestions: [],
-          analysisResults,
-          chartConfig,
-          tableData,
-          llmUsed: false,
-        };
       }
 
       // ── Truncation detection ────────────────────────────────────────────
@@ -4259,22 +4321,73 @@ export async function analyzeBiostatistics(
               console.log(`[analyzeBiostatistics] ✓ Tagged chart_data.pharma_type = "${mappedType}"`);
             }
           }
-        } else if (parsed.analysisResults && !parsed.analysisResults.chart_data) {
-          // Case B: BLOCKED — LLM returned table but no chart_data. Do NOT synthesize.
-          console.error(`[analyzeBiostatistics] ✗ BLOCKED synthetic chart (Case B) — LLM returned table without chart_data`);
-          parsed.analysisResults.analysis_type = "llm_table";
-          if (!parsed.analysisResults.results_table || parsed.analysisResults.results_table.length === 0) {
-            parsed.analysisResults.results_table = [{ metric: "Error", value: "Analysis blocked — AI did not return chart data. No synthetic data will be generated." }];
+          // Force-set pharma_type based on user query keywords — override even if AI set it wrong
+          const qLower = userQuery.toLowerCase();
+          const forcePharmaMap: Array<{ keywords: string[]; type: string }> = [
+            { keywords: ['box plot', 'boxplot', 'box-plot', 'box and whisker'], type: 'box' },
+            { keywords: ['kaplan-meier', 'kaplan meier', 'km curve', 'km plot', 'survival curve'], type: 'survival' },
+            { keywords: ['forest plot'], type: 'forest' },
+            { keywords: ['volcano plot'], type: 'volcano' },
+            { keywords: ['heatmap', 'heat map'], type: 'heatmap' },
+            { keywords: ['waterfall plot', 'waterfall chart'], type: 'waterfall' },
+          ];
+          for (const { keywords, type } of forcePharmaMap) {
+            if (keywords.some((kw) => qLower.includes(kw))) {
+              if (parsed.analysisResults.chart_data.pharma_type !== type) {
+                console.log(`[analyzeBiostatistics] ✓ Force-set pharma_type: "${parsed.analysisResults.chart_data.pharma_type ?? 'none'}" → "${type}" (user query matched "${keywords.find((kw) => qLower.includes(kw))}")`);
+                parsed.analysisResults.chart_data.pharma_type = type;
+              }
+              break;
+            }
           }
-          parsed.analysis = (parsed.analysis || "") + "\n\n**Analysis blocked:** The AI did not return verifiable chart data from the uploaded file. Please rephrase your query or re-upload your data.";
+        } else if (parsed.analysisResults && !parsed.analysisResults.chart_data) {
+          // Case B: LLM returned table but no chart_data.
+          // Instead of blocking, try to build chart_data from results_table when it has numeric data.
+          const rt = parsed.analysisResults.results_table;
+          if (Array.isArray(rt) && rt.length >= 2) {
+            const numericRows = rt.filter((r: any) => r.metric && r.value !== undefined && !isNaN(Number(r.value)) && r.metric !== "Error" && r.metric !== "Note");
+            if (numericRows.length >= 2) {
+              console.log(`[analyzeBiostatistics] Case B recovery — building chart_data from ${numericRows.length} numeric rows in results_table`);
+              parsed.analysisResults.chart_data = {
+                type: "bar",
+                labels: numericRows.map((r: any) => r.metric),
+                datasets: [{
+                  label: parsed.graphTitle ?? "Values",
+                  data: numericRows.map((r: any) => Number(r.value)),
+                }],
+              };
+              parsed.analysisResults.analysis_type = "llm_chart";
+            } else {
+              // Table has data but it's not numeric — show the table, don't block
+              console.log(`[analyzeBiostatistics] Case B — table has non-numeric data, rendering as table (not blocking)`);
+              parsed.analysisResults.analysis_type = "llm_table";
+            }
+          } else if (!rt || rt.length === 0) {
+            // Truly empty — show a note, not a hard block
+            console.warn(`[analyzeBiostatistics] Case B — empty results_table, adding note`);
+            parsed.analysisResults.analysis_type = "llm_table";
+            parsed.analysisResults.results_table = [{ metric: "Note", value: "No chart data was returned. Try rephrasing your request with specific column names." }];
+          }
         } else if (!parsed.analysisResults) {
-          // Case C: BLOCKED — LLM returned null analysisResults. Do NOT synthesize.
-          console.error(`[analyzeBiostatistics] ✗ BLOCKED synthetic chart (Case C) — LLM returned null analysisResults`);
-          parsed.analysisResults = {
-            analysis_type: "llm_table",
-            results_table: [{ metric: "Error", value: "Analysis blocked — AI returned no results. No synthetic or fabricated data will be shown." }],
-          };
-          parsed.analysis = (parsed.analysis || "") + "\n\n**Analysis blocked:** The AI did not return verifiable data from the uploaded file. Please rephrase your query or re-upload your data.";
+          // Case C: LLM returned null analysisResults.
+          // Try markdown table extraction from analysis text before blocking.
+          const mdFallback = typeof parsed.analysis === "string" ? parseMarkdownTableToResults(parsed.analysis) : null;
+          if (mdFallback && mdFallback.length >= 2) {
+            console.log(`[analyzeBiostatistics] Case C recovery — extracted ${mdFallback.length} rows from markdown table in analysis text`);
+            parsed.analysisResults = {
+              analysis_type: "llm_table",
+              results_table: mdFallback,
+            };
+            // Strip the markdown table from analysis prose to avoid duplication
+            parsed.analysis = (parsed.analysis || "").replace(/(\|[^\n]+\|\n?)+/g, "").replace(/\n{3,}/g, "\n\n").trim();
+          } else {
+            // Genuinely nothing — show a note
+            console.warn(`[analyzeBiostatistics] Case C — no analysisResults and no markdown table fallback`);
+            parsed.analysisResults = {
+              analysis_type: "llm_table",
+              results_table: [{ metric: "Note", value: "The AI did not return structured results for this query. Try rephrasing with specific column names from your data." }],
+            };
+          }
         }
       }
 

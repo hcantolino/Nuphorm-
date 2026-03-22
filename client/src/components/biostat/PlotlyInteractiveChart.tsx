@@ -93,6 +93,7 @@ interface PlotlyInteractiveChartProps {
     barBorderRadius?: number;
     fillOpacity?: number;
     showErrorBars?: boolean;
+    errorBarType?: 'sd' | 'se' | 'ci95' | 'std';
     chartTheme?: string;
     seriesOverrides?: Array<{
       color?: string;
@@ -108,6 +109,10 @@ interface PlotlyInteractiveChartProps {
   onEditAction?: (action: string, context?: any) => void;
   /** Callback when user edits a label inline (title, subtitle, xLabel, yLabel) */
   onLabelEdit?: (field: 'chartTitle' | 'subtitle' | 'xLabel' | 'yLabel', value: string) => void;
+  /** Raw dataset rows for local error bar computation — from currentDatasetStore */
+  rawDataset?: { rows: Record<string, unknown>[]; columns: string[] } | null;
+  /** Callback when validation detects a mismatch (e.g. error bars requested but missing) */
+  onValidationWarning?: (message: string) => void;
   height?: number;
 }
 
@@ -890,109 +895,254 @@ function chartDataToSurvivalTraces(chartData: any): SurvivalTrace[] | null {
   }));
 }
 
+/** Helper: coerce an error bar value into a flat numeric array.
+ *  Handles: plain array [3.2, 5.1], Plotly object { type: 'data', array: [...] },
+ *  single number (broadcast to dataLength), or null/undefined → null. */
+function coerceErrorArray(val: any, dataLength: number): number[] | null {
+  if (val == null) return null;
+  // Already a flat number array
+  if (Array.isArray(val) && val.length > 0 && val.every((v: any) => typeof v === 'number' || !isNaN(Number(v)))) {
+    return val.map(Number);
+  }
+  // Plotly-format object: { type: 'data', array: [...] }
+  if (typeof val === 'object' && !Array.isArray(val) && val.array && Array.isArray(val.array)) {
+    return val.array.map(Number);
+  }
+  // Single number → broadcast to all data points
+  if (typeof val === 'number' || (typeof val === 'string' && !isNaN(Number(val)))) {
+    return Array(dataLength).fill(Number(val));
+  }
+  return null;
+}
+
 /** Resolve error bar data from dataset or chart-level error_bars array */
 function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
   try {
-    // Dataset-level asymmetric CI bounds (from normalizeChartData or AI directly)
-    const ciLower = ds?._ci_lower ?? ds?.ci_lower;
-    const ciUpper = ds?._ci_upper ?? ds?.ci_upper;
-    if (ciLower && ciUpper && ds?.data) {
+    const dataLength = Array.isArray(ds?.data) ? ds.data.length : 0;
+    const mkResult = (arr: number[], opts: any = {}) => ({
+      type: 'data' as const,
+      visible: true,
+      color: ds?.color ?? '#64748b',
+      thickness: 2,
+      width: 6,
+      ...opts,
+      array: arr,
+    });
+
+    // ── Level 1: Dataset-level asymmetric CI bounds ──
+    const ciLower = ds?._ci_lower ?? ds?.ci_lower ?? ds?.CI_Lower ?? ds?.CI_lower;
+    const ciUpper = ds?._ci_upper ?? ds?.ci_upper ?? ds?.CI_Upper ?? ds?.CI_upper;
+    const ciLArr = coerceErrorArray(ciLower, dataLength);
+    const ciUArr = coerceErrorArray(ciUpper, dataLength);
+    if (ciLArr && ciUArr && ds?.data) {
       const yVals = ds.data;
-      return {
-        type: 'data' as const,
-        symmetric: false,
-        array: yVals.map((y: number, i: number) => (ciUpper[i] ?? y) - y),
-        arrayminus: yVals.map((y: number, i: number) => y - (ciLower[i] ?? y)),
-        visible: true,
-        color: ds?.color ?? '#64748b',
-        thickness: 2,
-        width: 6,
-      };
+      return mkResult(
+        yVals.map((y: number, i: number) => (ciUArr[i] ?? y) - y),
+        {
+          symmetric: false,
+          arrayminus: yVals.map((y: number, i: number) => y - (ciLArr[i] ?? y)),
+        }
+      );
     }
 
-    // Dataset-level symmetric error bars
-    const errArr = ds?.error_y ?? ds?.sem ?? ds?.error ?? ds?.errorBars ?? ds?.sd;
-    if (errArr && Array.isArray(errArr) && errArr.length > 0) {
-      return {
-        type: 'data' as const,
-        array: errArr,
-        visible: true,
-        color: ds?.color ?? '#64748b',
-        thickness: 2,
-        width: 6,
-      };
+    // ── Level 2: Dataset-level symmetric error bars (case-insensitive key search) ──
+    // Check all common property names including case variants
+    const errRaw = ds?.error_y ?? ds?.Error_Y ?? ds?.errorY
+      ?? ds?.sem ?? ds?.SEM ?? ds?.Sem
+      ?? ds?.error ?? ds?.Error
+      ?? ds?.errorBars ?? ds?.error_bars
+      ?? ds?.sd ?? ds?.SD ?? ds?.Sd ?? ds?.std_dev ?? ds?.StdDev ?? ds?.stdev;
+    const errArr = coerceErrorArray(errRaw, dataLength);
+    if (errArr && errArr.length > 0) {
+      console.log(`[resolveErrorBars] ✓ Found dataset-level error bars for "${seriesName}": ${errArr.length} values`);
+      return mkResult(errArr);
     }
 
-    // Chart-level ci_lower/ci_upper arrays
-    if (chartData?.ci_lower && chartData?.ci_upper && ds?.data) {
+    // ── Level 3: Chart-level ci_lower/ci_upper arrays ──
+    const chartCiL = coerceErrorArray(chartData?.ci_lower ?? chartData?.CI_Lower, dataLength);
+    const chartCiU = coerceErrorArray(chartData?.ci_upper ?? chartData?.CI_Upper, dataLength);
+    if (chartCiL && chartCiU && ds?.data) {
       const yVals = ds.data;
-      return {
-        type: 'data' as const,
-        symmetric: false,
-        array: yVals.map((y: number, i: number) => (chartData.ci_upper[i] ?? y) - y),
-        arrayminus: yVals.map((y: number, i: number) => y - (chartData.ci_lower[i] ?? y)),
-        visible: true,
-        color: ds?.color ?? '#64748b',
-        thickness: 2,
-        width: 6,
-      };
+      return mkResult(
+        yVals.map((y: number, i: number) => (chartCiU[i] ?? y) - y),
+        {
+          symmetric: false,
+          arrayminus: yVals.map((y: number, i: number) => y - (chartCiL[i] ?? y)),
+        }
+      );
     }
 
-    // Chart-level error_y (symmetric, top-level)
-    if (chartData?.error_y && Array.isArray(chartData.error_y) && chartData.error_y.length > 0) {
-      return {
-        type: 'data' as const,
-        array: chartData.error_y,
-        visible: true,
-        color: ds?.color ?? '#64748b',
-        thickness: 2,
-        width: 6,
-      };
+    // ── Level 4: Chart-level error_y (symmetric, top-level) ──
+    const chartErr = coerceErrorArray(chartData?.error_y ?? chartData?.Error_Y ?? chartData?.SD ?? chartData?.sd, dataLength);
+    if (chartErr && chartErr.length > 0) {
+      return mkResult(chartErr);
     }
 
-    // Chart-level error_bars array (from AI prompt, named series)
+    // ── Level 5: Chart-level error_bars array (named series) ──
     if (chartData?.error_bars && Array.isArray(chartData.error_bars)) {
-      const match = chartData.error_bars.find((eb: any) => eb?.series === seriesName);
-      if (match?.values && Array.isArray(match.values)) {
-        return {
-          type: 'data' as const,
-          array: match.values,
-          visible: true,
-          color: ds?.color ?? '#64748b',
-          thickness: 2,
-          width: 6,
-        };
-      }
+      const match = chartData.error_bars.find((eb: any) =>
+        eb?.series === seriesName || eb?.name === seriesName || eb?.label === seriesName
+      );
+      const matchArr = coerceErrorArray(match?.values ?? match?.array ?? match?.data, dataLength);
+      if (matchArr) return mkResult(matchArr);
+
       // Fallback: if only one error_bars entry and one dataset, use it
-      if (chartData.error_bars.length === 1 && chartData.error_bars[0]?.values) {
-        return {
-          type: 'data' as const,
-          array: chartData.error_bars[0].values,
-          visible: true,
-          color: ds?.color ?? '#64748b',
-          thickness: 2,
-          width: 6,
-        };
+      if (chartData.error_bars.length === 1) {
+        const singleArr = coerceErrorArray(
+          chartData.error_bars[0]?.values ?? chartData.error_bars[0]?.array ?? chartData.error_bars[0]?.data,
+          dataLength
+        );
+        if (singleArr) return mkResult(singleArr);
       }
     }
-    // Fallback: if chart-level flag says show error bars but no values found,
-    // approximate as 10% of each y-value so something renders
+
+    // ── Level 6: Datasets have upperBound/lowerBound (PK-style) ──
+    const ub = coerceErrorArray(ds?.upperBound ?? ds?.upper_bound ?? ds?.Upper, dataLength);
+    const lb = coerceErrorArray(ds?.lowerBound ?? ds?.lower_bound ?? ds?.Lower, dataLength);
+    if (ub && lb && ds?.data) {
+      const yVals = ds.data;
+      return mkResult(
+        yVals.map((y: number, i: number) => (ub[i] ?? y) - y),
+        {
+          symmetric: false,
+          arrayminus: yVals.map((y: number, i: number) => y - (lb[i] ?? y)),
+        }
+      );
+    }
+
+    // ── Level 7: Fallback approximation when flag set but no values ──
     if ((chartData?.show_error_bars === true || chartData?.error_type) && ds?.data && Array.isArray(ds.data)) {
       const yVals = ds.data.filter((v: any) => typeof v === 'number');
       if (yVals.length > 0) {
         console.warn('[resolveErrorBars] No error bar values found but show_error_bars=true — using 10% approximation');
-        return {
-          type: 'data' as const,
-          array: yVals.map((v: number) => Math.abs(v * 0.1)),
-          visible: true,
-          color: ds?.color ?? '#64748b',
-          thickness: 2,
-          width: 6,
-        };
+        return mkResult(yVals.map((v: number) => Math.abs(v * 0.1)));
       }
     }
-  } catch { /* ignore — no error bars */ }
+
+    // If we got here with no match, log for debugging
+    if (ds?.error_y || ds?.sd || ds?.SD || ds?.sem || ds?.SEM || chartData?.error_y || chartData?.error_bars) {
+      console.warn('[resolveErrorBars] Error bar data was present but could not be coerced:', {
+        dsErrorY: typeof ds?.error_y, dsSd: typeof ds?.sd, dsSD: typeof ds?.SD,
+        chartErrorY: typeof chartData?.error_y, chartErrorBars: typeof chartData?.error_bars,
+      });
+    }
+  } catch (e) {
+    console.error('[resolveErrorBars] Unexpected error:', e);
+  }
   return undefined;
+}
+
+// ── Compute error bars from raw dataset ──────────────────────────────────────
+// Instead of relying on the AI to return error_y, compute SD/SE/CI directly
+// from the raw uploaded data. The chart's x-axis labels are used as group keys.
+
+interface ComputedErrorBars {
+  /** One error value per x-axis label, in the same order */
+  array: number[];
+  type: 'sd' | 'se' | 'ci95';
+}
+
+function computeErrorBarsFromRawData(
+  rawRows: Record<string, unknown>[],
+  rawColumns: string[],
+  xLabels: string[],
+  yValues: number[],
+  seriesLabel: string,
+  errorType: 'sd' | 'se' | 'ci95' = 'sd',
+): ComputedErrorBars | null {
+  if (!rawRows || rawRows.length === 0 || xLabels.length === 0) return null;
+
+  // Try to find the value column that matches this series label
+  const valueCol = rawColumns.find((c) => {
+    const cl = c.toLowerCase();
+    const sl = seriesLabel.toLowerCase();
+    return cl === sl || cl.replace(/[_\s]/g, '') === sl.replace(/[_\s]/g, '');
+  });
+
+  // Try to find the group/category column whose unique values match xLabels
+  let groupCol: string | null = null;
+  for (const col of rawColumns) {
+    const uniq = [...new Set(rawRows.map((r) => String(r[col] ?? '').trim()))].filter(Boolean);
+    const labelSet = new Set(xLabels.map((l) => String(l).trim().toLowerCase()));
+    const matchCount = uniq.filter((v) => labelSet.has(v.toLowerCase())).length;
+    if (matchCount >= Math.min(xLabels.length, uniq.length) * 0.7 && matchCount >= 2) {
+      groupCol = col;
+      break;
+    }
+  }
+
+  if (!groupCol || !valueCol) {
+    // Fallback: try to compute from any numeric column that could match the y-values
+    // Group by the first categorical column
+    if (!groupCol) {
+      for (const col of rawColumns) {
+        const vals = rawRows.map((r) => r[col]);
+        const numericRatio = vals.filter((v) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)))).length / vals.length;
+        if (numericRatio < 0.5) { // categorical column
+          const uniq = [...new Set(vals.map((v) => String(v ?? '')))];
+          if (uniq.length >= 2 && uniq.length <= 50) {
+            groupCol = col;
+            break;
+          }
+        }
+      }
+    }
+    if (!groupCol) return null;
+
+    // Find best numeric column
+    if (!valueCol) {
+      // Try first numeric column that isn't the group column
+      const numCol = rawColumns.find((c) => {
+        if (c === groupCol) return false;
+        const numCount = rawRows.filter((r) => typeof r[c] === 'number' || (typeof r[c] === 'string' && !isNaN(Number(r[c])))).length;
+        return numCount > rawRows.length * 0.5;
+      });
+      if (!numCol) return null;
+      return computeErrorBarsFromRawData(rawRows, rawColumns, xLabels, yValues, numCol, errorType);
+    }
+  }
+
+  // Group raw data by the group column, compute stats for the value column
+  const groups = new Map<string, number[]>();
+  for (const row of rawRows) {
+    const key = String(row[groupCol!] ?? '').trim();
+    const val = Number(row[valueCol]);
+    if (key && !isNaN(val)) {
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(val);
+    }
+  }
+
+  if (groups.size === 0) return null;
+
+  // Build error array matching xLabels order
+  const errorArray: number[] = xLabels.map((label) => {
+    const labelKey = String(label).trim();
+    // Case-insensitive match
+    const values = groups.get(labelKey)
+      ?? [...groups.entries()].find(([k]) => k.toLowerCase() === labelKey.toLowerCase())?.[1]
+      ?? [];
+
+    if (values.length < 2) return 0;
+
+    const n = values.length;
+    const mean = values.reduce((a, b) => a + b, 0) / n;
+    const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1); // sample variance
+    const sd = Math.sqrt(variance);
+    const se = sd / Math.sqrt(n);
+
+    switch (errorType) {
+      case 'se': return se;
+      case 'ci95': return 1.96 * se;
+      case 'sd':
+      default: return sd;
+    }
+  });
+
+  // Only return if we got meaningful error values
+  if (errorArray.every((v) => v === 0)) return null;
+
+  return { array: errorArray, type: errorType };
 }
 
 /** Resolve marker shape for a series index from chart_data markers array or default */
@@ -1155,8 +1305,26 @@ function normalizeChartData(chartData: any): { labels: any[]; datasets: any[] } 
       console.log('[normalizeChartData] Extracted x from object data:', labels, 'y sample:', normalizedDatasets[0]?.data?.slice(0, 3));
       return { labels, datasets: normalizedDatasets };
     }
-    // labels present or data is already flat numbers
-    return { labels, datasets };
+    // labels present or data is already flat numbers — normalize error bar property names
+    const normalizedDs = datasets.map((ds: any) => {
+      const out = { ...ds };
+      // Normalize case variants of error bar properties onto canonical names
+      if (!out.error_y && (out.SD || out.Sd || out.std_dev || out.StdDev || out.stdev)) {
+        out.error_y = out.SD ?? out.Sd ?? out.std_dev ?? out.StdDev ?? out.stdev;
+      }
+      if (!out.error_y && (out.SEM || out.Sem || out.std_error)) {
+        out.error_y = out.SEM ?? out.Sem ?? out.std_error;
+      }
+      if (!out.error_y && out.Error_Y) out.error_y = out.Error_Y;
+      if (!out._ci_lower && (out.CI_Lower || out.CI_lower)) out._ci_lower = out.CI_Lower ?? out.CI_lower;
+      if (!out._ci_upper && (out.CI_Upper || out.CI_upper)) out._ci_upper = out.CI_Upper ?? out.CI_upper;
+      // Handle Plotly object format: { type: 'data', array: [...] } → extract the array
+      if (out.error_y && typeof out.error_y === 'object' && !Array.isArray(out.error_y) && out.error_y.array) {
+        out.error_y = out.error_y.array;
+      }
+      return out;
+    });
+    return { labels, datasets: normalizedDs };
   }
 
   // Format: { series: [{ name, x: [...], y: [...] }] }
@@ -1404,6 +1572,8 @@ export default function PlotlyInteractiveChart({
   onPointClick,
   onEditAction,
   onLabelEdit,
+  rawDataset,
+  onValidationWarning,
   height = 420,
 }: PlotlyInteractiveChartProps) {
   const [selectedPoint, setSelectedPoint] = useState<{
@@ -1927,24 +2097,51 @@ export default function PlotlyInteractiveChart({
         }
       });
     }
-    // Show error bars toggle — force error bars on all bar/scatter traces
+    // Show error bars — compute from raw dataset when available, not from AI
     if (custOverrides.showErrorBars === true) {
+      const rawErrType = custOverrides.errorBarType ?? 'sd';
+      const errorType: 'sd' | 'se' | 'ci95' = rawErrType === 'std' ? 'sd' : rawErrType as 'sd' | 'se' | 'ci95';
+      let anyComputed = false;
       pd.forEach((trace: any) => {
-        if (!trace.error_y || !trace.error_y?.visible) {
-          // Generate approximate error bars (10% of each value) when no real data exists
-          const yVals = trace.y ?? [];
-          if (yVals.length > 0) {
+        // Skip if trace already has valid error bars from the AI
+        if (trace.error_y?.visible && trace.error_y?.array?.length > 0
+            && trace.error_y.array.some((v: number) => v > 0)) {
+          return;
+        }
+        const xLabels: string[] = (trace.x ?? []).map(String);
+        const yVals: number[] = trace.y ?? [];
+        if (xLabels.length === 0 || yVals.length === 0) return;
+
+        // Try computing from raw dataset first
+        if (rawDataset?.rows && rawDataset.rows.length > 0) {
+          const computed = computeErrorBarsFromRawData(
+            rawDataset.rows,
+            rawDataset.columns,
+            xLabels,
+            yVals,
+            trace.name ?? '',
+            errorType,
+          );
+          if (computed) {
             trace.error_y = {
               type: 'data' as const,
-              array: yVals.map((v: any) => typeof v === 'number' ? Math.abs(v * 0.1) : 0),
+              array: computed.array,
               visible: true,
               color: trace.marker?.color ?? '#64748b',
               thickness: 2,
               width: 6,
             };
+            anyComputed = true;
+            return;
           }
         }
+        // No raw data available — leave without error bars (no fake 10% approximation)
       });
+      if (!anyComputed && onValidationWarning) {
+        onValidationWarning(
+          'Error bars requested but could not be computed — upload raw data with individual observations per group.'
+        );
+      }
     } else if (custOverrides.showErrorBars === false) {
       pd.forEach((trace: any) => {
         if (trace.error_y) trace.error_y = { ...trace.error_y, visible: false };
@@ -2167,7 +2364,7 @@ export default function PlotlyInteractiveChart({
     return { plotData: pd, layout: lo };
   }, [basePlotData, baseLayout, custOverrides]);
 
-  // Debug: log final traces and layout being rendered
+  // Debug: log final traces and layout being rendered + error bar validation
   useEffect(() => {
     console.log('=== PLOTLY DEBUG ===');
     console.log('Number of traces:', plotData?.length);
@@ -2178,11 +2375,37 @@ export default function PlotlyInteractiveChart({
       console.log('First trace y (first 5):', t0.y?.slice(0, 5));
       console.log('X value type:', typeof t0.x?.[0]);
       console.log('Has error bars:', !!t0.error_y);
+      if (t0.error_y) {
+        console.log('Error bar config:', JSON.stringify(t0.error_y));
+      }
+    }
+    // Error bar validation: check if chartData had error bars but traces don't
+    const cd = config.chartData;
+    if (cd) {
+      const sourceHasErrors = cd.error_y || cd.error_bars || cd.ci_lower || cd.ci_upper || cd.sd || cd.SD || cd.show_error_bars
+        || cd.datasets?.some((ds: any) => ds.error_y || ds.sd || ds.SD || ds.SEM || ds.sem || ds._ci_lower || ds.ci_lower);
+      const tracesHaveErrors = plotData?.some((t: any) => t.error_y?.visible && t.error_y?.array?.length > 0);
+      if (sourceHasErrors && !tracesHaveErrors) {
+        console.error('[ERROR BAR VALIDATION FAILED] chartData has error bar data but no traces have visible error bars.');
+        console.error('chartData error fields:', {
+          error_y: typeof cd.error_y, error_bars: typeof cd.error_bars,
+          ci_lower: typeof cd.ci_lower, ci_upper: typeof cd.ci_upper,
+          show_error_bars: cd.show_error_bars,
+          dataset0_error_y: typeof cd.datasets?.[0]?.error_y,
+          dataset0_sd: typeof cd.datasets?.[0]?.sd,
+          dataset0_SD: typeof cd.datasets?.[0]?.SD,
+        });
+        // Surface to user instead of only logging
+        if (onValidationWarning) {
+          onValidationWarning(
+            'Error bars were requested but could not be rendered — the AI response did not include valid error bar values. Try toggling "Show Error Bars" in Customize to compute from your raw data.'
+          );
+        }
+      }
     }
     console.log('Layout xaxis type:', (layout as any)?.xaxis?.type);
-    console.log('Layout xaxis categoryorder:', (layout as any)?.xaxis?.categoryorder);
     console.log('=== END DEBUG ===');
-  }, [plotData, layout]);
+  }, [plotData, layout, config.chartData]);
 
   // Revision counter — state-based so React actually re-renders the <Plot> component.
   // react-plotly.js compares the `revision` prop and calls Plotly.react when it changes.

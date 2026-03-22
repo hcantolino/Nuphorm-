@@ -2112,6 +2112,23 @@ export const GraphTablePanel: React.FC = () => {
           );
         })()}
 
+        {/* Soft note card — shown when the AI couldn't produce a chart but it's not a hard block */}
+        {activeResult?.analysisResults?.results_table?.[0]?.metric === "Note" &&
+         activeResult?.analysisResults?.results_table?.length === 1 && (
+          <div
+            className="flex items-start gap-3 text-amber-800 bg-amber-50 border border-amber-200 p-4 rounded-xl text-sm"
+            role="status"
+          >
+            <TriangleAlert className="w-5 h-5 flex-shrink-0 mt-0.5 text-amber-500" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="font-semibold">Could not generate chart</p>
+              <p className="text-amber-700 text-xs mt-1 leading-relaxed">
+                {activeResult.analysisResults.results_table[0].value}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* ── Chart card (shared JSX — rendered above or below stats table) ── */}
         {/* NEW: extracted so we can render it first for llm_chart (viz) results.   */}
         {/* REMOVED: chart was always below the stats table even for chart requests. */}
@@ -2225,6 +2242,13 @@ export const GraphTablePanel: React.FC = () => {
                           title: activeResult?.graphTitle ?? undefined,
                         }}
                         customizations={customizations}
+                        rawDataset={currentDataset ? { rows: currentDataset.rows as Record<string, unknown>[], columns: currentDataset.columns } : null}
+                        onValidationWarning={(msg) => {
+                          toast.warning(msg, {
+                            duration: 5000,
+                            style: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
+                          });
+                        }}
                         onPointClick={(pt) => {
                           console.log('[PlotlyChart] Point clicked:', pt);
                         }}
