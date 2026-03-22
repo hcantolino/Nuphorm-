@@ -61,6 +61,28 @@ import { trpc } from "@/lib/trpc";
 import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
 import { Settings2 } from "lucide-react";
 
+// ─── Safe CSS collection (skips cross-origin stylesheets) ────────────────────
+// html-to-image internally reads document.styleSheets[].cssRules which throws
+// SecurityError on cross-origin sheets (e.g. Google Fonts). We collect CSS
+// ourselves with a try-catch and pass it as fontEmbedCSS to bypass that code.
+function collectSafeCSS(): string {
+  let css = '';
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const rules = sheet.cssRules || sheet.rules;
+      if (rules) {
+        for (const rule of Array.from(rules)) {
+          css += rule.cssText + '\n';
+        }
+      }
+    } catch (_e) {
+      // Skip cross-origin stylesheets (Google Fonts, CDN, etc.)
+      continue;
+    }
+  }
+  return css;
+}
+
 // ─── Color resolution ────────────────────────────────────────────────────────
 
 /** Default KM/survival colors: black for Experimental, pink for Control */
@@ -91,7 +113,7 @@ function downloadTableAsCSV(
 ) {
   const rows = [
     ["Metric", "Value"],
-    ...table.map((r) => [String(r.metric ?? ""), String(r.value ?? "")]),
+    ...table.map((r) => [String(r.metric ?? ""), formatCellValue(r.value)]),
   ];
   const csv = rows
     .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -205,6 +227,7 @@ async function elementToCanvas(
     pixelRatio: scale,
     filter: excludeExportBtn as any,
     backgroundColor: "#ffffff",
+    fontEmbedCSS: collectSafeCSS(),
   });
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -300,10 +323,13 @@ async function exportElementAs(
   format: string,
   filename: string
 ) {
+  // Collect local CSS upfront to avoid SecurityError on cross-origin sheets
+  const fontEmbedCSS = collectSafeCSS();
   const opts = {
     pixelRatio: 2,
     filter: excludeExportBtn as any,
     backgroundColor: "#ffffff",
+    fontEmbedCSS,
   };
 
   switch (format) {
@@ -342,7 +368,7 @@ async function exportElementAs(
       break;
     }
     case "svg": {
-      const url = await toSvg(el, { filter: excludeExportBtn as any, backgroundColor: "#ffffff" });
+      const url = await toSvg(el, { filter: excludeExportBtn as any, backgroundColor: "#ffffff", fontEmbedCSS });
       triggerDataUrlDownload(filename, url);
       break;
     }
@@ -355,6 +381,7 @@ async function copyElementToClipboard(el: HTMLElement) {
     pixelRatio: 2,
     filter: excludeExportBtn as any,
     backgroundColor: "#ffffff",
+    fontEmbedCSS: collectSafeCSS(),
   });
   const res = await fetch(dataUrl);
   const blob = await res.blob();
@@ -370,7 +397,7 @@ function downloadTableAsTxt(
 ) {
   const rows = [
     "Metric\tValue",
-    ...table.map((r) => `${r.metric ?? ""}\t${r.value ?? ""}`),
+    ...table.map((r) => `${r.metric ?? ""}\t${formatCellValue(r.value)}`),
   ];
   triggerDownload(filename, rows.join("\n"), "text/plain");
 }
@@ -385,12 +412,15 @@ function ExportDropdown({
   query,
   tableData,
   cleanExportRef,
+  isPlotly,
 }: {
   type: "chart" | "table";
   title?: string;
   query?: string;
   tableData?: Array<{ metric: string; value: any }>;
   cleanExportRef?: React.RefObject<HTMLDivElement>;
+  /** When true, use Plotly.toImage for chart exports instead of html-to-image */
+  isPlotly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -425,7 +455,73 @@ function ExportDropdown({
     label: string
   ) => {
     setOpen(false);
-    // For chart image exports, prefer the clean export element (no UI chrome)
+    const suffix = type === "table" ? "statistics" : undefined;
+    const filename = buildExportFilename(nameBase, suffix, ext);
+
+    // ── Plotly chart export: use Plotly.toImage for correct rendering ──
+    if (isPlotly && type === "chart") {
+      try {
+        // Find the actual Plotly graph div in the DOM
+        const target = findTarget();
+        const plotlyDiv = target?.querySelector('.js-plotly-plot') as HTMLElement | null;
+        if (!plotlyDiv) {
+          toast.error("Chart element not found for export");
+          return;
+        }
+        // @ts-ignore — dynamic import of Plotly
+        const mod = await import('plotly.js/dist/plotly');
+        const Plotly = mod.default ?? mod;
+
+        const plotlyFormat = format === "jpeg" ? "jpeg" : format === "svg" ? "svg" : "png";
+        const dataUrl: string = await Plotly.toImage(plotlyDiv, {
+          format: plotlyFormat,
+          width: 1400,
+          height: 900,
+          scale: 2,
+        });
+
+        if (format === "pdf") {
+          // Convert PNG to PDF
+          const canvas = document.createElement("canvas");
+          const img = new Image();
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => {
+              canvas.width = img.width;
+              canvas.height = img.height;
+              canvas.getContext("2d")!.drawImage(img, 0, 0);
+              resolve();
+            };
+            img.onerror = reject;
+            img.src = dataUrl;
+          });
+          const imgW = canvas.width;
+          const imgH = canvas.height;
+          const orientation = imgW > imgH ? "landscape" : "portrait";
+          const pdf = new jsPDF({ orientation, unit: "px", format: [imgW, imgH] });
+          pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, imgW, imgH);
+          pdf.save(filename);
+        } else if (format === "tiff") {
+          // Render to canvas then TIFF
+          const canvas = await elementToCanvas(
+            (findTarget()?.querySelector('[data-chart-export]') ?? findTarget()) as HTMLElement,
+            2
+          );
+          const blob = createTiffBlob(canvas);
+          const blobUrl = URL.createObjectURL(blob);
+          triggerDataUrlDownload(filename, blobUrl);
+          URL.revokeObjectURL(blobUrl);
+        } else {
+          triggerDataUrlDownload(filename, dataUrl);
+        }
+        toast.success(`Exported as ${label}`);
+        return;
+      } catch (err) {
+        console.warn("[Export] Plotly.toImage failed, falling back to html-to-image:", err);
+        // Fall through to html-to-image fallback below
+      }
+    }
+
+    // ── Recharts / html-to-image export (fallback or non-Plotly) ──
     const el = (type === "chart" && cleanExportRef?.current)
       ? cleanExportRef.current
       : findTarget();
@@ -434,8 +530,6 @@ function ExportDropdown({
       return;
     }
     try {
-      const suffix = type === "table" ? "statistics" : undefined;
-      const filename = buildExportFilename(nameBase, suffix, ext);
       await exportElementAs(el, format, filename);
       toast.success(`Exported as ${label}`);
     } catch (err) {
@@ -445,6 +539,32 @@ function ExportDropdown({
 
   const handleCopy = async () => {
     setOpen(false);
+
+    // Plotly chart: use Plotly.toImage for accurate capture
+    if (isPlotly && type === "chart") {
+      try {
+        const target = findTarget();
+        const plotlyDiv = target?.querySelector('.js-plotly-plot') as HTMLElement | null;
+        if (plotlyDiv) {
+          // @ts-ignore
+          const mod = await import('plotly.js/dist/plotly');
+          const Plotly = mod.default ?? mod;
+          const dataUrl: string = await Plotly.toImage(plotlyDiv, {
+            format: 'png', width: 1400, height: 900, scale: 2,
+          });
+          const res = await fetch(dataUrl);
+          const blob = await res.blob();
+          await navigator.clipboard.write([
+            new ClipboardItem({ "image/png": blob }),
+          ]);
+          toast.success("Copied to clipboard");
+          return;
+        }
+      } catch (err) {
+        console.warn("[Copy] Plotly copy failed, falling back:", err);
+      }
+    }
+
     const el = (type === "chart" && cleanExportRef?.current)
       ? cleanExportRef.current
       : findTarget();
@@ -1248,8 +1368,38 @@ class ChartErrorBoundary extends React.Component<ChartEBProps, ChartEBState> {
 
 // ─── Editable cell ────────────────────────────────────────────────────────────
 
+/** Format any cell value to a display string. Handles objects like { mean, ci_lower, ci_upper }. */
+function formatCellValue(val: any): string {
+  if (val == null) return "—";
+  if (typeof val === "number") return val.toFixed(4);
+  if (typeof val === "object" && !Array.isArray(val)) {
+    // { mean, ci_lower, ci_upper } → "42.3 (40.1, 44.5)"
+    const mean = val.mean ?? val.value ?? val.estimate ?? val.y;
+    const lo = val.ci_lower ?? val.lower ?? val.lower_ci ?? val.lo;
+    const hi = val.ci_upper ?? val.upper ?? val.upper_ci ?? val.hi;
+    if (typeof mean === "number") {
+      const m = mean.toFixed(1);
+      if (typeof lo === "number" && typeof hi === "number") {
+        return `${m} (${lo.toFixed(1)}, ${hi.toFixed(1)})`;
+      }
+      // { mean, sd } → "42.3 ± 3.2"
+      const sd = val.sd ?? val.std ?? val.se ?? val.sem;
+      if (typeof sd === "number") return `${m} ± ${sd.toFixed(1)}`;
+      return m;
+    }
+    // Fallback: join all numeric values
+    const nums = Object.values(val).filter((v): v is number => typeof v === "number");
+    if (nums.length > 0) return nums.map((n) => n.toFixed(1)).join(", ");
+    // Last resort: JSON keys
+    const entries = Object.entries(val).map(([k, v]) => `${k}: ${v}`);
+    return entries.join(", ");
+  }
+  if (Array.isArray(val)) return val.map((v: any) => (typeof v === "number" ? v.toFixed(1) : String(v))).join(", ");
+  return String(val);
+}
+
 interface EditableCellProps {
-  value: string | number;
+  value: string | number | any;
   resultId: string;
   rowIndex: number;
   field: "metric" | "value";
@@ -1266,12 +1416,12 @@ const EditableCell: React.FC<EditableCellProps> = ({
   const editTableCell = useAIPanelStore((s) => s.editTableCell);
   const activeTabId = useTabStore((s) => s.activeTabId);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(value));
+  const [draft, setDraft] = useState(formatCellValue(value));
   const [validationError, setValidationError] = useState(false);
 
   // Keep draft in sync when value prop changes from outside (e.g. store reset)
   React.useEffect(() => {
-    if (!editing) setDraft(String(value));
+    if (!editing) setDraft(formatCellValue(value));
   }, [value, editing]);
 
   // For "value" fields that were originally numeric, validate on commit
@@ -1283,7 +1433,7 @@ const EditableCell: React.FC<EditableCellProps> = ({
       setValidationError(true);
       setTimeout(() => {
         setValidationError(false);
-        setDraft(String(value));
+        setDraft(formatCellValue(value));
         setEditing(false);
       }, 1200);
       return;
@@ -1293,8 +1443,7 @@ const EditableCell: React.FC<EditableCellProps> = ({
     setEditing(false);
   };
 
-  const displayValue =
-    typeof value === "number" ? value.toFixed(4) : String(value ?? "—");
+  const displayValue = formatCellValue(value);
 
   if (editing) {
     return (
@@ -1353,7 +1502,9 @@ export const GraphTablePanel: React.FC = () => {
     resetCustomizations,
     getTabCustomizations,
     selectedGraphId,
+    selectedTableType,
     setSelectedGraph,
+    setSelectedTable,
     addToChat,
   } = useAIPanelStore();
 
@@ -1471,6 +1622,18 @@ export const GraphTablePanel: React.FC = () => {
   // Chart data
   const chartData = activeResult?.analysisResults?.chart_data;
   const analysisType = activeResult?.analysisResults?.analysis_type;
+
+  // Debug: log raw chart_data from AI
+  if (chartData) {
+    console.log('[GraphTablePanel] RAW chart_data from AI:', JSON.stringify(chartData, null, 2).slice(0, 2000));
+    console.log('[GraphTablePanel] has labels:', !!chartData.labels, 'count:', chartData.labels?.length);
+    console.log('[GraphTablePanel] has datasets:', !!chartData.datasets, 'count:', chartData.datasets?.length);
+    console.log('[GraphTablePanel] has series:', !!chartData.series, 'has data:', !!chartData.data);
+    console.log('[GraphTablePanel] has x/y:', !!chartData.x, !!chartData.y);
+    if (chartData.datasets?.[0]?.data?.[0]) {
+      console.log('[GraphTablePanel] First dataset data[0] type:', typeof chartData.datasets[0].data[0], 'value:', chartData.datasets[0].data[0]);
+    }
+  }
 
   // NEW: true when the LLM explicitly generated a chart (area/line/KM/box/etc.)
   // REMOVED: was no viz-result flag — table always rendered first regardless of request type
@@ -1810,19 +1973,18 @@ export const GraphTablePanel: React.FC = () => {
           )}
         </div>
 
-        {/* Right: Customize · Validate & Correct · Save · Clear */}
+        {/* Right: Customize · Save · Clear */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Customize — deep blue button that toggles the right sidebar */}
+          {/* Customize */}
           <button
             onClick={() => setSidebarOpen((p) => !p)}
-            className="inline-flex items-center gap-1.5 h-7 px-4 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1"
+            className="inline-flex items-center gap-1.5 h-7 px-3 text-[13px] font-medium transition-all focus:outline-none hover:bg-[#f0f4f8] hover:text-[#0f172a] disabled:opacity-50"
             style={{
-              backgroundColor: '#194CFF',
-              borderRadius: '0.75rem',
-              padding: '0.5rem 1rem',
+              background: 'transparent',
+              border: '1px solid #d6dfe8',
+              borderRadius: '6px',
+              color: '#5a7a96',
             }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#3B82F6'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#194CFF'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
             aria-label="Toggle customization sidebar"
             aria-expanded={sidebarOpen}
           >
@@ -1830,51 +1992,33 @@ export const GraphTablePanel: React.FC = () => {
             Customize
           </button>
 
-          {/* Validate & Correct — deep blue */}
-          <button
-            onClick={handleValidateAndCorrect}
-            disabled={!activeResult || !currentDataset || isValidating}
-            className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{
-              backgroundColor: '#194CFF',
-              borderRadius: '0.75rem',
-            }}
-            onMouseEnter={(e) => { if (!e.currentTarget.disabled) { (e.currentTarget as HTMLElement).style.backgroundColor = '#3B82F6'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; } }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#194CFF'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
-            title="Validate output against original data and correct hallucinations"
-          >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            {isValidating ? "Validating\u2026" : "Validate & Correct"}
-          </button>
-
-          {/* Save — green */}
+          {/* Save */}
           <button
             onClick={() => setSaveModalOpen(true)}
             disabled={!activeResult}
-            className="inline-flex items-center gap-1.5 h-7 px-3 text-xs font-medium text-white shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-green-300 focus-visible:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 h-7 px-3 text-[13px] font-medium transition-all focus:outline-none hover:bg-[#f0f4f8] hover:text-[#0f172a] disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
-              backgroundColor: '#22C55E',
-              borderRadius: '0.75rem',
+              background: 'transparent',
+              border: '1px solid #d6dfe8',
+              borderRadius: '6px',
+              color: '#5a7a96',
             }}
-            onMouseEnter={(e) => { if (!e.currentTarget.disabled) { (e.currentTarget as HTMLElement).style.backgroundColor = '#16A34A'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; } }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#22C55E'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
             title="Save analysis to Technical Files"
           >
             <Save className="w-3.5 h-3.5" />
             Save
           </button>
 
-          {/* Clear — red */}
+          {/* Clear */}
           <button
             onClick={() => activeTabId && clearResults(activeTabId)}
-            className="inline-flex items-center gap-1.5 h-7 px-2 text-xs font-medium shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300 focus-visible:ring-offset-1"
+            className="inline-flex items-center gap-1.5 h-7 px-3 text-[13px] font-medium transition-all focus:outline-none hover:bg-[#fef2f2] hover:text-[#dc2626] disabled:opacity-50"
             style={{
-              backgroundColor: '#EF4444',
-              color: '#ffffff',
-              borderRadius: '0.75rem',
+              background: 'transparent',
+              border: '1px solid #d6dfe8',
+              borderRadius: '6px',
+              color: '#5a7a96',
             }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#DC2626'; (e.currentTarget as HTMLElement).style.transform = 'scale(1.05)'; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EF4444'; (e.currentTarget as HTMLElement).style.transform = 'scale(1)'; }}
             title="Clear all results for this tab"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -2037,6 +2181,7 @@ export const GraphTablePanel: React.FC = () => {
                       title={displayTitle || activeResult?.graphTitle}
                       query={activeResult?.query}
                       cleanExportRef={cleanExportRef}
+                      isPlotly={isPlotlyChartData(syncedChartData ?? chartData)}
                     />
                   </span>
                 </CardTitle>
@@ -2095,6 +2240,10 @@ export const GraphTablePanel: React.FC = () => {
                           const editText = actionDescriptions[action] ?? action.replace(/_/g, ' ');
                           const pointCtx = ctx ? ` (context: point at x=${ctx.x}, y=${ctx.y}, trace=${ctx.trace})` : '';
                           useAIPanelStore.getState().queueGraphEdit(activeResult.id, editText + pointCtx);
+                        }}
+                        onLabelEdit={(field, value) => {
+                          if (!customizationKey) return;
+                          setCustomization(customizationKey, field, value);
                         }}
                         height={380}
                       />
@@ -2266,7 +2415,21 @@ export const GraphTablePanel: React.FC = () => {
         {/* Now also shown alongside charts (isVizResult) so users always get both              */}
         {/* a visual and tabular representation of the data.                                    */}
         {displayTable.length > 0 && !isNoteOnlyTable && (
-          <Card className="border border-[#e2e8f0] shadow-sm rounded-xl overflow-hidden" data-stats-table="" data-export-target="">
+          <Card
+            className={`shadow-sm rounded-xl overflow-hidden cursor-pointer transition-all duration-200 ${
+              selectedTableType === 'statistics'
+                ? 'border-2 ring-2 ring-[#60a5fa]/40'
+                : 'border border-[#e2e8f0] hover:border-slate-300'
+            }`}
+            style={selectedTableType === 'statistics' ? { borderColor: '#2b7de9', background: 'rgba(43,125,233,0.02)' } : undefined}
+            onClick={(e) => {
+              // Don't toggle selection when clicking editable cells or buttons
+              if ((e.target as HTMLElement).closest('input, button, [contenteditable]')) return;
+              setSelectedTable(selectedTableType === 'statistics' ? null : 'statistics');
+            }}
+            data-stats-table=""
+            data-export-target=""
+          >
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
               <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                 <span className="flex items-center gap-2">
@@ -2284,7 +2447,7 @@ export const GraphTablePanel: React.FC = () => {
                 <span className="flex items-center gap-1.5">
                   <button
                     onClick={() => {
-                      const rows = displayTable.map((r: any) => `| ${r.metric} | ${r.value} |`).join('\n');
+                      const rows = displayTable.map((r: any) => `| ${r.metric} | ${formatCellValue(r.value)} |`).join('\n');
                       const md = `| Metric | Value |\n|--------|-------|\n${rows}`;
                       handleAddToChat(md);
                     }}
@@ -2405,16 +2568,45 @@ export const GraphTablePanel: React.FC = () => {
                 </div>
               )}
             </CardContent>
+            {/* Table-edit hint — visible when this stats table is selected */}
+            {selectedTableType === 'statistics' && (
+              <div className="flex-shrink-0 px-4 py-2 border-t border-[#d0e3f7] bg-[#eef6ff]">
+                <p className="text-xs text-[#2b7de9] font-medium">
+                  Table selected — type your edit in the chat below (e.g. "add p-values" or "sort by value")
+                </p>
+              </div>
+            )}
           </Card>
         )}
 
         {/* ── Data Points Table — editable, updates chart in real-time ─── */}
         {chartData && chartData.labels && chartData.datasets && !isNoteOnlyTable && (
-          <DataPointsTable
-            chartData={syncedChartData ?? chartData}
-            onDataChange={handleDataPointsChange}
-            xAxisLabel={customizations.xLabel || undefined}
-          />
+          <div
+            className={`rounded-xl cursor-pointer transition-all duration-200 ${
+              selectedTableType === 'data-points'
+                ? 'ring-2 ring-[#60a5fa]/40'
+                : 'hover:ring-1 hover:ring-slate-300'
+            }`}
+            style={selectedTableType === 'data-points' ? { border: '2px solid #2b7de9', background: 'rgba(43,125,233,0.02)' } : undefined}
+            onClick={(e) => {
+              if ((e.target as HTMLElement).closest('input, button, [contenteditable]')) return;
+              setSelectedTable(selectedTableType === 'data-points' ? null : 'data-points');
+            }}
+          >
+            <DataPointsTable
+              chartData={syncedChartData ?? chartData}
+              onDataChange={handleDataPointsChange}
+              xAxisLabel={customizations.xLabel || undefined}
+            />
+            {/* Data-table edit hint — visible when selected */}
+            {selectedTableType === 'data-points' && (
+              <div className="px-4 py-2 border-t border-[#d0e3f7] bg-[#eef6ff] rounded-b-xl">
+                <p className="text-xs text-[#2b7de9] font-medium">
+                  Data table selected — type your edit in the chat below (e.g. "add a row" or "sort ascending")
+                </p>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Legacy inline data points table removed — replaced by DataPointsTable component above */}

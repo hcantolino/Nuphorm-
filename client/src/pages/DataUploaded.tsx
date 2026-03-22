@@ -1401,10 +1401,12 @@ export default function DataUploaded() {
     if (!Number.isNaN(numericId) && numericId > 0) {
       // Real file from backend — fetch content
       setPreviewLoading(true);
-      fetch(`/api/trpc/files.getFileContent?input=${encodeURIComponent(JSON.stringify({ fileId: numericId }))}`)
+      // tRPC with superjson transformer requires input wrapped in { json: ... }
+      fetch(`/api/trpc/files.getFileContent?input=${encodeURIComponent(JSON.stringify({ json: { fileId: numericId } }))}`)
         .then(res => res.json())
         .then(json => {
-          const data = json?.result?.data;
+          // superjson wraps the result in { result: { data: { json: ... } } }
+          const data = json?.result?.data?.json ?? json?.result?.data;
           if (data) {
             console.log('[FilePreview] Loaded content:', { fileName: data.fileName, contentType: data.contentType, hasGraphs: data.hasGraphs, contentLength: data.content?.length ?? 0 });
             setPreviewContent({
@@ -2152,7 +2154,15 @@ export default function DataUploaded() {
         {/* Modals */}
         <UploadModal open={showUpload} onClose={() => setShowUpload(false)} onUploadComplete={handleUploadComplete} />
 
-        {previewFile && (
+        {previewFile && previewLoading && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-xl p-8 flex flex-col items-center gap-3 shadow-xl">
+              <div className="w-8 h-8 border-2 border-[#3b82f6] border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-[#64748b]">Loading file preview…</p>
+            </div>
+          </div>
+        )}
+        {previewFile && !previewLoading && (
           <FilePreviewModal
             file={{
               name: previewFile.fileName,

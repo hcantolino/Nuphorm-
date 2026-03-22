@@ -92,6 +92,8 @@ interface RepoFile {
   size: string;
   type: string;
   uploadedDate: string;
+  /** Extracted text content (CSV text, PDF text, etc.) for AI context */
+  preview?: string;
 }
 
 type PreviewEntry =
@@ -1144,6 +1146,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   const setPanelResult = useAIPanelStore((s) => s.setPanelResult);
   const updatePanelResult = useAIPanelStore((s) => s.updatePanelResult);
   const selectedGraphId = useAIPanelStore((s) => s.selectedGraphId);
+  const selectedTableType = useAIPanelStore((s) => s.selectedTableType);
   const clearSelectedGraph = useAIPanelStore((s) => s.clearSelectedGraph);
   const pendingEditAction = useAIPanelStore((s) => s.pendingEditAction);
   const pendingChatContent = useAIPanelStore((s) => s.pendingChatContent);
@@ -1657,6 +1660,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     uploadedAt: Date.now(),
                     preview: pdfText,
                   });
+                } else {
+                  // Tab-level: update the attachedFiles entry with extracted text
+                  setAttachedFiles((prev) =>
+                    prev.map((f) => f.id === tempId ? { ...f, preview: pdfText } : f)
+                  );
                 }
 
                 // Attempt to extract structured tabular data from the PDF text.
@@ -1754,9 +1762,10 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     const userMessage = (explicitText ?? inputValue).trim();
     if (!userMessage) return;
 
-    // Snapshot graph-edit state before clearing input
+    // Snapshot graph/table edit state before clearing input
     const graphEditTargetId = selectedGraphId;
     const isGraphEdit = !!graphEditTargetId;
+    const tableEditType = selectedTableType;
 
     if (!explicitText) setInputValue("");
     lastUserQueryRef.current = userMessage;
@@ -1939,6 +1948,69 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             console.warn("[AIChat] Last-resort file fetch failed:", err);
           }
         }
+
+        // ── PDF fallback: if no CSV found, check for PDF attachments with preview text ──
+        if (effectiveData.length === 0) {
+          const pdfAttachment = attachedFiles.find(
+            (f) => f.type === "PDF" && f.preview && f.preview.length > 0
+          );
+          if (pdfAttachment?.preview) {
+            // Try to parse tabular data from extracted PDF text
+            const parsed = parseCSVData(pdfAttachment.preview);
+            if (parsed.length >= 2 && Object.keys(parsed[0]).length >= 2) {
+              effectiveData = parsed;
+              setFullData(parsed);
+              useCurrentDatasetStore.getState().setCurrentDataset({
+                filename: pdfAttachment.name,
+                rowCount: parsed.length,
+                columns: Object.keys(parsed[0] ?? {}),
+                rows: parsed as Record<string, unknown>[],
+                cleaned: false,
+              });
+              console.log(`[AIChat] PDF fallback succeeded: ${parsed.length} rows from ${pdfAttachment.name}`);
+            } else {
+              // No structured table — pass raw PDF text as preview context
+              projectSourcePreviewText = pdfAttachment.preview.slice(0, 8000);
+              console.log(`[AIChat] PDF fallback: sending ${projectSourcePreviewText.length} chars of raw text for ${pdfAttachment.name}`);
+            }
+          }
+
+          // Also try fetching PDF content from server if no preview is stored locally
+          if (effectiveData.length === 0 && !projectSourcePreviewText) {
+            const pdfServerAttachment = attachedFiles.find(
+              (f) => f.type === "PDF"
+            );
+            if (pdfServerAttachment) {
+              try {
+                const fileId = parseInt(pdfServerAttachment.id);
+                if (!isNaN(fileId)) {
+                  console.log("[AIChat] PDF last-resort: fetching content from server:", pdfServerAttachment.name);
+                  const result = await trpcUtils.files.getFileContent.fetch({ fileId });
+                  if (result?.content) {
+                    // Try parsing as structured data first
+                    const parsed = parseCSVData(result.content);
+                    if (parsed.length >= 2 && Object.keys(parsed[0]).length >= 2) {
+                      effectiveData = parsed;
+                      setFullData(parsed);
+                      useCurrentDatasetStore.getState().setCurrentDataset({
+                        filename: pdfServerAttachment.name,
+                        rowCount: parsed.length,
+                        columns: Object.keys(parsed[0] ?? {}),
+                        rows: parsed as Record<string, unknown>[],
+                        cleaned: false,
+                      });
+                    } else {
+                      // Raw text context
+                      projectSourcePreviewText = result.content.slice(0, 8000);
+                    }
+                  }
+                }
+              } catch (err) {
+                console.warn("[AIChat] PDF server fetch failed:", err);
+              }
+            }
+          }
+        }
       }
 
       // Log effective data state for debugging
@@ -1991,9 +2063,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       //    Include preview content so the AI can see PDF/text data.
       const checkedTabFiles = activeTabFiles;
       const tabSourceLines = checkedTabFiles.map((f) => {
-        if ((f as any).preview) {
-          const snippet = (f as any).preview.slice(0, 4000);
-          return `- ${f.name} (content:\n${snippet}${(f as any).preview.length > 4000 ? "\n…[truncated]" : ""})`;
+        if (f.preview) {
+          const snippet = f.preview.slice(0, 4000);
+          return `- ${f.name} (content:\n${snippet}${f.preview.length > 4000 ? "\n…[truncated]" : ""})`;
         }
         return `- ${f.name} (${f.type})`;
       });
@@ -2047,7 +2119,32 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             currentChartSnippet = `\nCurrent chart_data:\n${JSON.stringify(targetResult.analysisResults.chart_data)}\n`;
           }
         } catch { /* ignore — best-effort */ }
-        graphEditPrefix = `[GRAPH EDIT MODE: The user has selected an existing graph and wants to modify it. Apply the following change to the CURRENT chart. Return updated chart_data (labels, datasets, type, pharma_type) in analysisResults. Keep the same data source — only change the visualization as requested. Do NOT create a new analysis from scratch.]${currentChartSnippet}\n\n`;
+        graphEditPrefix = `[GRAPH EDIT MODE: The user has selected an existing graph and wants to modify it. Apply the following change to the CURRENT chart. Return the COMPLETE updated chart_data (labels, datasets, type, pharma_type) in analysisResults. Keep the same data source — only change the visualization as requested. Do NOT create a new analysis from scratch.
+
+IMPORTANT FOR ERROR BARS: If the user asks to add error bars:
+- You MUST include "error_y" arrays in each dataset with actual numeric values (e.g. SD or SEM computed from the data)
+- Format: each dataset must have "error_y": [number, number, ...] with one value per data point
+- If you cannot compute exact SD/SEM because the raw data is unavailable, use 10% of each mean value as an approximation and note this in your response
+- NEVER claim error bars were added without including error_y values in the datasets
+- Example: { "label": "Treatment A", "data": [25.3, 18.7], "error_y": [3.2, 2.1] }
+
+IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only the changed fields — return the complete object so no data is lost during merge.]${currentChartSnippet}\n\n`;
+      } else if (tableEditType) {
+        // Table edit mode — prepend context about which table and its current data
+        let currentTableSnippet = "";
+        try {
+          const store = useAIPanelStore.getState();
+          const tabResults = activeTabIdMemo ? (store.resultsByTab[activeTabIdMemo] ?? []) : [];
+          const activeResId = activeTabIdMemo ? store.activeResultIdByTab[activeTabIdMemo] : null;
+          const targetResult = activeResId ? tabResults.find((r) => r.id === activeResId) : tabResults[tabResults.length - 1];
+          if (tableEditType === 'statistics' && targetResult?.analysisResults?.results_table) {
+            currentTableSnippet = `\nCurrent results_table:\n${JSON.stringify(targetResult.analysisResults.results_table)}\n`;
+          } else if (tableEditType === 'data-points' && targetResult?.analysisResults?.chart_data) {
+            currentTableSnippet = `\nCurrent chart_data (labels + datasets):\n${JSON.stringify({ labels: targetResult.analysisResults.chart_data.labels, datasets: targetResult.analysisResults.chart_data.datasets })}\n`;
+          }
+        } catch { /* ignore — best-effort */ }
+        const tableLabel = tableEditType === 'statistics' ? 'Statistics Summary' : 'Data Points';
+        graphEditPrefix = `[TABLE EDIT MODE: The user has selected the ${tableLabel} table and wants to modify it. Apply the following change to the CURRENT table data. Return updated results_table (for Statistics Summary) or updated chart_data with labels+datasets (for Data Points) in analysisResults. Keep the same data source — only modify the table as requested. Do NOT create a new analysis from scratch.]${currentTableSnippet}\n\n`;
       }
 
       const augmentedQuery =
@@ -2230,11 +2327,61 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         if (responseObj.analysisResults) editPatch.analysisResults = responseObj.analysisResults;
         if (responseObj.graphTitle) editPatch.graphTitle = responseObj.graphTitle;
         if (responseObj.chartConfig) editPatch.chartConfig = responseObj.chartConfig;
+
+        // ── Validate that chart_data actually changed before confirming ──
+        const store = useAIPanelStore.getState();
+        const tabResults = store.resultsByTab[activeTabIdMemo] ?? [];
+        const prevResult = tabResults.find((r) => r.id === realGraphResultId);
+        const prevChartData = prevResult?.analysisResults?.chart_data;
+        const newChartData = responseObj.analysisResults?.chart_data;
+
+        // Check if the new chart_data is meaningfully different from the old
+        const prevJson = prevChartData ? JSON.stringify(prevChartData) : '';
+        const newJson = newChartData ? JSON.stringify(newChartData) : '';
+        const chartActuallyChanged = newJson.length > 0 && newJson !== prevJson;
+
         updatePanelResult(activeTabIdMemo, realGraphResultId, editPatch);
         clearSelectedGraph();
-        toast.success("Graph updated successfully", {
-          style: { background: '#f0fdf4', color: '#166534', borderColor: '#86efac' },
-        });
+
+        if (chartActuallyChanged) {
+          toast.success("Graph updated successfully", {
+            style: { background: '#f0fdf4', color: '#166534', borderColor: '#86efac' },
+          });
+        } else if (!newChartData) {
+          toast("Graph edit processed — chart data unchanged. The AI may not have been able to apply this modification.", {
+            style: { background: '#fefce8', color: '#854d0e', borderColor: '#fde047' },
+            duration: 5000,
+          });
+        } else {
+          toast("No visible changes detected in chart config. Try rephrasing your edit request.", {
+            style: { background: '#fefce8', color: '#854d0e', borderColor: '#fde047' },
+            duration: 5000,
+          });
+        }
+      } else if (tableEditType && activeTabIdMemo) {
+        // Table edit mode: update the active result in-place with new table data
+        const store = useAIPanelStore.getState();
+        const tabResults = store.resultsByTab[activeTabIdMemo] ?? [];
+        const activeResId = store.activeResultIdByTab[activeTabIdMemo];
+        const targetResult = activeResId ? tabResults.find((r) => r.id === activeResId) : tabResults[tabResults.length - 1];
+        if (targetResult && responseObj.analysisResults) {
+          const editPatch: Record<string, any> = { analysis: content };
+          editPatch.analysisResults = responseObj.analysisResults;
+          if (responseObj.graphTitle) editPatch.graphTitle = responseObj.graphTitle;
+          updatePanelResult(activeTabIdMemo, targetResult.id, editPatch);
+          toast.success("Table updated successfully", {
+            style: { background: '#eef6ff', color: '#1e40af', borderColor: '#93c5fd' },
+          });
+        } else if (routeToPanel) {
+          setPanelResult(activeTabIdMemo, {
+            query: userMessage,
+            analysis: content,
+            analysisResults: responseObj.analysisResults ?? undefined,
+            graphTitle: responseObj.graphTitle ?? undefined,
+            tableData:  responseObj.tableData  ?? undefined,
+          });
+        }
+        // Keep table selected so user can make multiple edits
       } else if (routeToPanel) {
         setPanelResult(activeTabIdMemo, {
           query: userMessage,
@@ -2255,6 +2402,10 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         toast.error("Failed to update graph. Please try again.", {
           style: { background: '#fef2f2', color: '#991b1b', borderColor: '#fca5a5' },
         });
+      } else if (tableEditType) {
+        toast.error("Failed to update table. Please try again.", {
+          style: { background: '#fef2f2', color: '#991b1b', borderColor: '#fca5a5' },
+        });
       } else {
         toast.error("Failed to analyze data. Please try again.");
       }
@@ -2263,7 +2414,9 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         role: "assistant",
         content: isGraphEdit
           ? "Sorry, I couldn't update the graph. Please try a different edit or re-run the analysis."
-          : "Sorry, I encountered an error while analyzing your data. Please try again.",
+          : tableEditType
+            ? "Sorry, I couldn't update the table. Please try a different edit or re-run the analysis."
+            : "Sorry, I encountered an error while analyzing your data. Please try again.",
         timestamp: Date.now(),
       });
     } finally {
@@ -2285,6 +2438,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     activeProjectSources,
     activeTabFiles,
     selectedGraphId,
+    selectedTableType,
     updatePanelResult,
     clearSelectedGraph,
   ]);
@@ -2537,10 +2691,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     <button
                       key={sIdx}
                       onClick={() => {
-                        setInputValue(suggestion);
-                        // Auto-focus the input so the user can hit Enter
-                        const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
-                        input?.focus();
+                        handleSendMessage(suggestion);
                       }}
                       disabled={isLoading}
                       className="text-left text-xs px-3 py-1.5 rounded-full bg-white dark:bg-gray-700 border border-[#e2e8f0] dark:border-gray-600 text-[#374151] dark:text-gray-200 hover:bg-blue-50 hover:border-[#3b82f6] hover:text-[#1d4ed8] transition-colors disabled:opacity-40 shadow-sm"
@@ -2612,16 +2763,26 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             </div>
           )}
           {/* Gray banner removed — single paperclip entry point in input bar */}
-          {/* Graph-edit mode banner */}
-          {selectedGraphId && (
-            <div className="flex items-center justify-between px-4 py-2 rounded-t-2xl bg-[#f0fdf4] border border-emerald-200 border-b-0">
-              <span className="text-xs text-emerald-700 font-medium">
-                Editing selected graph — your next message will modify the chart
+          {/* Graph/table edit mode banner */}
+          {(selectedGraphId || selectedTableType) && (
+            <div className={cn(
+              "flex items-center justify-between px-4 py-2 rounded-t-2xl border border-b-0",
+              selectedGraphId ? "bg-[#f0fdf4] border-emerald-200" : "bg-[#eef6ff] border-[#c7dbf1]"
+            )}>
+              <span className={cn("text-xs font-medium", selectedGraphId ? "text-emerald-700" : "text-[#2b7de9]")}>
+                {selectedGraphId
+                  ? "Editing selected graph — your next message will modify the chart"
+                  : selectedTableType === 'statistics'
+                    ? "Editing selected table — your next message will modify the table"
+                    : "Editing selected data table — your next message will modify the data table"}
               </span>
               <button
                 type="button"
                 onClick={clearSelectedGraph}
-                className="text-xs text-emerald-600 hover:text-emerald-800 font-medium underline underline-offset-2"
+                className={cn(
+                  "text-xs font-medium underline underline-offset-2",
+                  selectedGraphId ? "text-emerald-600 hover:text-emerald-800" : "text-[#2b7de9] hover:text-[#1a5fb4]"
+                )}
               >
                 Cancel
               </button>
@@ -2630,12 +2791,19 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           {/* Card-style input container */}
           <div className={cn(
             "flex gap-3 bg-background shadow-md px-4 transition-all duration-200",
-            selectedGraphId ? "rounded-b-2xl border-2 border-emerald-300" : "rounded-2xl border-2",
+            (selectedGraphId || selectedTableType) ? "rounded-b-2xl border-2" : "rounded-2xl border-2",
+            (selectedGraphId || selectedTableType)
+              ? selectedGraphId
+                ? "border-emerald-300"
+                : "border-[#93bbea]"
+              : "",
             compact
               ? "items-end py-3 border-border/70 bg-[#f8fafc] focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 focus-within:bg-white"
               : selectedGraphId
                 ? "items-end py-3 border-emerald-300 focus-within:border-emerald-500 focus-within:shadow-[0_0_0_3px_rgba(16,185,129,0.14)]"
-                : "items-end py-3 border-[#E5E7EB] focus-within:border-[#3b82f6] focus-within:shadow-[0_0_0_3px_rgba(59,130,246,0.14)]"
+                : selectedTableType
+                  ? "items-end py-3 border-[#93bbea] focus-within:border-[#2b7de9] focus-within:shadow-[0_0_0_3px_rgba(43,125,233,0.14)]"
+                  : "items-end py-3 border-[#E5E7EB] focus-within:border-[#3b82f6] focus-within:shadow-[0_0_0_3px_rgba(59,130,246,0.14)]"
           )}>
 
             {/* Paperclip — Source Documents toggle */}
@@ -2827,7 +2995,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                   ? "Thinking…"
                   : selectedGraphId
                     ? "Describe how to edit the selected graph (e.g. 'change to bar chart', 'add error bars')…"
-                    : "Paste your data or ask a question — no code needed"
+                    : selectedTableType === 'statistics'
+                      ? "Describe how to edit the selected table (e.g. 'add a column', 'compute median')…"
+                      : selectedTableType === 'data-points'
+                        ? "Describe how to edit the data table (e.g. 'add a row', 'sort ascending')…"
+                        : "Paste your data or ask a question — no code needed"
               }
               disabled={isLoading}
               className="flex-1 min-w-0 bg-transparent outline-none placeholder:text-muted-foreground/55 caret-primary disabled:cursor-not-allowed resize-none overflow-hidden leading-6"

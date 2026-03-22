@@ -16,7 +16,6 @@ import {
   Table2,
   TrendingDown,
   Percent,
-  Download,
   Loader2,
   X,
   Palette,
@@ -61,11 +60,16 @@ interface PlotlyInteractiveChartProps {
     xLabel?: string;
     yLabel?: string;
     chartTitle?: string;
+    subtitle?: string;
     xAxisMin?: number | null;
     xAxisMax?: number | null;
     yAxisMin?: number | null;
     yAxisMax?: number | null;
     yAxisLog?: boolean;
+    xAxisScale?: 'linear' | 'log';
+    xAxisRotation?: number;
+    xAxisStepSize?: number | null;
+    yAxisStepSize?: number | null;
     showGrid?: boolean;
     bgColor?: string;
     gridColor?: string;
@@ -76,13 +80,116 @@ interface PlotlyInteractiveChartProps {
     customColors?: string[];
     legendPosition?: string;
     legendAnchor?: string;
+    showLegendBorder?: boolean;
+    legendBgColor?: string;
+    legendFontSize?: number;
     showDataLabels?: boolean;
+    showValues?: boolean;
+    valuePosition?: string;
+    valueFontSize?: number;
     strokeWidth?: number;
     markerSize?: number;
+    barGap?: number;
+    barBorderRadius?: number;
+    fillOpacity?: number;
+    showErrorBars?: boolean;
+    chartTheme?: string;
+    seriesOverrides?: Array<{
+      color?: string;
+      lineStyle?: string;
+      lineWidth?: number;
+      markerShape?: string;
+      markerSize?: number;
+      name?: string;
+      visible?: boolean;
+    }>;
   };
   onPointClick?: (point: { x: number; y: number; trace: string; data?: any }) => void;
   onEditAction?: (action: string, context?: any) => void;
+  /** Callback when user edits a label inline (title, subtitle, xLabel, yLabel) */
+  onLabelEdit?: (field: 'chartTitle' | 'subtitle' | 'xLabel' | 'yLabel', value: string) => void;
   height?: number;
+}
+
+// ── Inline editable text component ────────────────────────────────────────
+
+interface InlineEditableTextProps {
+  value: string;
+  onCommit: (newValue: string) => void;
+  style?: React.CSSProperties;
+  className?: string;
+  placeholder?: string;
+}
+
+function InlineEditableText({ value, onCommit, style, className, placeholder }: InlineEditableTextProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [value, editing]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== value) {
+      onCommit(trimmed);
+    } else {
+      setDraft(value); // revert if empty or unchanged
+    }
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') { setDraft(value); setEditing(false); }
+        }}
+        style={{
+          ...style,
+          background: 'transparent',
+          border: 'none',
+          borderBottom: '1.5px solid #3b82f6',
+          outline: 'none',
+          width: '100%',
+          padding: 0,
+          margin: 0,
+          fontFamily: 'inherit',
+        }}
+        className={className}
+      />
+    );
+  }
+
+  return (
+    <span
+      onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      style={{
+        ...style,
+        cursor: 'text',
+        borderBottom: '1px solid transparent',
+        transition: 'border-color 0.15s',
+      }}
+      className={className}
+      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderBottomColor = '#cbd5e1'; }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent'; }}
+    >
+      {value || <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>{placeholder ?? 'Double-click to edit'}</span>}
+    </span>
+  );
 }
 
 // ── Theme constants ────────────────────────────────────────────────────────
@@ -128,15 +235,18 @@ function calculateChartSizing(traces: any[], chartTitle?: string, yLabel?: strin
   let legend: Record<string, any>;
   let margin: Record<string, number>;
 
-  if (seriesCount <= 3) {
-    legend = { orientation: 'h', x: 0.5, y: -0.12, xanchor: 'center', yanchor: 'top', font: { size: 11 }, bgcolor: 'rgba(255,255,255,0)', borderwidth: 0, itemwidth: 30, tracegroupgap: 15 };
-    margin = { l: 80, r: 30, t: 80, b: 80 };
+  if (seriesCount <= 4) {
+    // Horizontal below chart — never overlaps data
+    legend = { orientation: 'h', x: 0.5, y: -0.25, xanchor: 'center', yanchor: 'top', font: { size: 11, color: '#1a2332', family: 'Arial, sans-serif' }, bgcolor: 'rgba(0,0,0,0)', borderwidth: 0, itemwidth: 30, tracegroupgap: 15 };
+    margin = { l: 80, r: 30, t: 80, b: 140 };
   } else if (seriesCount <= 8) {
-    legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 10 }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 25, tracegroupgap: 3 };
-    margin = { l: 80, r: Math.min(legendWidth + 20, 200), t: 80, b: 60 };
+    // Vertical OUTSIDE right — pushed past the plot area
+    legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 10, color: '#1a2332', family: 'Arial, sans-serif' }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 25, tracegroupgap: 3 };
+    margin = { l: 80, r: Math.max(legendWidth + 20, 180), t: 80, b: 80 };
   } else {
-    legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 9 }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 20, tracegroupgap: 1, itemsizing: 'constant' };
-    margin = { l: 80, r: Math.min(legendWidth + 15, 180), t: 80, b: 60 };
+    // Many series — compact vertical OUTSIDE right
+    legend = { orientation: 'v', x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', font: { size: 9, color: '#1a2332', family: 'Arial, sans-serif' }, bgcolor: 'rgba(255,255,255,0.95)', bordercolor: '#e0e0e0', borderwidth: 1, itemwidth: 20, tracegroupgap: 1, itemsizing: 'constant' };
+    margin = { l: 80, r: Math.max(legendWidth + 15, 180), t: 80, b: 80 };
   }
   if (yLabel && yLabel.length > 15) margin.l = 95;
   if (chartTitle && chartTitle.length > 60) margin.t = 100;
@@ -154,17 +264,18 @@ const LAYOUT_BASE: Partial<Plotly.Layout> = {
   paper_bgcolor: '#ffffff',
   plot_bgcolor: '#ffffff',
   font: { family: 'Arial, sans-serif', size: 12, color: '#1a2332' },
-  margin: { l: 80, r: 120, t: 80, b: 80 },
+  margin: { l: 80, r: 30, t: 80, b: 140 },
   modebar: { orientation: 'h', bgcolor: 'transparent', color: '#8fa3b8', activecolor: '#2b7de9' } as any,
   showlegend: true,
   legend: {
-    bgcolor: 'rgba(255,255,255,0.9)',
-    bordercolor: '#cccccc',
-    borderwidth: 1,
-    font: { size: 11, family: 'Arial, sans-serif' },
-    x: 1.02,
-    y: 1,
-    xanchor: 'left' as const,
+    orientation: 'h' as const,
+    x: 0.5,
+    y: -0.25,
+    xanchor: 'center' as const,
+    yanchor: 'top' as const,
+    bgcolor: 'rgba(0,0,0,0)',
+    borderwidth: 0,
+    font: { size: 11, color: '#1a2332', family: 'Arial, sans-serif' },
   },
   hovermode: 'closest' as const,
   hoverlabel: { bgcolor: '#1a2332', font: { color: '#ffffff', size: 12 } },
@@ -588,39 +699,138 @@ function buildScatterTraces(
 ): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const datasets = chartData.datasets ?? [];
 
-  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
-    let xVals: number[] = [];
-    let yVals: number[] = [];
+  // Also handle series format: { series: [{ name, x: [...], y: [...] }] }
+  const seriesArr = chartData.series ?? [];
 
-    if (ds.data && Array.isArray(ds.data) && ds.data.length > 0 && typeof ds.data[0] === 'object') {
-      xVals = ds.data.map((d: any) => d.x ?? 0);
-      yVals = ds.data.map((d: any) => d.y ?? 0);
-    } else {
-      xVals = chartData.labels?.map((l: any) => parseFloat(l) || 0) ?? [];
-      yVals = ds.data ?? [];
+  // Also handle data-array format: { data: [{ species: "Owl", mean: 58.5 }, ...] }
+  const dataArr = chartData.data ?? [];
+
+  let plotData: Plotly.Data[] = [];
+  let isCategorical = false;
+
+  if (datasets.length > 0) {
+    plotData = datasets.map((ds: any, i: number) => {
+      let xVals: any[] = [];
+      let yVals: number[] = [];
+
+      if (ds.data && Array.isArray(ds.data) && ds.data.length > 0 && typeof ds.data[0] === 'object') {
+        xVals = ds.data.map((d: any) => d.x ?? 0);
+        yVals = ds.data.map((d: any) => d.y ?? 0);
+      } else {
+        // Preserve labels as-is (strings for categorical, numbers for numeric)
+        xVals = chartData.labels ?? [];
+        yVals = ds.data ?? [];
+      }
+
+      if (xVals.length > 0 && typeof xVals[0] === 'string') isCategorical = true;
+
+      const seriesName = ds.label ?? `Series ${i + 1}`;
+      return {
+        x: xVals,
+        y: yVals,
+        mode: 'markers' as const,
+        name: seriesName,
+        type: 'scatter' as const,
+        marker: {
+          color: ds.color ?? ds.borderColor ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+          size: resolveMarkerSize(chartData, seriesName),
+          symbol: resolveMarkerShape(chartData, seriesName, i),
+          opacity: 0.75,
+          line: { color: 'white', width: 0.5 },
+        },
+        error_y: resolveErrorBars(ds, chartData, seriesName),
+        hovertemplate: isCategorical
+          ? `<b>${seriesName}</b><br>%{x}<br>y: %{y:.2f}<extra></extra>`
+          : `<b>${seriesName}</b><br>x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>`,
+      };
+    });
+  } else if (seriesArr.length > 0) {
+    // Series format: [{ name, x: [...], y: [...], error_y: [...] }]
+    plotData = seriesArr.map((s: any, i: number) => {
+      const xVals = s.x ?? s.data?.map((d: any) => d.x) ?? [];
+      const yVals = s.y ?? s.data?.map((d: any) => d.y) ?? [];
+      if (xVals.length > 0 && typeof xVals[0] === 'string') isCategorical = true;
+      const seriesName = s.name ?? s.label ?? `Series ${i + 1}`;
+      return {
+        x: xVals,
+        y: yVals,
+        mode: 'markers' as const,
+        name: seriesName,
+        type: 'scatter' as const,
+        marker: {
+          color: s.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+          size: resolveMarkerSize(chartData, seriesName),
+          symbol: resolveMarkerShape(chartData, seriesName, i),
+          opacity: 0.75,
+          line: { color: 'white', width: 0.5 },
+        },
+        error_y: s.error_y ? { type: 'data' as const, array: Array.isArray(s.error_y) ? s.error_y : s.error_y.array, visible: true, color: '#64748b' } : undefined,
+      };
+    });
+  } else if (dataArr.length > 0 && typeof dataArr[0] === 'object') {
+    // Data-array format: [{ species: "Owl", mean: 58.5, ci_lower: 55.3, ci_upper: 61.7 }, ...]
+    const keys = Object.keys(dataArr[0]);
+    const xKey = chartData.x_column ?? keys.find((k: string) =>
+      /species|group|treatment|category|name|label|arm|dose|time|visit|subject/i.test(k)
+    ) ?? keys[0];
+    const errorKeys = new Set(keys.filter((k: string) => /ci_lower|ci_upper|lower|upper|error|sd|sem|se\b/i.test(k)));
+    const yKeys = keys.filter((k: string) => k !== xKey && !errorKeys.has(k) && typeof dataArr[0][k] === 'number');
+    const ciLowerKey = keys.find((k: string) => /ci_lower|lower_ci|lower_bound|lower/i.test(k));
+    const ciUpperKey = keys.find((k: string) => /ci_upper|upper_ci|upper_bound|upper/i.test(k));
+    isCategorical = typeof dataArr[0][xKey] === 'string';
+    plotData = yKeys.map((yKey: string, i: number) => {
+      const yVals = dataArr.map((d: any) => d[yKey]);
+      const trace: any = {
+        x: dataArr.map((d: any) => d[xKey]),
+        y: yVals,
+        mode: 'markers' as const,
+        name: yKey,
+        type: 'scatter' as const,
+        marker: {
+          color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+          size: 8,
+          opacity: 0.75,
+          line: { color: 'white', width: 0.5 },
+        },
+        hovertemplate: isCategorical
+          ? `<b>${yKey}</b><br>%{x}<br>y: %{y:.2f}<extra></extra>`
+          : `<b>${yKey}</b><br>x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>`,
+      };
+      // Asymmetric CI error bars
+      if (ciLowerKey && ciUpperKey) {
+        trace.error_y = {
+          type: 'data' as const,
+          symmetric: false,
+          array: yVals.map((y: number, j: number) => (dataArr[j][ciUpperKey] ?? y) - y),
+          arrayminus: yVals.map((y: number, j: number) => y - (dataArr[j][ciLowerKey] ?? y)),
+          visible: true,
+          color: '#64748b',
+          thickness: 2,
+          width: 6,
+        };
+      }
+      return trace;
+    });
+  }
+
+  const xAxisConfig: any = {
+    title: { text: chartData.x_axis ?? chartData.xLabel ?? chartData.x_label ?? 'X' },
+    ...GRID_STYLE,
+  };
+  if (isCategorical) {
+    xAxisConfig.type = 'category';
+    const firstXVals = (plotData[0] as any)?.x;
+    if (firstXVals && Array.isArray(firstXVals)) {
+      xAxisConfig.categoryorder = 'array';
+      xAxisConfig.categoryarray = firstXVals;
     }
-
-    return {
-      x: xVals,
-      y: yVals,
-      mode: 'markers' as const,
-      name: ds.label ?? `Series ${i + 1}`,
-      type: 'scatter' as const,
-      marker: {
-        color: ds.color ?? ds.borderColor ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
-        size: 8,
-        opacity: 0.75,
-        line: { color: 'white', width: 0.5 },
-      },
-      hovertemplate: `<b>${ds.label ?? `Series ${i + 1}`}</b><br>x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>`,
-    };
-  });
+  }
 
   return {
     plotData,
     layout: {
-      xaxis: { title: { text: chartData.x_axis ?? chartData.xLabel ?? 'X' }, ...GRID_STYLE },
-      yaxis: { title: { text: chartData.y_axis ?? chartData.yLabel ?? 'Y' }, ...GRID_STYLE },
+      xaxis: xAxisConfig,
+      yaxis: { title: { text: chartData.y_axis ?? chartData.yLabel ?? chartData.y_label ?? 'Y' }, ...GRID_STYLE },
     },
   };
 }
@@ -683,7 +893,24 @@ function chartDataToSurvivalTraces(chartData: any): SurvivalTrace[] | null {
 /** Resolve error bar data from dataset or chart-level error_bars array */
 function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
   try {
-    // Dataset-level error bars
+    // Dataset-level asymmetric CI bounds (from normalizeChartData or AI directly)
+    const ciLower = ds?._ci_lower ?? ds?.ci_lower;
+    const ciUpper = ds?._ci_upper ?? ds?.ci_upper;
+    if (ciLower && ciUpper && ds?.data) {
+      const yVals = ds.data;
+      return {
+        type: 'data' as const,
+        symmetric: false,
+        array: yVals.map((y: number, i: number) => (ciUpper[i] ?? y) - y),
+        arrayminus: yVals.map((y: number, i: number) => y - (ciLower[i] ?? y)),
+        visible: true,
+        color: ds?.color ?? '#64748b',
+        thickness: 2,
+        width: 6,
+      };
+    }
+
+    // Dataset-level symmetric error bars
     const errArr = ds?.error_y ?? ds?.sem ?? ds?.error ?? ds?.errorBars ?? ds?.sd;
     if (errArr && Array.isArray(errArr) && errArr.length > 0) {
       return {
@@ -691,11 +918,39 @@ function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
         array: errArr,
         visible: true,
         color: ds?.color ?? '#64748b',
-        thickness: 1.5,
-        width: 4,
+        thickness: 2,
+        width: 6,
       };
     }
-    // Chart-level error_bars array (from AI prompt)
+
+    // Chart-level ci_lower/ci_upper arrays
+    if (chartData?.ci_lower && chartData?.ci_upper && ds?.data) {
+      const yVals = ds.data;
+      return {
+        type: 'data' as const,
+        symmetric: false,
+        array: yVals.map((y: number, i: number) => (chartData.ci_upper[i] ?? y) - y),
+        arrayminus: yVals.map((y: number, i: number) => y - (chartData.ci_lower[i] ?? y)),
+        visible: true,
+        color: ds?.color ?? '#64748b',
+        thickness: 2,
+        width: 6,
+      };
+    }
+
+    // Chart-level error_y (symmetric, top-level)
+    if (chartData?.error_y && Array.isArray(chartData.error_y) && chartData.error_y.length > 0) {
+      return {
+        type: 'data' as const,
+        array: chartData.error_y,
+        visible: true,
+        color: ds?.color ?? '#64748b',
+        thickness: 2,
+        width: 6,
+      };
+    }
+
+    // Chart-level error_bars array (from AI prompt, named series)
     if (chartData?.error_bars && Array.isArray(chartData.error_bars)) {
       const match = chartData.error_bars.find((eb: any) => eb?.series === seriesName);
       if (match?.values && Array.isArray(match.values)) {
@@ -704,8 +959,35 @@ function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
           array: match.values,
           visible: true,
           color: ds?.color ?? '#64748b',
-          thickness: 1.5,
-          width: 4,
+          thickness: 2,
+          width: 6,
+        };
+      }
+      // Fallback: if only one error_bars entry and one dataset, use it
+      if (chartData.error_bars.length === 1 && chartData.error_bars[0]?.values) {
+        return {
+          type: 'data' as const,
+          array: chartData.error_bars[0].values,
+          visible: true,
+          color: ds?.color ?? '#64748b',
+          thickness: 2,
+          width: 6,
+        };
+      }
+    }
+    // Fallback: if chart-level flag says show error bars but no values found,
+    // approximate as 10% of each y-value so something renders
+    if ((chartData?.show_error_bars === true || chartData?.error_type) && ds?.data && Array.isArray(ds.data)) {
+      const yVals = ds.data.filter((v: any) => typeof v === 'number');
+      if (yVals.length > 0) {
+        console.warn('[resolveErrorBars] No error bar values found but show_error_bars=true — using 10% approximation');
+        return {
+          type: 'data' as const,
+          array: yVals.map((v: number) => Math.abs(v * 0.1)),
+          visible: true,
+          color: ds?.color ?? '#64748b',
+          thickness: 2,
+          width: 6,
         };
       }
     }
@@ -754,6 +1036,59 @@ function buildSignificanceAnnotations(chartData: any): Partial<Plotly.Annotation
   } catch { return []; }
 }
 
+/** Calculate smart X-axis label config to prevent overlapping labels */
+function calculateXAxisLabelConfig(xValues: any[]): Record<string, any> {
+  if (!xValues || xValues.length === 0) return { automargin: true };
+
+  const labelCount = xValues.length;
+  const maxLabelLength = Math.max(...xValues.map((v: any) => String(v).length));
+
+  let tickangle = 0;
+  let tickfontSize = 11;
+
+  // Few labels, short text — horizontal is fine
+  if (labelCount <= 5 && maxLabelLength <= 15) {
+    tickangle = 0;
+    tickfontSize = 11;
+  }
+  // Moderate labels or medium text — slight angle
+  else if (labelCount <= 10 && maxLabelLength <= 20) {
+    tickangle = -30;
+    tickfontSize = 10;
+  }
+  // Many labels or long text — steep angle
+  else if (labelCount <= 20) {
+    tickangle = -45;
+    tickfontSize = 9;
+  }
+  // Very many labels — steep
+  else if (labelCount <= 40) {
+    tickangle = -60;
+    tickfontSize = 8;
+  }
+  // Extreme — vertical and small
+  else {
+    tickangle = -90;
+    tickfontSize = 7;
+  }
+
+  // Long labels always need angling regardless of count
+  if (maxLabelLength > 15 && tickangle === 0) {
+    tickangle = -45;
+  }
+  if (maxLabelLength > 25) {
+    tickangle = -60;
+    tickfontSize = Math.min(tickfontSize, 9);
+  }
+
+  return {
+    tickangle,
+    tickfont: { size: tickfontSize, family: 'Arial, sans-serif', color: '#333' },
+    automargin: true,
+    ...(labelCount > 50 ? { nticks: 20 } : {}),
+  };
+}
+
 /** Improve axis labels — fix vague/single-word labels from the AI */
 function improveAxisLabel(label: string | undefined, axis: 'x' | 'y'): string {
   if (!label || label === '' || label === 'undefined') return axis === 'x' ? 'Category' : 'Value';
@@ -786,18 +1121,144 @@ function improveAxisLabel(label: string | undefined, axis: 'x' | 'y'): string {
   return badLabels[lc] || label;
 }
 
+/** Normalize AI chart_data into a common { labels, datasets } shape so all builders work uniformly.
+ *  After this function: labels is always a flat array of x-values (strings or numbers),
+ *  and each dataset.data is always a flat array of y-values (numbers). */
+function normalizeChartData(chartData: any): { labels: any[]; datasets: any[] } {
+  let labels = chartData.labels ?? [];
+  const datasets = chartData.datasets ?? [];
+
+  // Standard format — but datasets[].data might be objects [{x, y}] instead of numbers
+  if (datasets.length > 0) {
+    // Check if any dataset has object-format data
+    const firstDs = datasets[0];
+    const firstData = firstDs?.data;
+    if (Array.isArray(firstData) && firstData.length > 0 && typeof firstData[0] === 'object' && firstData[0] !== null) {
+      // Extract x from first dataset's objects (they share the same x values)
+      const extractedLabels = firstData.map((d: any) => d.x ?? d.name ?? d.label ?? d.category ?? '');
+      const normalizedDatasets = datasets.map((ds: any) => {
+        if (!Array.isArray(ds.data) || ds.data.length === 0 || typeof ds.data[0] !== 'object') return ds;
+        return {
+          ...ds,
+          data: ds.data.map((d: any) => d.y ?? d.value ?? 0),
+          // Preserve CI if present in objects
+          _ci_lower: ds.data[0].ci_lower !== undefined ? ds.data.map((d: any) => d.ci_lower) : ds._ci_lower ?? ds.ci_lower,
+          _ci_upper: ds.data[0].ci_upper !== undefined ? ds.data.map((d: any) => d.ci_upper) : ds._ci_upper ?? ds.ci_upper,
+          error_y: ds.data[0].sd !== undefined ? ds.data.map((d: any) => d.sd) :
+                   ds.data[0].sem !== undefined ? ds.data.map((d: any) => d.sem) :
+                   ds.data[0].error !== undefined ? ds.data.map((d: any) => d.error) :
+                   ds.error_y,
+        };
+      });
+      // Use extracted labels if chart didn't provide explicit labels
+      if (labels.length === 0) labels = extractedLabels;
+      console.log('[normalizeChartData] Extracted x from object data:', labels, 'y sample:', normalizedDatasets[0]?.data?.slice(0, 3));
+      return { labels, datasets: normalizedDatasets };
+    }
+    // labels present or data is already flat numbers
+    return { labels, datasets };
+  }
+
+  // Format: { series: [{ name, x: [...], y: [...] }] }
+  if (chartData.series && Array.isArray(chartData.series) && chartData.series.length > 0) {
+    const firstSeries = chartData.series[0];
+    const xVals = firstSeries.x ?? firstSeries.data?.map((d: any) => d.x) ?? [];
+    return {
+      labels: xVals,
+      datasets: chartData.series.map((s: any) => ({
+        label: s.name ?? s.label,
+        data: s.y ?? s.data?.map((d: any) => d.y) ?? [],
+        color: s.color,
+        borderColor: s.borderColor ?? s.color,
+        error_y: s.error_y ?? s.sd ?? s.sem,
+      })),
+    };
+  }
+
+  // Format: { x: [...], y: [...] } — direct arrays
+  if (chartData.x && chartData.y && Array.isArray(chartData.x) && Array.isArray(chartData.y)) {
+    const ds: any = {
+      label: chartData.name ?? chartData.series_name ?? 'Data',
+      data: chartData.y,
+    };
+    if (chartData.error_y) {
+      ds.error_y = Array.isArray(chartData.error_y) ? chartData.error_y : chartData.error_y.array;
+    } else if (chartData.ci_lower && chartData.ci_upper) {
+      ds._ci_lower = chartData.ci_lower;
+      ds._ci_upper = chartData.ci_upper;
+    }
+    return { labels: chartData.x, datasets: [ds] };
+  }
+
+  // Format: { data: [{ species: "Owl", mean: 58.5, ci_lower: ... }, ...] }
+  if (chartData.data && Array.isArray(chartData.data) && chartData.data.length > 0 && typeof chartData.data[0] === 'object' && !Array.isArray(chartData.data[0])) {
+    const keys = Object.keys(chartData.data[0]);
+    const xKey = chartData.x_column ?? keys.find((k: string) =>
+      /species|group|treatment|category|name|label|arm|dose|time|visit|subject|site|region|country/i.test(k)
+    ) ?? keys[0];
+    // Exclude CI/error columns from being separate Y series
+    const errorKeys = new Set(keys.filter((k: string) => /ci_lower|ci_upper|lower|upper|error|sd|sem|se\b/i.test(k)));
+    const yKeys = keys.filter((k: string) => k !== xKey && !errorKeys.has(k) && typeof chartData.data[0][k] === 'number');
+    if (yKeys.length > 0) {
+      // Try to pair each Y key with CI bounds
+      const ciLowerKey = keys.find((k: string) => /ci_lower|lower_ci|lower_bound|lower/i.test(k));
+      const ciUpperKey = keys.find((k: string) => /ci_upper|upper_ci|upper_bound|upper/i.test(k));
+      const sdKey = keys.find((k: string) => /^sd$|^std_dev$|^stdev$/i.test(k));
+      const semKey = keys.find((k: string) => /^sem$|^se$|^std_error$/i.test(k));
+
+      return {
+        labels: chartData.data.map((d: any) => d[xKey]),
+        datasets: yKeys.map((yKey: string) => {
+          const ds: any = {
+            label: yKey,
+            data: chartData.data.map((d: any) => d[yKey]),
+          };
+          // Attach asymmetric CI error bars
+          if (ciLowerKey && ciUpperKey) {
+            ds._ci_lower = chartData.data.map((d: any) => d[ciLowerKey]);
+            ds._ci_upper = chartData.data.map((d: any) => d[ciUpperKey]);
+          } else if (sdKey) {
+            ds.error_y = chartData.data.map((d: any) => d[sdKey]);
+          } else if (semKey) {
+            ds.error_y = chartData.data.map((d: any) => d[semKey]);
+          }
+          return ds;
+        }),
+      };
+    }
+  }
+
+  // Format: results_table with metric/value pairs
+  if (chartData.results_table && Array.isArray(chartData.results_table)) {
+    const numericRows = chartData.results_table.filter((r: any) => r?.value != null && !isNaN(Number(r.value)));
+    if (numericRows.length > 0) {
+      return {
+        labels: numericRows.map((r: any) => r.metric ?? r.label ?? r.name ?? ''),
+        datasets: [{
+          label: 'Values',
+          data: numericRows.map((r: any) => Number(r.value)),
+        }],
+      };
+    }
+  }
+
+  return { labels, datasets };
+}
+
 /** Build Plotly traces from generic LLM chart_data (bar/line) */
 function buildGenericPlotlyTraces(
   chartData: any,
   mode: string
 ): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
-  const labels = chartData.labels ?? [];
-  const datasets = chartData.datasets ?? [];
+  const { labels, datasets } = normalizeChartData(chartData);
   const annotations = buildSignificanceAnnotations(chartData);
+
+  // Detect categorical x-axis: if labels are strings (species names, treatment groups, etc.)
+  const isCategorical = labels.length > 0 && typeof labels[0] === 'string' && labels.some((l: any) => isNaN(Number(l)));
 
   // Axis titles with units — fallback to column name from labels/datasets if AI didn't provide
   const rawX = chartData.x_axis ?? chartData.xLabel ?? chartData.x_label
-    ?? (labels.length > 0 && typeof labels[0] === 'string' ? 'Category' : 'X');
+    ?? (isCategorical ? 'Category' : 'X');
   const rawY = chartData.y_axis ?? chartData.yLabel ?? chartData.y_label
     ?? (datasets.length > 0 ? (datasets[0]?.label ?? 'Value') : 'Y');
   const xTitle = improveAxisLabel(rawX, 'x');
@@ -819,8 +1280,20 @@ function buildGenericPlotlyTraces(
     yAxisExtra.type = 'log';
   }
 
+  // Categorical x-axis: tell Plotly to treat as categories, preserving original order
+  if (isCategorical) {
+    xAxisExtra.type = 'category';
+    xAxisExtra.categoryorder = 'array';
+    xAxisExtra.categoryarray = labels;
+  }
+
   // Choose palette: use RESEARCH_PALETTE for >2 series, KM for survival-like
   const palette = datasets.length > 2 ? RESEARCH_PALETTE : DEFAULT_PALETTE;
+
+  // Hover template: show category name for categorical x, numeric for numeric x
+  const hoverTpl = isCategorical
+    ? '<b>%{x}</b><br>%{y:.2f}<extra>%{fullData.name}</extra>'
+    : '<b>%{fullData.name}</b><br>x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>';
 
   if (mode === 'bar' || (!mode && !isPlotlyChartData(chartData))) {
     const showValues = chartData.show_values === true; // only show if explicitly requested
@@ -834,6 +1307,7 @@ function buildGenericPlotlyTraces(
         type: 'bar' as const,
         marker: { color, line: { width: 1, color: '#ffffff' } },
         error_y: resolveErrorBars(ds, chartData, seriesName),
+        hovertemplate: hoverTpl,
         // Values above bars
         ...(showValues ? {
           text: (ds.data ?? []).map((v: number) => typeof v === 'number' ? v.toFixed(1) : String(v)),
@@ -869,6 +1343,7 @@ function buildGenericPlotlyTraces(
       marker: { color, size: markerSize, symbol: markerShape, line: { width: 1.5, color: '#1a2332' } },
       type: 'scatter' as const,
       error_y: resolveErrorBars(ds, chartData, seriesName),
+      hovertemplate: hoverTpl,
     };
   });
 
@@ -889,7 +1364,9 @@ function resolvePharmaType(chartData: any): string | null {
   const pt = (chartData.pharma_type ?? '').toLowerCase();
   if (pt) return pt;
   const ct = (chartData.type ?? '').toLowerCase();
-  if (['kaplan-meier', 'box', 'boxplot', 'heatmap', 'waterfall', 'forest', 'volcano'].includes(ct)) return ct;
+  if (['kaplan-meier', 'box', 'boxplot', 'heatmap', 'waterfall', 'forest', 'volcano', 'violin', 'histogram', 'bubble', 'qq', 'pareto', 'swimmer', 'funnel'].includes(ct)) return ct;
+  const chartType = (chartData.chart_type ?? '').toLowerCase();
+  if (chartType) return chartType;
   return null;
 }
 
@@ -926,6 +1403,7 @@ export default function PlotlyInteractiveChart({
   customizations: custOverrides,
   onPointClick,
   onEditAction,
+  onLabelEdit,
   height = 420,
 }: PlotlyInteractiveChartProps) {
   const [selectedPoint, setSelectedPoint] = useState<{
@@ -940,10 +1418,13 @@ export default function PlotlyInteractiveChart({
     const mode = config.mode ?? 'auto';
     const chartData = config.chartData;
 
-    // Guard: if chartData is missing or empty, return empty traces
-    if (!chartData || (typeof chartData === 'object' && !chartData.datasets && !chartData.labels && !chartData.z)) {
+    // Guard: if chartData is missing or truly empty, return empty traces
+    if (!chartData || (typeof chartData === 'object' && !chartData.datasets && !chartData.labels && !chartData.z && !chartData.series && !chartData.data && !chartData.x && !chartData.y)) {
+      console.warn('[PlotlyInteractiveChart] No chartData or empty chartData:', chartData);
       return { plotData: [] as Plotly.Data[], layout: { ...LAYOUT_BASE } };
     }
+
+    console.log('[PlotlyInteractiveChart] CHART DATA FROM AI:', JSON.stringify(chartData, null, 2));
 
     // ── Resolve pharma_type for advanced charts ───────────────────────
     const pharmaType = resolvePharmaType(chartData);
@@ -1019,6 +1500,131 @@ export default function PlotlyInteractiveChart({
           title: tc.title,
           margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
           ...modeLayout,
+        },
+      };
+    }
+
+    // Violin plot
+    if (mode === 'violin' || pharmaType === 'violin') {
+      const datasets = chartData.datasets ?? [];
+      const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
+        type: 'violin' as const,
+        y: ds.data ?? [],
+        name: ds.label ?? `Group ${i + 1}`,
+        box: { visible: true },
+        meanline: { visible: true },
+        marker: { color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
+        points: (ds.data?.length ?? 0) < 50 ? 'all' : false,
+        jitter: 0.3,
+        pointpos: -1.5,
+      }));
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Violin Plot');
+      return {
+        plotData,
+        layout: {
+          ...LAYOUT_BASE,
+          title: tc.title,
+          margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
+          xaxis: { title: { text: chartData.x_label ?? chartData.x_axis ?? 'Group', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+          yaxis: { title: { text: chartData.y_label ?? chartData.y_axis ?? 'Value', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+        },
+      };
+    }
+
+    // Histogram
+    if (mode === 'histogram' || pharmaType === 'histogram') {
+      const datasets = chartData.datasets ?? [];
+      const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
+        type: 'histogram' as const,
+        x: ds.data ?? [],
+        name: ds.label ?? `Variable ${i + 1}`,
+        marker: { color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length], line: { width: 1, color: '#ffffff' } },
+        opacity: datasets.length > 1 ? 0.7 : 1,
+      }));
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Distribution');
+      return {
+        plotData,
+        layout: {
+          ...LAYOUT_BASE,
+          title: tc.title,
+          margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
+          barmode: datasets.length > 1 ? 'overlay' as const : undefined,
+          xaxis: { title: { text: chartData.x_label ?? chartData.x_axis ?? 'Value', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+          yaxis: { title: { text: chartData.y_label ?? chartData.y_axis ?? 'Frequency', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+        },
+      };
+    }
+
+    // Bubble chart
+    if (mode === 'bubble' || pharmaType === 'bubble') {
+      const datasets = chartData.datasets ?? [];
+      const labels = chartData.labels ?? [];
+      const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
+        type: 'scatter' as const,
+        mode: 'markers' as const,
+        x: ds.x ?? labels,
+        y: ds.data ?? ds.y ?? [],
+        name: ds.label ?? `Series ${i + 1}`,
+        text: ds.text ?? labels,
+        marker: {
+          size: ds.sizes ?? ds.data?.map(() => 10) ?? [],
+          sizemode: 'area' as const,
+          sizeref: 2 * Math.max(...(ds.sizes ?? [10])) / (40 ** 2),
+          color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+          line: { width: 1, color: '#1a2332' },
+        },
+      }));
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Bubble Chart');
+      return {
+        plotData,
+        layout: {
+          ...LAYOUT_BASE,
+          title: tc.title,
+          margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
+          xaxis: { title: { text: chartData.x_label ?? chartData.x_axis ?? 'X', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+          yaxis: { title: { text: chartData.y_label ?? chartData.y_axis ?? 'Y', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+        },
+      };
+    }
+
+    // Q-Q Plot
+    if (mode === 'qq' || pharmaType === 'qq') {
+      const observed = chartData.datasets?.[0]?.data ?? [];
+      const sorted = [...observed].sort((a, b) => a - b);
+      const n = sorted.length;
+      // Theoretical normal quantiles
+      const theoretical = sorted.map((_: number, i: number) => {
+        const p = (i + 0.5) / n;
+        // Approximate inverse normal using Beasley-Springer-Moro algorithm
+        const a = p - 0.5;
+        const r = a * a;
+        return a * (2.50662823884 + r * (-18.61500062529 + r * (41.39119773534 + r * -25.44106049637))) /
+          (1 + r * (-8.47351093090 + r * (23.08336743743 + r * (-21.06224101826 + r * 3.13082909833))));
+      });
+      const plotData: Plotly.Data[] = [
+        {
+          type: 'scatter' as const, mode: 'markers' as const,
+          x: theoretical, y: sorted,
+          name: 'Data Points',
+          marker: { color: '#2563eb', size: 6 },
+        },
+        {
+          type: 'scatter' as const, mode: 'lines' as const,
+          x: [Math.min(...theoretical), Math.max(...theoretical)],
+          y: [Math.min(...sorted), Math.max(...sorted)],
+          name: 'Reference Line',
+          line: { dash: 'dash', color: '#e53e3e', width: 1.5 },
+        },
+      ];
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Normal Q-Q Plot');
+      return {
+        plotData,
+        layout: {
+          ...LAYOUT_BASE,
+          title: tc.title,
+          margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
+          xaxis: { title: { text: 'Theoretical Quantiles', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
+          yaxis: { title: { text: 'Sample Quantiles', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
         },
       };
     }
@@ -1242,44 +1848,51 @@ export default function PlotlyInteractiveChart({
     lo.legend = { ...smartLegend, ...(lo.legend ?? {}) };
     lo.margin = { ...smartMargin, ...(lo.margin?.t ? { t: lo.margin.t } : {}) };
 
-    // Legend position — applied AFTER smart sizing so user choice wins
+    // Legend position — ALL positions are OUTSIDE the plot area to never overlap data.
+    // Margins are adjusted to accommodate the legend in its new position.
     if (custOverrides.legendPosition) {
-      const legendMap: Record<string, Partial<Plotly.Layout['legend']>> = {
-        'top-right':    { x: 1, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' },
-        'top-left':     { x: 0, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
-        'bottom-right': { x: 1, y: 0, xanchor: 'right', yanchor: 'bottom', orientation: 'v' },
-        'bottom-left':  { x: 0, y: 0, xanchor: 'left', yanchor: 'bottom', orientation: 'v' },
-        'bottom':       { x: 0.5, y: -0.15, xanchor: 'center', yanchor: 'top', orientation: 'h' },
-        'top':          { x: 0.5, y: 1.02, xanchor: 'center', yanchor: 'bottom', orientation: 'h' },
-        'right':        { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
-        'left':         { x: -0.15, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' },
-        'none':         { visible: false } as any,
+      const legendMap: Record<string, { legend: Partial<Plotly.Layout['legend']>; marginKey?: string; marginVal?: number }> = {
+        'top-right':    { legend: { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' }, marginKey: 'r', marginVal: 160 },
+        'top-left':     { legend: { x: -0.02, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' }, marginKey: 'l', marginVal: 160 },
+        'bottom-right': { legend: { x: 1.02, y: 0, xanchor: 'left', yanchor: 'bottom', orientation: 'v' }, marginKey: 'r', marginVal: 160 },
+        'bottom-left':  { legend: { x: -0.02, y: 0, xanchor: 'right', yanchor: 'bottom', orientation: 'v' }, marginKey: 'l', marginVal: 160 },
+        'bottom':       { legend: { x: 0.5, y: -0.25, xanchor: 'center', yanchor: 'top', orientation: 'h' }, marginKey: 'b', marginVal: 140 },
+        'top':          { legend: { x: 0.5, y: 1.15, xanchor: 'center', yanchor: 'bottom', orientation: 'h' }, marginKey: 't', marginVal: 110 },
+        'right':        { legend: { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' }, marginKey: 'r', marginVal: 180 },
+        'left':         { legend: { x: -0.02, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' }, marginKey: 'l', marginVal: 180 },
+        'none':         { legend: {} },
       };
-      const pos = legendMap[custOverrides.legendPosition];
-      if (pos) {
-        lo.legend = { ...lo.legend, ...pos };
+      const entry = legendMap[custOverrides.legendPosition];
+      if (entry) {
+        lo.legend = { ...lo.legend, ...entry.legend };
         if (custOverrides.legendPosition === 'none') {
           lo.showlegend = false;
         } else {
           lo.showlegend = true;
+          if (entry.marginKey && entry.marginVal) {
+            lo.margin = { ...lo.margin, [entry.marginKey]: Math.max(lo.margin?.[entry.marginKey] ?? 0, entry.marginVal) };
+          }
         }
       }
     }
 
-    // Legend anchor (fine-grained position: top-right, bottom-left, etc.)
+    // Legend anchor (fine-grained position) — all OUTSIDE the plot area
     if (custOverrides.legendAnchor) {
-      const anchorMap: Record<string, Partial<Plotly.Layout['legend']>> = {
-        'top-right':      { x: 1, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' },
-        'top-left':       { x: 0, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
-        'bottom-right':   { x: 1, y: 0, xanchor: 'right', yanchor: 'bottom', orientation: 'v' },
-        'bottom-left':    { x: 0, y: 0, xanchor: 'left', yanchor: 'bottom', orientation: 'v' },
-        'outside-right':  { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' },
-        'outside-bottom': { x: 0.5, y: -0.15, xanchor: 'center', yanchor: 'top', orientation: 'h' },
+      const anchorMap: Record<string, { legend: Partial<Plotly.Layout['legend']>; marginKey?: string; marginVal?: number }> = {
+        'top-right':      { legend: { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' }, marginKey: 'r', marginVal: 160 },
+        'top-left':       { legend: { x: -0.02, y: 1, xanchor: 'right', yanchor: 'top', orientation: 'v' }, marginKey: 'l', marginVal: 160 },
+        'bottom-right':   { legend: { x: 1.02, y: 0, xanchor: 'left', yanchor: 'bottom', orientation: 'v' }, marginKey: 'r', marginVal: 160 },
+        'bottom-left':    { legend: { x: -0.02, y: 0, xanchor: 'right', yanchor: 'bottom', orientation: 'v' }, marginKey: 'l', marginVal: 160 },
+        'outside-right':  { legend: { x: 1.02, y: 1, xanchor: 'left', yanchor: 'top', orientation: 'v' }, marginKey: 'r', marginVal: 180 },
+        'outside-bottom': { legend: { x: 0.5, y: -0.25, xanchor: 'center', yanchor: 'top', orientation: 'h' }, marginKey: 'b', marginVal: 140 },
       };
-      const pos = anchorMap[custOverrides.legendAnchor];
-      if (pos) {
-        lo.legend = { ...lo.legend, ...pos };
+      const entry = anchorMap[custOverrides.legendAnchor];
+      if (entry) {
+        lo.legend = { ...lo.legend, ...entry.legend };
         lo.showlegend = true;
+        if (entry.marginKey && entry.marginVal) {
+          lo.margin = { ...lo.margin, [entry.marginKey]: Math.max(lo.margin?.[entry.marginKey] ?? 0, entry.marginVal) };
+        }
       }
     }
 
@@ -1289,8 +1902,287 @@ export default function PlotlyInteractiveChart({
       font: { ...(lo.legend?.font ?? {}), color: '#1a2332', family: 'Arial, sans-serif' },
     };
 
+    // Legend border
+    if (custOverrides.showLegendBorder !== undefined) {
+      lo.legend = { ...lo.legend, borderwidth: custOverrides.showLegendBorder ? 1 : 0, bordercolor: '#cccccc' };
+    }
+    // Legend background
+    if (custOverrides.legendBgColor) {
+      lo.legend = { ...lo.legend, bgcolor: custOverrides.legendBgColor };
+    }
+    // Legend font size
+    if (custOverrides.legendFontSize !== undefined) {
+      lo.legend = { ...lo.legend, font: { ...(lo.legend?.font ?? {}), size: custOverrides.legendFontSize } };
+    }
+
+    // Bar gap — store value is 0–20 px; Plotly bargap is 0–1 fraction
+    if (custOverrides.barGap !== undefined) {
+      lo.bargap = Math.max(0, Math.min(1, custOverrides.barGap / 20));
+    }
+    // Bar corner radius (Plotly 2.27+ marker.cornerradius)
+    if (custOverrides.barBorderRadius !== undefined && custOverrides.barBorderRadius > 0) {
+      pd.forEach((trace: any) => {
+        if (trace.type === 'bar') {
+          trace.marker = { ...trace.marker, cornerradius: custOverrides.barBorderRadius };
+        }
+      });
+    }
+    // Show error bars toggle — force error bars on all bar/scatter traces
+    if (custOverrides.showErrorBars === true) {
+      pd.forEach((trace: any) => {
+        if (!trace.error_y || !trace.error_y?.visible) {
+          // Generate approximate error bars (10% of each value) when no real data exists
+          const yVals = trace.y ?? [];
+          if (yVals.length > 0) {
+            trace.error_y = {
+              type: 'data' as const,
+              array: yVals.map((v: any) => typeof v === 'number' ? Math.abs(v * 0.1) : 0),
+              visible: true,
+              color: trace.marker?.color ?? '#64748b',
+              thickness: 2,
+              width: 6,
+            };
+          }
+        }
+      });
+    } else if (custOverrides.showErrorBars === false) {
+      pd.forEach((trace: any) => {
+        if (trace.error_y) trace.error_y = { ...trace.error_y, visible: false };
+      });
+    }
+
+    // Fill opacity
+    if (custOverrides.fillOpacity !== undefined) {
+      pd.forEach((trace: any) => {
+        if (trace.fill && trace.line?.color) {
+          // Convert hex/rgb to rgba with specified opacity
+          const c = trace.line.color;
+          if (c.startsWith('#')) {
+            const r = parseInt(c.slice(1, 3), 16);
+            const g = parseInt(c.slice(3, 5), 16);
+            const b = parseInt(c.slice(5, 7), 16);
+            trace.fillcolor = `rgba(${r},${g},${b},${custOverrides.fillOpacity})`;
+          }
+        }
+      });
+    }
+
+    // X-axis rotation (user override — applied before auto-rotation below)
+    if (custOverrides.xAxisRotation !== undefined) {
+      lo.xaxis = { ...lo.xaxis, tickangle: custOverrides.xAxisRotation };
+    }
+    // Axis step sizes
+    if (custOverrides.xAxisStepSize != null) {
+      lo.xaxis = { ...lo.xaxis, dtick: custOverrides.xAxisStepSize };
+    }
+    if (custOverrides.yAxisStepSize != null) {
+      lo.yaxis = { ...lo.yaxis, dtick: custOverrides.yAxisStepSize };
+    }
+    // X-axis log scale
+    if (custOverrides.xAxisScale === 'log') {
+      lo.xaxis = { ...lo.xaxis, type: 'log' };
+    }
+
+    // Subtitle annotation
+    if (custOverrides.subtitle) {
+      const existing = Array.isArray(lo.annotations) ? lo.annotations : [];
+      lo.annotations = [
+        ...existing.filter((a: any) => a._subtitleFlag !== true),
+        {
+          text: custOverrides.subtitle,
+          xref: 'paper', yref: 'paper',
+          x: 0.5, y: 1.02,
+          xanchor: 'center', yanchor: 'bottom',
+          showarrow: false,
+          font: { size: 11, color: '#64748b' },
+          _subtitleFlag: true,
+        },
+      ];
+    }
+
+    // Show values / data labels
+    if (custOverrides.showValues !== undefined || custOverrides.showDataLabels !== undefined) {
+      const show = custOverrides.showValues ?? custOverrides.showDataLabels ?? false;
+      const pos = custOverrides.valuePosition === 'inside' ? 'inside' : custOverrides.valuePosition === 'below' ? 'bottom' : 'outside';
+      const fontSize = custOverrides.valueFontSize ?? 10;
+      pd.forEach((trace: any) => {
+        if (show) {
+          const vals = trace.y ?? trace.x ?? [];
+          trace.text = vals.map((v: any) => typeof v === 'number' ? v.toFixed(1) : String(v ?? ''));
+          trace.textposition = pos;
+          trace.textfont = { size: fontSize, color: '#1a2332' };
+        } else {
+          trace.text = undefined;
+          trace.textposition = 'none';
+        }
+      });
+    }
+
+    // Dark theme
+    if (custOverrides.chartTheme === 'dark') {
+      lo.plot_bgcolor = '#1e293b';
+      lo.paper_bgcolor = '#0f172a';
+      lo.font = { ...lo.font, color: '#e2e8f0' };
+      lo.xaxis = { ...lo.xaxis, gridcolor: '#334155', linecolor: '#475569', tickcolor: '#94a3b8' };
+      lo.yaxis = { ...lo.yaxis, gridcolor: '#334155', linecolor: '#475569', tickcolor: '#94a3b8' };
+      lo.legend = { ...lo.legend, font: { ...(lo.legend?.font ?? {}), color: '#e2e8f0' } };
+    }
+
+    // Per-series overrides
+    if (custOverrides.seriesOverrides && custOverrides.seriesOverrides.length > 0) {
+      custOverrides.seriesOverrides.forEach((so, i) => {
+        if (i >= pd.length) return;
+        const trace = pd[i] as any;
+        if (so.color) {
+          trace.marker = { ...trace.marker, color: so.color };
+          if (trace.line) trace.line = { ...trace.line, color: so.color };
+        }
+        if (so.lineStyle) {
+          const sDashMap: Record<string, string> = { solid: 'solid', dashed: 'dash', dotted: 'dot', dashdot: 'dashdot' };
+          trace.line = { ...trace.line, dash: sDashMap[so.lineStyle] ?? so.lineStyle };
+        }
+        if (so.lineWidth !== undefined) trace.line = { ...trace.line, width: so.lineWidth };
+        if (so.markerShape) trace.marker = { ...trace.marker, symbol: so.markerShape };
+        if (so.markerSize !== undefined) trace.marker = { ...trace.marker, size: so.markerSize };
+        if (so.name) trace.name = so.name;
+        if (so.visible !== undefined) trace.visible = so.visible ? true : 'legendonly';
+      });
+    }
+
+    // ── SAFETY NET: axis labels & title must ALWAYS exist ──────────────────
+    const axisFont = { size: 13, color: '#1a2332', family: 'Arial, sans-serif' as const };
+    const getAxisTitle = (axis: any): string => {
+      if (!axis?.title) return '';
+      if (typeof axis.title === 'string') return axis.title;
+      return axis.title?.text ?? '';
+    };
+
+    // Derive sensible labels from trace data when AI omits them
+    const deriveLabel = (traces: any[], axis: 'x' | 'y'): string => {
+      if (!traces || traces.length === 0) return axis === 'x' ? 'Category' : 'Value';
+      const t = traces[0];
+      if (axis === 'x') {
+        if (t.x && t.x.length > 0 && typeof t.x[0] === 'string') {
+          const sample = String(t.x[0]).toLowerCase();
+          if (/^(s|subj|sub)\d/i.test(sample)) return 'Subject ID';
+          return 'Category';
+        }
+        return 'Index';
+      }
+      // y-axis
+      const name = (t.name ?? '').toLowerCase();
+      if (name.includes('count')) return 'Count (n)';
+      if (name.includes('mean')) return 'Mean Value';
+      if (name.includes('survival')) return 'Survival Probability';
+      if (name.includes('concentration')) return 'Concentration (ng/mL)';
+      return 'Value';
+    };
+
+    if (!getAxisTitle(lo.xaxis)) {
+      const label = deriveLabel(pd, 'x');
+      lo.xaxis = { ...lo.xaxis, title: { text: label, font: axisFont, standoff: 15 } };
+    }
+    if (!getAxisTitle(lo.yaxis)) {
+      const label = deriveLabel(pd, 'y');
+      lo.yaxis = { ...lo.yaxis, title: { text: label, font: axisFont, standoff: 15 } };
+    }
+
+    // Ensure chart always has a title inside the Plotly area (for exports)
+    if (!lo.title || (typeof lo.title === 'object' && !lo.title.text)) {
+      const fallbackTitle = config?.title ?? 'Analysis Results';
+      lo.title = {
+        text: `<b>${fallbackTitle}</b>`,
+        font: { size: 14, color: '#1a2332', family: 'Arial, sans-serif' },
+        x: 0.5,
+        xanchor: 'center' as const,
+        y: 0.98,
+        yanchor: 'top' as const,
+      };
+      lo.margin = { ...lo.margin, t: Math.max(lo.margin?.t ?? 60, 70) };
+    }
+
+    // Auto-rotate dense x-axis labels — skip if user set explicit rotation
+    const xCount = (pd[0] as any)?.x?.length ?? 0;
+    if (xCount > 20 && custOverrides?.xAxisRotation === undefined) {
+      lo.xaxis = {
+        ...lo.xaxis,
+        tickangle: xCount > 30 ? -90 : -45,
+        tickfont: { ...(lo.xaxis?.tickfont ?? {}), size: xCount > 30 ? 9 : 11 },
+      };
+      lo.margin = { ...lo.margin, b: Math.max(lo.margin?.b ?? 80, xCount > 30 ? 120 : 100) };
+    }
+
+    // Add reference/citation as annotation at bottom (appears in exports)
+    const ref = config?.chartData?.reference;
+    if (ref && typeof ref === 'string') {
+      const existingAnnotations = Array.isArray(lo.annotations) ? lo.annotations : [];
+      lo.annotations = [
+        ...existingAnnotations,
+        {
+          text: ref,
+          xref: 'paper', yref: 'paper',
+          x: 0, y: -0.22,
+          xanchor: 'left', yanchor: 'top',
+          showarrow: false,
+          font: { size: 9, color: '#5a7a96', family: 'Arial, sans-serif' },
+        },
+      ];
+      lo.margin = { ...lo.margin, b: Math.max(lo.margin?.b ?? 80, 130) };
+    }
+
+    // ── PERMANENT GUARD: Auto-detect categorical X-axis + smart label sizing ──
+    // Runs LAST so nothing downstream can overwrite it.
+    // If traces have string X values that aren't parseable numbers, force categorical axis.
+    if (pd && pd.length > 0) {
+      const firstX = (pd[0] as any)?.x;
+      if (firstX && Array.isArray(firstX) && firstX.length > 0) {
+        const allStrings = firstX.every((v: any) => typeof v === 'string');
+        const hasNonNumeric = firstX.some((v: any) => typeof v === 'string' && isNaN(Number(v)));
+
+        if (allStrings && hasNonNumeric) {
+          // Force categorical axis
+          const labelConfig = calculateXAxisLabelConfig(firstX);
+          lo.xaxis = {
+            ...lo.xaxis,
+            type: 'category',
+            categoryorder: 'array',
+            categoryarray: firstX,
+            ...labelConfig,
+          };
+
+          // Expand bottom margin to accommodate angled labels
+          const maxLen = Math.max(...firstX.map((v: any) => String(v).length));
+          const extraBottom = Math.min(maxLen * 3, 80);
+          lo.margin = {
+            ...lo.margin,
+            b: Math.max(lo.margin?.b ?? 80, 120 + extraBottom),
+          };
+        } else {
+          // Even for numeric x, ensure automargin
+          lo.xaxis = { ...lo.xaxis, automargin: true };
+        }
+      }
+    }
+
     return { plotData: pd, layout: lo };
   }, [basePlotData, baseLayout, custOverrides]);
+
+  // Debug: log final traces and layout being rendered
+  useEffect(() => {
+    console.log('=== PLOTLY DEBUG ===');
+    console.log('Number of traces:', plotData?.length);
+    if (plotData?.[0]) {
+      const t0 = plotData[0] as any;
+      console.log('First trace type:', t0.type);
+      console.log('First trace x (first 5):', t0.x?.slice(0, 5));
+      console.log('First trace y (first 5):', t0.y?.slice(0, 5));
+      console.log('X value type:', typeof t0.x?.[0]);
+      console.log('Has error bars:', !!t0.error_y);
+    }
+    console.log('Layout xaxis type:', (layout as any)?.xaxis?.type);
+    console.log('Layout xaxis categoryorder:', (layout as any)?.xaxis?.categoryorder);
+    console.log('=== END DEBUG ===');
+  }, [plotData, layout]);
 
   // Revision counter — state-based so React actually re-renders the <Plot> component.
   // react-plotly.js compares the `revision` prop and calls Plotly.react when it changes.
@@ -1425,23 +2317,6 @@ export default function PlotlyInteractiveChart({
     [onPointClick, highlightTrace]
   );
 
-  const handleExport = useCallback(() => {
-    if (plotRef.current?.el) {
-      // @ts-ignore — use pre-bundled UMD dist (Vite converts CJS→ESM via optimizeDeps)
-      import('plotly.js/dist/plotly').then((mod) => {
-        const Plotly = (mod as any).default ?? mod;
-        Plotly.downloadImage(plotRef.current!.el, {
-          format: 'png',
-          width: 1200,
-          height: 700,
-          filename: (config.title ?? 'chart').replace(/\s+/g, '_'),
-        });
-      }).catch(() => {
-        toast.error('Export failed — Plotly module not available');
-      });
-    }
-  }, [config.title]);
-
   // ── Context menu state ──────────────────────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{
     x: number; y: number;
@@ -1478,57 +2353,85 @@ export default function PlotlyInteractiveChart({
     );
   }
 
+  // ── Extract text values for editable HTML overlays ────────────────────────
+  const resolvedTitle = (() => {
+    const t = (layout as any)?.title;
+    if (!t) return '';
+    if (typeof t === 'string') return t;
+    const raw = t.text ?? '';
+    // Strip Plotly bold tags for display
+    return raw.replace(/<\/?b>/gi, '');
+  })();
+
+  const resolvedSubtitle = custOverrides?.subtitle ?? '';
+
+  const resolvedXLabel = (() => {
+    const ax = (layout as any)?.xaxis?.title;
+    if (!ax) return '';
+    if (typeof ax === 'string') return ax;
+    return ax.text ?? '';
+  })();
+
+  const resolvedYLabel = (() => {
+    const ax = (layout as any)?.yaxis?.title;
+    if (!ax) return '';
+    if (typeof ax === 'string') return ax;
+    return ax.text ?? '';
+  })();
+
+  // Build a layout copy that suppresses Plotly's own title + axis title text
+  // so our HTML overlays don't double-render.
+  const plotLayout = useMemo(() => {
+    const lo: any = { ...layout };
+    // Hide Plotly title — we render it as HTML above the chart
+    lo.title = { ...(typeof lo.title === 'object' ? lo.title : {}), text: '' };
+    // Reduce top margin since our HTML title is outside
+    lo.margin = { ...lo.margin, t: Math.max((lo.margin?.t ?? 60) - 30, 35) };
+    return lo;
+  }, [layout]);
+
   return (
     <div className="flex flex-col">
-      {/* Chart action buttons — dedicated row above chart */}
-      <div className="flex items-center gap-1 px-3 py-1.5 flex-shrink-0">
-        <button
-          onClick={() => {
-            if (plotRef.current?.el) {
-              // @ts-ignore — use pre-bundled UMD dist
-              import('plotly.js/dist/plotly').then((mod: any) => {
-                const Plotly = mod.default ?? mod;
-                Plotly.relayout(plotRef.current!.el, { 'xaxis.autorange': true, 'yaxis.autorange': true });
-              }).catch(() => {});
-            }
-          }}
-          className="flex items-center gap-1 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#0f172a] hover:bg-[#f1f5f9] rounded transition-colors"
-          title="Reset zoom to fit all data"
-        >
-          Fit All
-        </button>
-        <button
-          onClick={() => {
-            onEditAction?.('add_labels', selectedPoint);
-          }}
-          className="flex items-center gap-1 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#0f172a] hover:bg-[#f1f5f9] rounded transition-colors"
-          title="Toggle data value labels"
-        >
-          Values
-        </button>
-        <button
-          onClick={() => {
-            onEditAction?.('add_trendline', selectedPoint);
-          }}
-          className="flex items-center gap-1 px-2 py-1 text-[10px] text-[#64748b] hover:text-[#0f172a] hover:bg-[#f1f5f9] rounded transition-colors"
-          title="Add trendline"
-        >
-          Trendline
-        </button>
-      </div>
+      {/* Editable chart title — HTML overlay above the Plotly SVG */}
+      {resolvedTitle && (
+        <div style={{ padding: '10px 16px 2px', textAlign: 'center' }}>
+          <InlineEditableText
+            value={resolvedTitle}
+            onCommit={(v) => onLabelEdit?.('chartTitle', v)}
+            style={{ fontSize: 14, fontWeight: 700, color: '#1a2332', fontFamily: 'Arial, sans-serif', display: 'inline-block', maxWidth: '90%' }}
+            placeholder="Chart title"
+          />
+          {resolvedSubtitle && (
+            <div style={{ marginTop: 2 }}>
+              <InlineEditableText
+                value={resolvedSubtitle}
+                onCommit={(v) => onLabelEdit?.('subtitle', v)}
+                style={{ fontSize: 11, fontWeight: 400, color: '#64748b', fontFamily: 'Arial, sans-serif', display: 'inline-block' }}
+                placeholder="Subtitle"
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Chart container */}
       <div
         ref={chartContainerRef}
-        className="relative rounded-lg overflow-hidden flex-1"
-        style={{ background: '#ffffff', border: '1px solid #e2e8f0', minHeight: 400 }}
+        className="relative rounded-lg flex-1"
+        style={{
+          background: '#ffffff',
+          border: '1px solid #e2e8f0',
+          minHeight: 400,
+          overflowX: (plotData[0] as any)?.x?.length > 30 ? 'auto' : 'hidden',
+          overflowY: 'hidden',
+        }}
         onContextMenu={handleContextMenu}
       >
         <Suspense
           fallback={
             <div
               className="flex items-center justify-center gap-2 text-sm text-slate-400"
-              style={{ height }}
+              style={{ minHeight: 400 }}
             >
               <Loader2 className="w-4 h-4 animate-spin" />
               Loading chart...
@@ -1541,27 +2444,20 @@ export default function PlotlyInteractiveChart({
             data={plotData as any}
             layout={
               {
-                ...layout,
+                ...plotLayout,
                 width: undefined,
-                height,
+                height: undefined,
                 autosize: true,
               } as any
             }
             config={{
               responsive: true,
-              displayModeBar: true,
-              modeBarButtonsToRemove: ['toImage', 'lasso2d', 'select2d', 'autoScale2d'],
+              displayModeBar: false,
               displaylogo: false,
-              toImageButtonOptions: {
-                format: 'png',
-                filename: config.title ?? 'biostat-chart',
-                width: 1200,
-                height: 700,
-              },
             }}
             onClick={handlePlotlyClick}
             useResizeHandler
-            style={{ width: '100%', height }}
+            style={{ width: '100%', height: '100%' }}
           />
         </Suspense>
 
@@ -1777,9 +2673,50 @@ export default function PlotlyInteractiveChart({
             label="Add Trendline"
             onClick={() => onEditAction('add_trendline', selectedPoint)}
           />
-          <div className="ml-auto">
-            <ActionButton icon={Download} label="Export PNG" onClick={handleExport} variant="primary" />
-          </div>
+        </div>
+      )}
+
+      {/* Editable axis labels below chart */}
+      {onLabelEdit && (resolvedXLabel || resolvedYLabel) && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 16px 0', gap: 16 }}>
+          {resolvedYLabel && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>Y:</span>
+              <InlineEditableText
+                value={resolvedYLabel}
+                onCommit={(v) => onLabelEdit('yLabel', v)}
+                style={{ fontSize: 11, color: '#64748b', fontFamily: 'Arial, sans-serif' }}
+                placeholder="Y-axis label"
+              />
+            </div>
+          )}
+          {resolvedXLabel && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>X:</span>
+              <InlineEditableText
+                value={resolvedXLabel}
+                onCommit={(v) => onLabelEdit('xLabel', v)}
+                style={{ fontSize: 11, color: '#64748b', fontFamily: 'Arial, sans-serif' }}
+                placeholder="X-axis label"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Reference / citation below chart — editable */}
+      {config.chartData?.reference && (
+        <div
+          style={{
+            fontSize: '11px',
+            color: '#5a7a96',
+            fontStyle: 'italic',
+            padding: '8px 16px',
+            borderTop: '1px solid #e2e8f0',
+            lineHeight: 1.5,
+          }}
+        >
+          {config.chartData.reference}
         </div>
       )}
     </div>

@@ -246,6 +246,8 @@ interface AIPanelState {
   customizationsByTab: Record<string, TabCustomizations>;
   /** Currently selected (highlighted) graph result ID for graph-edit mode */
   selectedGraphId: string | null;
+  /** Currently selected table type for table-edit mode ('statistics' | 'data-points' | null) */
+  selectedTableType: 'statistics' | 'data-points' | null;
   /** Pending edit action text from quick-action buttons — auto-sent by chat */
   pendingEditAction: string | null;
   /** Pending content to pre-fill in chat input — set by "Add to Chat" buttons */
@@ -270,8 +272,9 @@ interface AIPanelState {
   /** Called when a tab is closed — frees all stored results for that tab. */
   removeTab: (tabId: string) => void;
 
-  // Graph selection for edit mode
+  // Graph/table selection for edit mode
   setSelectedGraph: (resultId: string | null) => void;
+  setSelectedTable: (tableType: 'statistics' | 'data-points' | null) => void;
   clearSelectedGraph: () => void;
   /** Queue a graph edit action — auto-selects the graph and sets the edit text */
   queueGraphEdit: (resultId: string, actionText: string) => void;
@@ -299,6 +302,7 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
   activeResultIdByTab: {},
   customizationsByTab: {},
   selectedGraphId: null,
+  selectedTableType: null,
   pendingEditAction: null,
   pendingChatContent: null,
 
@@ -413,11 +417,15 @@ export const useAIPanelStore = create<AIPanelState>((set, get) => ({
   },
 
   setSelectedGraph: (resultId) => {
-    set({ selectedGraphId: resultId });
+    set({ selectedGraphId: resultId, selectedTableType: null });
+  },
+
+  setSelectedTable: (tableType) => {
+    set({ selectedTableType: tableType, selectedGraphId: null });
   },
 
   clearSelectedGraph: () => {
-    set({ selectedGraphId: null, pendingEditAction: null });
+    set({ selectedGraphId: null, selectedTableType: null, pendingEditAction: null });
   },
 
   queueGraphEdit: (resultId, actionText) => {
