@@ -1856,8 +1856,13 @@ function buildGenericPlotlyTraces(
   // When a standard bar chart is rerouted to Plotly (e.g., because error bars are enabled),
   // mode will be 'auto' and isPlotlyChartData returns true — but the AI intended a bar chart.
   const aiType = (chartData.type ?? chartData.chartType ?? chartData.chart_type ?? '').toLowerCase();
+  // Also check if this was rerouted ONLY because of error bars (no pharma_type, no survival keywords)
+  const isErrorBarReroute = !chartData.pharma_type && (chartData.show_error_bars === true || chartData.error_type);
   const isBarIntent = mode === 'bar' || aiType === 'bar' || aiType === 'grouped_bar' || aiType === 'stacked_bar'
-    || ((!mode || mode === 'auto') && !chartData.pharma_type && isCategorical);
+    || ((!mode || mode === 'auto') && !chartData.pharma_type && isCategorical)
+    || (isErrorBarReroute && (!aiType || aiType === 'bar' || aiType === 'grouped_bar') && datasets.length > 0);
+
+  console.log('[buildGenericPlotlyTraces] mode:', mode, 'aiType:', aiType, 'isCategorical:', isCategorical, 'isBarIntent:', isBarIntent, 'isErrorBarReroute:', isErrorBarReroute, 'labels:', labels.slice(0, 5), 'datasets:', datasets.length);
 
   if (isBarIntent) {
     const showValues = chartData.show_values === true; // only show if explicitly requested
