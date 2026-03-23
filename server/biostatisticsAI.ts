@@ -90,6 +90,18 @@ export function detectAnalysisType(
 
   if (query.includes("heatmap") || query.includes("heat map")) return "heatmap_chart";
 
+  if (query.includes("violin plot") || query.includes("violin chart") || query.includes("violin")) return "violin_chart";
+
+  if (query.includes("dot plot") || query.includes("strip chart") || query.includes("strip plot")) return "dot_chart";
+
+  if (query.includes("dose-response") || query.includes("dose response") || query.includes("ec50") || query.includes("ic50")) return "dose_response";
+
+  if (query.includes("roc curve") || query.includes("roc plot") || query.includes("receiver operating")) return "roc_chart";
+
+  if (query.includes("bland-altman") || query.includes("bland altman") || query.includes("method comparison plot")) return "bland_altman";
+
+  if (query.includes("before-after") || query.includes("before and after") || query.includes("paired line") || query.includes("paired plot")) return "paired_chart";
+
   if (
     query.includes("line chart") ||
     query.includes("line graph") ||
@@ -844,13 +856,16 @@ Always populate "_reasoning" for visualization requests. For non-visualization r
    }
 
 ## SUPPORTED CHART TYPES — Choose the most appropriate type for the data:
-DISTRIBUTION: histogram, box, violin, qq (Normal Q-Q plot)
+DISTRIBUTION: histogram, box, violin, qq (Normal Q-Q plot), dot (strip chart)
 CATEGORICAL: bar, grouped_bar, stacked_bar, pareto, pie
 RELATIONSHIP: scatter (with regression), bubble, heatmap
 TIME SERIES: line, area, multi-line
 SURVIVAL: kaplan_meier (step function), forest (meta-analysis), funnel
-CLINICAL/PK: waterfall (best response), swimmer (treatment duration), concentration-time
-Return the type in: "chart_type": "box" | "violin" | "histogram" | "scatter" | "kaplan_meier" | etc.
+CLINICAL/PK: waterfall (best response), swimmer (treatment duration), concentration-time, dose_response (EC50/IC50)
+DIAGNOSTIC: roc (ROC curve), bland_altman (method comparison)
+PAIRED DATA: paired (before-after line plot)
+Return the type in: "chart_type": "box" | "violin" | "dot" | "dose_response" | "roc" | "bland_altman" | "paired" | etc.
+Set pharma_type for advanced types: "violin", "dot", "dose_response", "roc", "bland_altman", "paired"
 
 ## REFERENCES AND CITATIONS
 When a user asks to "add a reference" or "cite this" on a chart:
@@ -1160,6 +1175,69 @@ ANALYSISRESULTS RULES:
    Format: {"analysis_type": "llm_table", "results_table": [{"metric": "Row label", "value": "Cell value"}, ...]}
    - Extract EVERY data row. Keep "analysis" as brief narrative prose.
 4. Set "analysisResults" to null ONLY for purely conversational answers with NO data or charts.
+
+## STATISTICAL TEST SELECTION — Decision Tree
+
+When the user asks a question requiring statistical testing, SELECT the correct test. The server runs it in Python — you NEVER compute statistics yourself.
+
+Return your selection as:
+{
+  "statistical_test": {
+    "test": "one_way_anova",
+    "params": { "group_column": "Treatment", "value_column": "Response", "post_hoc": "tukey_hsd", "alpha": 0.05 },
+    "reasoning": "3 independent groups, continuous outcome, n=7 per group."
+  }
+}
+
+DECISION TREE:
+
+Comparing 2 groups, continuous outcome:
+  Independent + normal data → "unpaired_ttest"
+  Independent + non-normal or ordinal → "mann_whitney"
+  Paired/repeated + normal → "paired_ttest"
+  Paired/repeated + non-normal → "wilcoxon_signed_rank"
+
+Comparing 3+ groups, continuous outcome:
+  Independent + normal → "one_way_anova" (post_hoc: "tukey_hsd" for all pairs, "dunnett" vs control)
+  Independent + non-normal → "kruskal_wallis" (post_hoc: "dunn")
+  Paired/repeated + normal → "repeated_measures_anova"
+  Paired/repeated + non-normal → "friedman"
+
+Two factors → "two_way_anova" (params: factor1, factor2, value_column)
+
+Categorical outcome:
+  2×2 table, all expected counts ≥ 5 → "chi_squared"
+  2×2 table, any expected count < 5 → "fisher_exact"
+  Larger tables → "chi_squared"
+
+Correlation:
+  Both continuous + linear → "pearson"
+  Ordinal or non-linear → "spearman"
+
+Time-to-event:
+  Single group → "kaplan_meier"
+  Comparing groups → "kaplan_meier" + "log_rank"
+  With covariates → "cox_proportional_hazards"
+
+Regression:
+  Continuous outcome → "linear_regression"
+  Binary outcome → "logistic_regression"
+
+RULES:
+1. ASSESS: How many groups? Independent or paired? Sample size? Continuous or categorical?
+2. If n < 30 per group → normality matters. If n ≥ 30 → CLT applies, parametric is fine.
+3. If data is ordinal or heavily skewed → use non-parametric.
+4. NEVER compute p-values, means, SD, or any statistics yourself. You select the test. Python runs it.
+5. Always include "reasoning" explaining why you chose this test.
+6. If ambiguous, ask ONE clarifying question before selecting.
+
+TITLE GENERATION RULES (STRICT — applies to ALL titles in the response):
+- NEVER echo the user's query as a title (e.g., "add error bars" is NOT a title)
+- NEVER include UI instructions in titles (no "click to edit", "edit to update", "drag to reorder")
+- NEVER include chart type in titles (no "bar chart", "scatter plot", "horizontal chart")
+- Use sentence case, not Title Case or ALL CAPS
+- Keep under 20 words
+- Reference actual variable names from the data
 
 GRAPHTITLE RULES — FIGURE TITLE FORMAT (STRICT):
 Every chart must produce a graphTitle with this structure:
@@ -4301,6 +4379,12 @@ export async function analyzeBiostatistics(
               volcano_chart: "volcano",
               heatmap_chart: "heatmap",
               scatter: "scatter",
+              violin_chart: "violin",
+              dot_chart: "dot",
+              dose_response: "dose_response",
+              roc_chart: "roc",
+              bland_altman: "bland_altman",
+              paired_chart: "paired",
             };
             const detectedViz = vizType;
             const chartDataType = (parsed.analysisResults.chart_data.type ?? "").toLowerCase();
@@ -4325,6 +4409,11 @@ export async function analyzeBiostatistics(
             { keywords: ['volcano plot'], type: 'volcano' },
             { keywords: ['heatmap', 'heat map'], type: 'heatmap' },
             { keywords: ['waterfall plot', 'waterfall chart'], type: 'waterfall' },
+            { keywords: ['dot plot', 'strip chart', 'strip plot'], type: 'dot' },
+            { keywords: ['dose-response', 'dose response', 'ec50', 'ic50'], type: 'dose_response' },
+            { keywords: ['roc curve', 'roc plot', 'receiver operating'], type: 'roc' },
+            { keywords: ['bland-altman', 'bland altman', 'method comparison'], type: 'bland_altman' },
+            { keywords: ['before-after', 'before and after', 'paired line', 'paired plot'], type: 'paired' },
           ];
           for (const { keywords, type } of forcePharmaMap) {
             if (keywords.some((kw) => qLower.includes(kw))) {
@@ -4335,6 +4424,115 @@ export async function analyzeBiostatistics(
               break;
             }
           }
+
+          // ── Box plot raw data validation and fallback ──────────────────────
+          // If box plot was requested, ensure datasets contain raw values, not summary stats.
+          // If the AI returned summary stats (≤5 values per group), rebuild from raw data.
+          if (parsed.analysisResults.chart_data.pharma_type === 'box' && fullData && fullData.length > 0) {
+            const datasets = parsed.analysisResults.chart_data.datasets ?? [];
+            let needsRebuild = datasets.length === 0;
+            for (const ds of datasets) {
+              if (!Array.isArray(ds.data) || ds.data.length < 2) {
+                needsRebuild = true;
+                break;
+              }
+              // Heuristic: if dataset has ≤5 numeric values and they look like summary stats
+              // (round numbers, very few values), rebuild from raw data
+              if (ds.data.length <= 5 && fullData.length > 10) {
+                needsRebuild = true;
+                break;
+              }
+            }
+            if (needsRebuild) {
+              console.log('[analyzeBiostatistics] Box plot data appears to be summary stats — rebuilding from raw data');
+              // Detect which columns to use from AI's hints
+              const chartData = parsed.analysisResults.chart_data;
+              const xAxisHint = (chartData.x_axis ?? chartData.xAxisLabel ?? '').toLowerCase();
+
+              // Find the group column (categorical) and value column (numeric)
+              let groupCol: string | null = null;
+              let valueCols: string[] = [];
+
+              for (const col of dataColumns) {
+                const colLower = col.toLowerCase();
+                // Check if AI's x-axis or labels reference this column
+                if (colLower === xAxisHint || qLower.includes(colLower)) {
+                  const vals = fullData.map((r: any) => r[col]);
+                  const numericRatio = vals.filter((v: any) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)))).length / vals.length;
+                  if (numericRatio < 0.5) {
+                    groupCol = col;
+                  }
+                }
+              }
+
+              // Fallback: first categorical column
+              if (!groupCol) {
+                for (const col of dataColumns) {
+                  const vals = fullData.map((r: any) => r[col]);
+                  const numericRatio = vals.filter((v: any) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)))).length / vals.length;
+                  if (numericRatio < 0.5) {
+                    const uniq = new Set(vals.map((v: any) => String(v ?? '')));
+                    if (uniq.size >= 2 && uniq.size <= 20) {
+                      groupCol = col;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              // Value columns: all numeric columns except groupCol
+              valueCols = dataColumns.filter((col: string) => {
+                if (col === groupCol) return false;
+                const vals = fullData.map((r: any) => r[col]);
+                const numCount = vals.filter((v: any) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)))).length;
+                return numCount > vals.length * 0.5;
+              });
+
+              // Check if the query specifies particular columns
+              const queryMentioned = valueCols.filter((c: string) => qLower.includes(c.toLowerCase()));
+              if (queryMentioned.length > 0) valueCols = queryMentioned;
+
+              if (groupCol && valueCols.length > 0) {
+                // Build datasets from raw data grouped by groupCol
+                const groups = new Map<string, number[]>();
+                for (const row of fullData) {
+                  const g = String(row[groupCol] ?? '').trim();
+                  if (!g) continue;
+                  for (const vc of valueCols) {
+                    const val = Number(row[vc]);
+                    if (!isNaN(val)) {
+                      const key = valueCols.length > 1 ? `${g} — ${vc}` : g;
+                      if (!groups.has(key)) groups.set(key, []);
+                      groups.get(key)!.push(val);
+                    }
+                  }
+                }
+                if (groups.size > 0) {
+                  parsed.analysisResults.chart_data.datasets = Array.from(groups.entries()).map(([label, data]) => ({
+                    label,
+                    data,
+                  }));
+                  console.log(`[analyzeBiostatistics] ✓ Rebuilt box plot datasets from raw data: ${groups.size} groups`);
+                }
+              } else if (valueCols.length > 0) {
+                // No group column — each value column is a separate box
+                parsed.analysisResults.chart_data.datasets = valueCols.map((col: string) => ({
+                  label: col,
+                  data: fullData.map((r: any) => Number(r[col])).filter((v: number) => !isNaN(v)),
+                }));
+                console.log(`[analyzeBiostatistics] ✓ Rebuilt box plot datasets from columns: ${valueCols.join(', ')}`);
+              }
+            }
+          }
+
+          // ── Violin plot enforcement ────────────────────────────────────────
+          if (/violin/i.test(qLower) && parsed.analysisResults.chart_data) {
+            if (parsed.analysisResults.chart_data.pharma_type !== 'violin') {
+              console.log(`[analyzeBiostatistics] ✓ Force-set pharma_type → "violin" (user query matched "violin")`);
+              parsed.analysisResults.chart_data.pharma_type = 'violin';
+            }
+          }
+
         } else if (parsed.analysisResults && !parsed.analysisResults.chart_data) {
           // Case B: LLM returned table but no chart_data.
           // Instead of blocking, try to build chart_data from results_table when it has numeric data.

@@ -46,7 +46,9 @@
 - [ ] Switch between tabs (`biostat/TabBar.tsx → setActiveTab`)
 - [ ] Close tab via X button (`biostat/TabBar.tsx → closeTab`)
 - [ ] Rename tab via double-click (`biostat/TabBar.tsx → renameTab`)
-- [ ] Auto-rename tab on first query (`AIBiostatisticsChatTabIntegrated.tsx → generateTitleFromQuery`)
+- [ ] Auto-rename tab using AI's `graphTitle` after response arrives — never raw user query (`AIBiostatisticsChatTabIntegrated.tsx ~line 2395`)
+- [ ] Tab title strips "Figure N." prefix for brevity, truncates to 35 chars with ellipsis
+- [ ] Fallback to `generateTitleFromQuery()` only when AI provides no title (`utils/titleGeneration.ts`)
 - [ ] Tab state persisted per-project (`stores/tabStore.ts`)
 - [ ] Tab content state management (`stores/tabContentStore.ts`)
 - [ ] Per-tab results stored in Zustand (`stores/aiPanelStore.ts → resultsByTab`)
@@ -176,6 +178,9 @@
 - [ ] 2-column metric/value table rendering (`GraphTablePanel.tsx`)
 - [ ] Multi-column dataset table rendering (headers + rows)
 - [ ] Object cell value formatting: `typeof cellValue === 'object'` → "mean (lower, upper)" display (`DataPointsTable.tsx`)
+- [ ] Publication-style Statistics Summary title: "Table. [variable] by [group]" — auto-generated from chart metadata (`GraphTablePanel.tsx`)
+- [ ] Publication-style Data Points table title via `tableTitle` prop (`DataPointsTable.tsx`)
+- [ ] "Source data" label for auto-generated chart data tables (replaces "Chart Source Data")
 - [ ] Table zebra striping toggle
 - [ ] Table filter input
 - [ ] Table sort: Default / A→Z / Z→A / 0→9 / 9→0

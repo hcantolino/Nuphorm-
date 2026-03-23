@@ -475,6 +475,362 @@ function buildBoxPlotTraces(
   };
 }
 
+// ── Violin plot builder ──────────────────────────────────────────────────
+
+function buildViolinTraces(
+  chartData: any
+): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
+  const datasets = chartData.datasets ?? [];
+  const labels = chartData.labels ?? [];
+
+  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
+    y: ds.data ?? [],
+    name: ds.label ?? labels[i] ?? `Group ${i + 1}`,
+    type: 'violin' as const,
+    box: { visible: true },
+    meanline: { visible: true },
+    points: 'outliers' as const,
+    jitter: 0.3,
+    pointpos: -1.5,
+    marker: { size: 4, opacity: 0.6, color: ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
+    line: { color: ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
+    fillcolor: (ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length]) + '40',
+    side: 'both' as const,
+    hovertemplate: `<b>${ds.label ?? `Group ${i + 1}`}</b><br>%{y:.2f}<extra></extra>`,
+  }));
+
+  return {
+    plotData,
+    layout: {
+      xaxis: { title: { text: chartData.x_axis ?? chartData.xLabel ?? 'Group' }, ...GRID_STYLE },
+      yaxis: { title: { text: chartData.y_axis ?? chartData.yLabel ?? 'Value' }, ...GRID_STYLE },
+    },
+  };
+}
+
+// ── Dot plot / strip chart builder ──────────────────────────────────────
+
+function buildDotPlotTraces(
+  chartData: any
+): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
+  const datasets = chartData.datasets ?? [];
+
+  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
+    const values = ds.data ?? [];
+    const groupLabel = ds.label ?? `Group ${i + 1}`;
+    // Add jitter to x-position to avoid overlapping points
+    const jitteredX = values.map(() => i + (Math.random() - 0.5) * 0.3);
+
+    return {
+      type: 'scatter' as const,
+      mode: 'markers' as const,
+      y: values,
+      x: jitteredX,
+      name: groupLabel,
+      marker: {
+        size: 8,
+        color: ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
+        opacity: 0.7,
+        line: { width: 1, color: '#333' },
+      },
+      hovertemplate: `<b>${groupLabel}</b><br>%{y:.2f}<extra></extra>`,
+    };
+  });
+
+  return {
+    plotData,
+    layout: {
+      xaxis: {
+        title: { text: chartData.x_axis ?? chartData.xLabel ?? 'Group' },
+        tickvals: datasets.map((_: any, i: number) => i),
+        ticktext: datasets.map((ds: any, i: number) => ds.label ?? `Group ${i + 1}`),
+        ...GRID_STYLE,
+      },
+      yaxis: { title: { text: chartData.y_axis ?? chartData.yLabel ?? 'Value' }, ...GRID_STYLE },
+    },
+  };
+}
+
+// ── Dose-response curve builder ─────────────────────────────────────────
+
+function buildDoseResponseTraces(
+  chartData: any
+): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
+  const datasets = chartData.datasets ?? [];
+  const plotData: Plotly.Data[] = [];
+
+  for (let i = 0; i < datasets.length; i++) {
+    const ds = datasets[i];
+    const color = ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length];
+
+    // Raw data points
+    if (ds.data && Array.isArray(ds.data)) {
+      const xVals = ds.data.map((p: any) => typeof p === 'object' ? p.x : undefined).filter((v: any) => v != null);
+      const yVals = ds.data.map((p: any) => typeof p === 'object' ? p.y : undefined).filter((v: any) => v != null);
+
+      if (xVals.length > 0) {
+        plotData.push({
+          type: 'scatter' as const,
+          mode: 'markers' as const,
+          x: xVals,
+          y: yVals,
+          name: ds.label ?? 'Data',
+          marker: { size: 8, color, symbol: 'circle' },
+          showlegend: true,
+        });
+      }
+    }
+
+    // Fitted curve (if provided)
+    if (ds.fitted_x && ds.fitted_y) {
+      plotData.push({
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        x: ds.fitted_x,
+        y: ds.fitted_y,
+        name: `${ds.label ?? 'Fit'} (fitted)`,
+        line: { color, width: 2 },
+        showlegend: true,
+      });
+    }
+
+    // Confidence band (if provided)
+    if (ds.fitted_x && ds.ci_upper && ds.ci_lower) {
+      plotData.push({
+        x: [...ds.fitted_x, ...ds.fitted_x.slice().reverse()],
+        y: [...ds.ci_upper, ...ds.ci_lower.slice().reverse()],
+        fill: 'toself' as const,
+        fillcolor: color + '20',
+        line: { color: 'transparent' },
+        showlegend: false,
+        type: 'scatter' as const,
+        hoverinfo: 'skip' as const,
+      });
+    }
+  }
+
+  // EC50 annotation
+  if (chartData.ec50) {
+    plotData.push({
+      type: 'scatter' as const,
+      mode: 'markers' as const,
+      x: [chartData.ec50.x ?? chartData.ec50.dose],
+      y: [chartData.ec50.y ?? chartData.ec50.response],
+      name: `EC50 = ${chartData.ec50.value ?? chartData.ec50.x}`,
+      marker: { size: 12, color: '#ef4444', symbol: 'x' },
+      showlegend: true,
+    });
+  }
+
+  return {
+    plotData,
+    layout: {
+      xaxis: {
+        title: { text: chartData.x_axis ?? 'Dose' },
+        type: chartData.x_scale === 'log' ? 'log' : 'linear',
+        ...GRID_STYLE,
+      },
+      yaxis: { title: { text: chartData.y_axis ?? 'Response (%)' }, ...GRID_STYLE },
+    },
+  };
+}
+
+// ── ROC curve builder ───────────────────────────────────────────────────
+
+function buildROCTraces(
+  chartData: any
+): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
+  const datasets = chartData.datasets ?? [];
+  const plotData: Plotly.Data[] = [];
+
+  // Diagonal reference line (random classifier)
+  plotData.push({
+    type: 'scatter' as const,
+    mode: 'lines' as const,
+    x: [0, 1],
+    y: [0, 1],
+    name: 'Random (AUC = 0.5)',
+    line: { color: '#94a3b8', width: 1, dash: 'dash' },
+    showlegend: true,
+  });
+
+  for (let i = 0; i < datasets.length; i++) {
+    const ds = datasets[i];
+    const color = ds.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length];
+    const fpr = ds.fpr ?? ds.data?.map((p: any) => p.x) ?? [];
+    const tpr = ds.tpr ?? ds.data?.map((p: any) => p.y) ?? [];
+    const auc = ds.auc ?? ds.area_under_curve;
+    const label = `${ds.label ?? 'Model'}${auc ? ` (AUC = ${typeof auc === 'number' ? auc.toFixed(3) : auc})` : ''}`;
+
+    plotData.push({
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      x: fpr,
+      y: tpr,
+      name: label,
+      line: { color, width: 2.5 },
+      fill: chartData.show_auc_fill ? 'tozeroy' as const : undefined,
+      fillcolor: chartData.show_auc_fill ? color + '15' : undefined,
+    });
+
+    // Optimal threshold point
+    if (ds.optimal_threshold) {
+      plotData.push({
+        type: 'scatter' as const,
+        mode: 'markers' as const,
+        x: [ds.optimal_threshold.fpr],
+        y: [ds.optimal_threshold.tpr],
+        name: `Optimal (threshold = ${ds.optimal_threshold.value?.toFixed(3) ?? '?'})`,
+        marker: { size: 10, color, symbol: 'star' },
+      });
+    }
+  }
+
+  return {
+    plotData,
+    layout: {
+      xaxis: { title: { text: 'False Positive Rate (1 - Specificity)' }, range: [0, 1], ...GRID_STYLE },
+      yaxis: { title: { text: 'True Positive Rate (Sensitivity)' }, range: [0, 1.05], ...GRID_STYLE },
+    },
+  };
+}
+
+// ── Bland-Altman plot builder ───────────────────────────────────────────
+
+function buildBlandAltmanTraces(
+  chartData: any
+): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
+  const ds = chartData.datasets?.[0] ?? chartData;
+  const means = ds.means ?? ds.data?.map((p: any) => p.x) ?? [];
+  const diffs = ds.differences ?? ds.data?.map((p: any) => p.y) ?? [];
+  const meanDiff = ds.mean_diff ?? ds.bias ?? 0;
+  const upperLoA = ds.upper_loa ?? ds.upper_limit ?? 0;
+  const lowerLoA = ds.lower_loa ?? ds.lower_limit ?? 0;
+
+  const plotData: Plotly.Data[] = [
+    // Scatter points
+    {
+      type: 'scatter' as const,
+      mode: 'markers' as const,
+      x: means,
+      y: diffs,
+      name: 'Observations',
+      marker: { size: 7, color: '#3b82f6', opacity: 0.7 },
+      hovertemplate: 'Mean: %{x:.2f}<br>Diff: %{y:.2f}<extra></extra>',
+    },
+  ];
+
+  const shapes: any[] = [
+    // Mean difference (bias) line
+    { type: 'line', x0: 0, x1: 1, xref: 'paper', y0: meanDiff, y1: meanDiff,
+      line: { color: '#0f172a', width: 2 } },
+    // Upper LoA
+    { type: 'line', x0: 0, x1: 1, xref: 'paper', y0: upperLoA, y1: upperLoA,
+      line: { color: '#ef4444', width: 1.5, dash: 'dash' } },
+    // Lower LoA
+    { type: 'line', x0: 0, x1: 1, xref: 'paper', y0: lowerLoA, y1: lowerLoA,
+      line: { color: '#ef4444', width: 1.5, dash: 'dash' } },
+  ];
+
+  const annotations: any[] = [
+    { x: 1.02, y: meanDiff, xref: 'paper', yref: 'y', text: `Bias: ${meanDiff.toFixed(2)}`,
+      showarrow: false, font: { size: 9, color: '#0f172a' }, xanchor: 'left' },
+    { x: 1.02, y: upperLoA, xref: 'paper', yref: 'y', text: `+1.96 SD: ${upperLoA.toFixed(2)}`,
+      showarrow: false, font: { size: 9, color: '#ef4444' }, xanchor: 'left' },
+    { x: 1.02, y: lowerLoA, xref: 'paper', yref: 'y', text: `−1.96 SD: ${lowerLoA.toFixed(2)}`,
+      showarrow: false, font: { size: 9, color: '#ef4444' }, xanchor: 'left' },
+  ];
+
+  return {
+    plotData,
+    layout: {
+      xaxis: { title: { text: chartData.x_axis ?? 'Mean of Two Methods' }, ...GRID_STYLE },
+      yaxis: { title: { text: chartData.y_axis ?? 'Difference Between Methods' }, ...GRID_STYLE },
+      shapes,
+      annotations,
+      margin: { ...LAYOUT_BASE.margin, r: 100 },
+    },
+  };
+}
+
+// ── Before-After / Paired line plot builder ──────────────────────────────
+
+function buildPairedLineTraces(
+  chartData: any
+): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
+  const datasets = chartData.datasets ?? [];
+  const plotData: Plotly.Data[] = [];
+
+  if (datasets.length >= 2) {
+    const beforeDs = datasets[0];
+    const afterDs = datasets[1];
+    const beforeVals = beforeDs.data ?? [];
+    const afterVals = afterDs.data ?? [];
+    const n = Math.min(beforeVals.length, afterVals.length);
+    const beforeLabel = beforeDs.label ?? 'Before';
+    const afterLabel = afterDs.label ?? 'After';
+
+    // Individual subject lines
+    for (let i = 0; i < n; i++) {
+      const increased = afterVals[i] > beforeVals[i];
+      plotData.push({
+        type: 'scatter' as const,
+        mode: 'lines+markers' as const,
+        x: [0, 1],
+        y: [beforeVals[i], afterVals[i]],
+        marker: { size: 6, color: increased ? '#ef4444' : '#3b82f6' },
+        line: { width: 1, color: increased ? '#ef4444' : '#3b82f6' },
+        showlegend: false,
+        hovertemplate: `Subject ${i + 1}<br>${beforeLabel}: ${beforeVals[i]}<br>${afterLabel}: ${afterVals[i]}<extra></extra>`,
+      });
+    }
+
+    // Mean markers
+    const meanBefore = beforeVals.reduce((a: number, b: number) => a + b, 0) / n;
+    const meanAfter = afterVals.reduce((a: number, b: number) => a + b, 0) / n;
+    plotData.push({
+      type: 'scatter' as const,
+      mode: 'lines+markers' as const,
+      x: [0, 1],
+      y: [meanBefore, meanAfter],
+      name: 'Mean',
+      marker: { size: 14, color: '#0f172a', symbol: 'diamond' },
+      line: { width: 3, color: '#0f172a' },
+    });
+  } else if (datasets.length === 1 && datasets[0].pairs) {
+    // Alternative: pairs format [{before: x, after: y}, ...]
+    const pairs = datasets[0].pairs;
+    for (let i = 0; i < pairs.length; i++) {
+      const p = pairs[i];
+      const increased = p.after > p.before;
+      plotData.push({
+        type: 'scatter' as const,
+        mode: 'lines+markers' as const,
+        x: [0, 1],
+        y: [p.before, p.after],
+        marker: { size: 6, color: increased ? '#ef4444' : '#3b82f6' },
+        line: { width: 1, color: increased ? '#ef4444' : '#3b82f6' },
+        showlegend: false,
+      });
+    }
+  }
+
+  const labels = chartData.labels ?? ['Before', 'After'];
+  return {
+    plotData,
+    layout: {
+      xaxis: {
+        title: { text: chartData.x_axis ?? '' },
+        tickvals: [0, 1],
+        ticktext: [labels[0] ?? 'Before', labels[1] ?? 'After'],
+        range: [-0.3, 1.3],
+        ...GRID_STYLE,
+      },
+      yaxis: { title: { text: chartData.y_axis ?? chartData.yLabel ?? 'Value' }, ...GRID_STYLE },
+    },
+  };
+}
+
 // ── Heatmap builder ──────────────────────────────────────────────────────
 
 function buildHeatmapTraces(
@@ -850,6 +1206,12 @@ const PLOTLY_PHARMA_TYPES = new Set([
   'waterfall', 'waterfall_chart',
   'forest', 'forest_chart',
   'volcano', 'volcano_chart',
+  'violin', 'violin_chart',
+  'dot', 'dot_plot', 'strip', 'strip_chart',
+  'dose_response', 'dose-response',
+  'roc', 'roc_curve',
+  'bland_altman', 'bland-altman',
+  'paired', 'before_after', 'paired_line',
 ]);
 
 /** Auto-detect if LLM chart_data should render via Plotly instead of Recharts */
@@ -857,8 +1219,12 @@ export function isSurvivalChartData(chartData: any): boolean {
   return isPlotlyChartData(chartData);
 }
 
-export function isPlotlyChartData(chartData: any): boolean {
+export function isPlotlyChartData(chartData: any, customizations?: { showErrorBars?: boolean }): boolean {
   if (!chartData) return false;
+
+  // Route to Plotly when error bars are requested — Recharts ChartRenderer
+  // does not support error bar computation; only PlotlyInteractiveChart does.
+  if (chartData.show_error_bars === true || customizations?.showErrorBars === true) return true;
 
   // Check explicit pharma_type
   if (chartData.pharma_type && PLOTLY_PHARMA_TYPES.has(chartData.pharma_type)) return true;
@@ -1555,7 +1921,7 @@ function resolvePharmaType(chartData: any): string | null {
   const pt = (chartData.pharma_type ?? '').toLowerCase();
   if (pt) return pt;
   const ct = (chartData.type ?? '').toLowerCase();
-  if (['kaplan-meier', 'box', 'boxplot', 'heatmap', 'waterfall', 'forest', 'volcano', 'violin', 'histogram', 'bubble', 'qq', 'pareto', 'swimmer', 'funnel'].includes(ct)) return ct;
+  if (['kaplan-meier', 'box', 'boxplot', 'heatmap', 'waterfall', 'forest', 'volcano', 'violin', 'histogram', 'bubble', 'qq', 'pareto', 'swimmer', 'funnel', 'dot', 'strip', 'dose_response', 'dose-response', 'roc', 'roc_curve', 'bland_altman', 'bland-altman', 'paired', 'before_after', 'paired_line'].includes(ct)) return ct;
   const chartType = (chartData.chart_type ?? '').toLowerCase();
   if (chartType) return chartType;
   return null;
@@ -1698,29 +2064,62 @@ export default function PlotlyInteractiveChart({
     }
 
     // Violin plot
-    if (mode === 'violin' || pharmaType === 'violin') {
-      const datasets = chartData.datasets ?? [];
-      const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
-        type: 'violin' as const,
-        y: ds.data ?? [],
-        name: ds.label ?? `Group ${i + 1}`,
-        box: { visible: true },
-        meanline: { visible: true },
-        marker: { color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
-        points: (ds.data?.length ?? 0) < 50 ? 'all' : false,
-        jitter: 0.3,
-        pointpos: -1.5,
-      }));
+    if (mode === 'violin' || pharmaType === 'violin' || pharmaType === 'violin_chart') {
+      const { plotData, layout: modeLayout } = buildViolinTraces(chartData);
       const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Violin Plot');
       return {
         plotData,
-        layout: {
-          ...LAYOUT_BASE,
-          title: tc.title,
-          margin: { ...LAYOUT_BASE.margin, t: tc.marginTop },
-          xaxis: { title: { text: chartData.x_label ?? chartData.x_axis ?? 'Group', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
-          yaxis: { title: { text: chartData.y_label ?? chartData.y_axis ?? 'Value', font: { size: 13, color: '#1a2332' } }, ...GRID_STYLE },
-        },
+        layout: { ...LAYOUT_BASE, title: tc.title, margin: { ...LAYOUT_BASE.margin, t: tc.marginTop }, ...modeLayout },
+      };
+    }
+
+    // Dot plot / strip chart
+    if (mode === 'dot' || mode === 'strip' || pharmaType === 'dot' || pharmaType === 'dot_plot' || pharmaType === 'strip' || pharmaType === 'strip_chart') {
+      const { plotData, layout: modeLayout } = buildDotPlotTraces(chartData);
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Dot Plot');
+      return {
+        plotData,
+        layout: { ...LAYOUT_BASE, title: tc.title, margin: { ...LAYOUT_BASE.margin, t: tc.marginTop }, ...modeLayout },
+      };
+    }
+
+    // Dose-response curve
+    if (mode === 'dose_response' || mode === 'dose-response' || pharmaType === 'dose_response' || pharmaType === 'dose-response') {
+      const { plotData, layout: modeLayout } = buildDoseResponseTraces(chartData);
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Dose-Response Curve');
+      return {
+        plotData,
+        layout: { ...LAYOUT_BASE, title: tc.title, margin: { ...LAYOUT_BASE.margin, t: tc.marginTop }, ...modeLayout },
+      };
+    }
+
+    // ROC curve
+    if (mode === 'roc' || mode === 'roc_curve' || pharmaType === 'roc' || pharmaType === 'roc_curve') {
+      const { plotData, layout: modeLayout } = buildROCTraces(chartData);
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'ROC Curve');
+      return {
+        plotData,
+        layout: { ...LAYOUT_BASE, title: tc.title, margin: { ...LAYOUT_BASE.margin, t: tc.marginTop }, ...modeLayout },
+      };
+    }
+
+    // Bland-Altman plot
+    if (mode === 'bland_altman' || mode === 'bland-altman' || pharmaType === 'bland_altman' || pharmaType === 'bland-altman') {
+      const { plotData, layout: modeLayout } = buildBlandAltmanTraces(chartData);
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Bland-Altman Plot');
+      return {
+        plotData,
+        layout: { ...LAYOUT_BASE, title: tc.title, margin: { ...LAYOUT_BASE.margin, t: tc.marginTop }, ...modeLayout },
+      };
+    }
+
+    // Before-After / Paired line plot
+    if (mode === 'paired' || mode === 'before_after' || mode === 'paired_line' || pharmaType === 'paired' || pharmaType === 'before_after' || pharmaType === 'paired_line') {
+      const { plotData, layout: modeLayout } = buildPairedLineTraces(chartData);
+      const tc = buildTitleConfig(config.title ?? chartData?.title ?? 'Paired Comparison');
+      return {
+        plotData,
+        layout: { ...LAYOUT_BASE, title: tc.title, margin: { ...LAYOUT_BASE.margin, t: tc.marginTop }, ...modeLayout },
       };
     }
 
@@ -2121,19 +2520,27 @@ export default function PlotlyInteractiveChart({
       });
     }
     // Show error bars — ALWAYS compute from raw dataset when available (overwrite AI values)
-    if (custOverrides.showErrorBars === true) {
-      const rawErrType = custOverrides.errorBarType ?? 'sd';
-      const errorType: 'sd' | 'se' | 'ci95' = rawErrType === 'std' ? 'sd' : rawErrType as 'sd' | 'se' | 'ci95';
+    // Also auto-trigger when chart_data has show_error_bars flag, even if toggle wasn't manually set
+    const wantsErrorBars = custOverrides.showErrorBars === true
+      || config.chartData?.show_error_bars === true
+      || config.chartData?.error_type;
+    if (wantsErrorBars) {
+      const rawErrType = custOverrides.errorBarType ?? config.chartData?.error_type ?? 'sd';
+      const errorType: 'sd' | 'se' | 'ci95' = rawErrType === 'std' ? 'sd' : rawErrType === 'sem' ? 'se' : rawErrType as 'sd' | 'se' | 'ci95';
+
+      console.log('[ERROR BARS] Enabled. rawDataset:', rawDataset ? `${rawDataset.rows.length} rows, ${rawDataset.columns.length} cols` : 'NULL', 'errorType:', errorType);
+
       let anyComputed = false;
-      pd.forEach((trace: any) => {
+      pd.forEach((trace: any, idx: number) => {
         const xLabels: string[] = (trace.x ?? []).map(String);
         const yVals: number[] = trace.y ?? [];
         if (xLabels.length === 0 || yVals.length === 0) return;
 
         // Compute from raw dataset — overwrites whatever the AI returned
         if (rawDataset?.rows && rawDataset.rows.length > 0) {
+          console.log(`[ERROR BARS] Trace ${idx} "${trace.name}": computing from ${rawDataset.rows.length} raw rows, xLabels:`, xLabels.slice(0, 5));
           const computed = computeErrorBarsFromRawData(
-            rawDataset.rows,
+            rawDataset.rows as Record<string, any>[],
             rawDataset.columns,
             xLabels,
             yVals,
@@ -2141,6 +2548,7 @@ export default function PlotlyInteractiveChart({
             errorType,
           );
           if (computed) {
+            console.log(`[ERROR BARS] ✓ Trace ${idx} "${trace.name}": computed ${computed.array.length} error values:`, computed.array);
             trace.error_y = {
               type: 'data' as const,
               array: computed.array,
@@ -2151,6 +2559,8 @@ export default function PlotlyInteractiveChart({
             };
             anyComputed = true;
             return;
+          } else {
+            console.warn(`[ERROR BARS] ✗ Trace ${idx} "${trace.name}": computeErrorBarsFromRawData returned null. Columns:`, rawDataset.columns.slice(0, 10));
           }
         }
 
@@ -2158,6 +2568,7 @@ export default function PlotlyInteractiveChart({
         if (trace.error_y?.array?.length > 0 && trace.error_y.array.some((v: number) => v > 0)) {
           trace.error_y = { ...trace.error_y, visible: true };
           anyComputed = true;
+          console.log(`[ERROR BARS] Trace ${idx}: using AI-provided error bars (fallback)`);
           return;
         }
         // No raw data and no AI data — no error bars for this trace

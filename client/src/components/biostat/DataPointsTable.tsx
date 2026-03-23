@@ -27,6 +27,8 @@ export interface DataPointsTableProps {
   onDataChange: (updatedChartData: any) => void;
   /** X-axis column label override */
   xAxisLabel?: string;
+  /** Optional publication-style table title override */
+  tableTitle?: string;
 }
 
 // ── Editable cell ─────────────────────────────────────────────────────────
@@ -109,6 +111,7 @@ export const DataPointsTable: React.FC<DataPointsTableProps> = ({
   chartData,
   onDataChange,
   xAxisLabel,
+  tableTitle,
 }) => {
   if (!chartData?.labels || !chartData?.datasets) return null;
 
@@ -148,7 +151,7 @@ export const DataPointsTable: React.FC<DataPointsTableProps> = ({
       {/* Header */}
       <div className="px-4 py-3 border-b border-[#e2e8f0]">
         <h3 className="text-[#1a2332] font-bold" style={{ fontSize: "1.125rem" }}>
-          Data Points Used in Chart — Edit to Update Graph
+          {tableTitle || 'Data points'}
         </h3>
         <p className="text-[10px] text-[#94a3b8] mt-1">
           Double-click any cell to edit. Changes update the chart in real-time.

@@ -440,7 +440,7 @@ const ChartSection: React.FC<{
         <div>
           <ToggleRow
             label="Error Bars"
-            description="Requires error data from the AI response"
+            description="Computed locally from raw data (SD, SEM, or 95% CI)"
             checked={customizations.showErrorBars}
             onChange={(v) => onSet("showErrorBars", v)}
           />

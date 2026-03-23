@@ -56,6 +56,7 @@ import SaveAnalysisModal from "./SaveAnalysisModal";
 import { PALETTES } from "./ControlPanel";
 import { CustomizeSidebar } from "./CustomizeSidebar";
 import { DataPointsTable } from "./DataPointsTable";
+import { AssumptionsPanel } from "./AssumptionsPanel";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useCurrentDatasetStore } from "@/stores/currentDatasetStore";
@@ -2213,7 +2214,7 @@ export const GraphTablePanel: React.FC = () => {
                       title={displayTitle || activeResult?.graphTitle}
                       query={activeResult?.query}
                       cleanExportRef={cleanExportRef}
-                      isPlotly={isPlotlyChartData(syncedChartData ?? chartData)}
+                      isPlotly={isPlotlyChartData(syncedChartData ?? chartData, customizations)}
                     />
                   </span>
                 </CardTitle>
@@ -2249,7 +2250,7 @@ export const GraphTablePanel: React.FC = () => {
                 ) : (
                   // Conditionally render Plotly for survival/pharma data, Recharts for standard
                   <ChartErrorBoundary onError={() => setChartError(true)}>
-                    {isPlotlyChartData(syncedChartData ?? chartData) ? (
+                    {isPlotlyChartData(syncedChartData ?? chartData, customizations) ? (
                       <PlotlyInteractiveChart
                         config={{
                           mode: (syncedChartData ?? chartData)?.pharma_type ?? 'auto',
@@ -2333,7 +2334,7 @@ export const GraphTablePanel: React.FC = () => {
                 <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                   <span className="flex items-center gap-2">
                     <Table2 className="w-4 h-4 text-[#3b82f6]" />
-                    Chart Source Data
+                    Source data
                     <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/30 font-normal">
                       auto-generated
                     </Badge>
@@ -2469,11 +2470,71 @@ export const GraphTablePanel: React.FC = () => {
             data-stats-table=""
             data-export-target=""
           >
+            {/* Assumptions panel — shown when statistical test results include assumption checks */}
+            {activeResult?.analysisResults?.assumptions && (
+              <div className="px-4 pt-3 pb-0">
+                <AssumptionsPanel
+                  assumptions={activeResult.analysisResults.assumptions}
+                />
+              </div>
+            )}
+            {/* Post-hoc comparisons panel */}
+            {activeResult?.analysisResults?.post_hoc?.comparisons && (
+              <div className="px-4 pt-3 pb-0">
+                <div className="rounded-lg border border-[#e2e8f0] bg-white overflow-hidden">
+                  <div className="px-3 py-2 border-b border-[#e2e8f0] bg-[#f8fafc]">
+                    <span className="text-xs font-semibold text-[#0f172a] uppercase tracking-wide">
+                      Post-hoc Comparisons ({activeResult.analysisResults.post_hoc.method?.replace(/_/g, ' ') ?? 'pairwise'})
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-[#e2e8f0] bg-[#f8fafc]">
+                          <th className="text-left py-1.5 px-3 font-semibold text-[#64748b]">Comparison</th>
+                          <th className="text-right py-1.5 px-3 font-semibold text-[#64748b]">Mean Diff</th>
+                          <th className="text-right py-1.5 px-3 font-semibold text-[#64748b]">P (adj)</th>
+                          <th className="text-center py-1.5 px-3 font-semibold text-[#64748b]">Sig</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(activeResult.analysisResults.post_hoc.comparisons as any[]).map((comp: any, idx: number) => (
+                          <tr key={idx} className="border-b border-[#e2e8f0] last:border-0 hover:bg-[#eff6ff]">
+                            <td className="py-1.5 px-3 text-[#0f172a] font-medium">
+                              {comp.group1} vs {comp.group2}
+                            </td>
+                            <td className="py-1.5 px-3 text-right font-mono text-[#0f172a]">
+                              {typeof comp.mean_diff === 'number' ? comp.mean_diff.toFixed(3) : '—'}
+                            </td>
+                            <td className="py-1.5 px-3 text-right font-mono text-[#0f172a]">
+                              {typeof comp.p_adj === 'number'
+                                ? comp.p_adj < 0.001 ? '< 0.001' : comp.p_adj.toFixed(3)
+                                : String(comp.p_adj ?? '—')}
+                            </td>
+                            <td className="py-1.5 px-3 text-center font-bold">
+                              {comp.significance ?? (comp.reject ? '**' : 'ns')}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
               <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
                 <span className="flex items-center gap-2">
                   <Table2 className="w-4 h-4 text-[#3b82f6]" />
-                  Statistics Summary
+                  {(() => {
+                    // Generate descriptive table title from chart metadata
+                    const graphTitle = activeResult?.graphTitle?.replace(/^Figure\s+\d+\.\s*/i, '').trim();
+                    if (graphTitle) return `Table. ${graphTitle}`;
+                    const yVar = customizations.yLabel || chartData?.datasets?.[0]?.label;
+                    const xVar = customizations.xLabel || chartData?.x_axis;
+                    if (yVar && xVar) return `Table. ${yVar} by ${xVar}`;
+                    return 'Statistics summary';
+                  })()}
                   <span className="text-xs font-normal text-[#64748b]">
                     — click any cell to edit
                   </span>
@@ -2636,6 +2697,12 @@ export const GraphTablePanel: React.FC = () => {
               chartData={syncedChartData ?? chartData}
               onDataChange={handleDataPointsChange}
               xAxisLabel={customizations.xLabel || undefined}
+              tableTitle={(() => {
+                // Generate publication-style table title from chart metadata
+                const yVar = customizations.yLabel || (syncedChartData ?? chartData)?.datasets?.[0]?.label || 'Values';
+                const xVar = customizations.xLabel || (syncedChartData ?? chartData)?.x_axis || 'Group';
+                return `Table. ${yVar} by ${xVar}`;
+              })()}
             />
             {/* Data-table edit hint — visible when selected */}
             {selectedTableType === 'data-points' && (

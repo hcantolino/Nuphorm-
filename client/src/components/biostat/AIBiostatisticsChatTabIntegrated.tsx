@@ -1182,6 +1182,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
 
   const analyzeMutation =
     trpc.biostatistics.analyzeBiostatisticsData.useMutation();
+  const runStatsMutation =
+    trpc.biostatistics.runStats.useMutation();
   const uploadFileMutation = trpc.files.upload.useMutation({
     onError: (err) => toast.error(`Upload failed: ${err.message}`),
   });
@@ -2184,6 +2186,79 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
       else if (responseObj.llmUsed) setLlmStatus('online');
       // else: local-only path (shouldn't happen now, leave as-is)
 
+      // ── Statistical test execution — wire AI test selection to Python engine ──
+      // If the AI selected a statistical test, run it server-side and inject results.
+      const statTest = responseObj.analysisResults?.statistical_test
+        ?? responseObj.statistical_test;
+      if (statTest?.test && effectiveData.length > 0) {
+        try {
+          console.log('[StatsEngine] AI selected test:', statTest.test, 'params:', statTest.params);
+          const statsResult = await runStatsMutation.mutateAsync({
+            test: statTest.test,
+            data: effectiveData,
+            params: statTest.params ?? {},
+          });
+          console.log('[StatsEngine] Result:', statsResult);
+
+          // Merge stats results into analysisResults so the UI components pick them up
+          if (!responseObj.analysisResults) responseObj.analysisResults = {};
+          if (statsResult.assumptions) {
+            responseObj.analysisResults.assumptions = statsResult.assumptions;
+          }
+          if (statsResult.post_hoc) {
+            responseObj.analysisResults.post_hoc = statsResult.post_hoc;
+          }
+          // Merge test results into results_table if it exists
+          if (statsResult.results && !statsResult.error) {
+            const testRows: Array<{ metric: string; value: any }> = [];
+            testRows.push({ metric: 'Test Used', value: statsResult.test_used?.replace(/_/g, ' ') ?? statTest.test });
+            const r = statsResult.results as Record<string, any>;
+            if (r.t_statistic != null) testRows.push({ metric: 'Test Statistic (t)', value: r.t_statistic });
+            if (r.F_statistic != null) testRows.push({ metric: 'Test Statistic (F)', value: r.F_statistic });
+            if (r.H_statistic != null) testRows.push({ metric: 'Test Statistic (H)', value: r.H_statistic });
+            if (r.U_statistic != null) testRows.push({ metric: 'Test Statistic (U)', value: r.U_statistic });
+            if (r.chi2 != null) testRows.push({ metric: 'χ² Statistic', value: r.chi2 });
+            if (r.r != null) testRows.push({ metric: 'Correlation (r)', value: r.r });
+            if (r.rho != null) testRows.push({ metric: 'Correlation (ρ)', value: r.rho });
+            if (r.p_formatted) testRows.push({ metric: 'P-value', value: r.p_formatted });
+            else if (r.p_value != null) testRows.push({ metric: 'P-value', value: r.p_value < 0.001 ? '< 0.001' : r.p_value.toFixed(4) });
+            if (r.df != null) testRows.push({ metric: 'Degrees of Freedom', value: typeof r.df === 'number' ? r.df : `(${r.df_between}, ${r.df_within})` });
+            if (r.cohens_d != null) testRows.push({ metric: "Cohen's d", value: `${r.cohens_d} (${r.effect_size_label ?? ''})` });
+            if (r.eta_squared != null) testRows.push({ metric: 'η² (eta squared)', value: `${r.eta_squared} (${r.effect_size_label ?? ''})` });
+            if (r.ci_95) testRows.push({ metric: '95% CI', value: `(${r.ci_95[0]}, ${r.ci_95[1]})` });
+            if (r.significance) testRows.push({ metric: 'Significance', value: r.significance });
+            if (r.test_variant) testRows.push({ metric: 'Test Variant', value: r.test_variant });
+            // Group descriptive stats
+            if (r.group_stats) {
+              for (const gs of r.group_stats) {
+                testRows.push({ metric: `${gs.name} — n`, value: gs.n });
+                testRows.push({ metric: `${gs.name} — Mean ± SD`, value: `${gs.mean} ± ${gs.sd}` });
+                if (gs.median != null) testRows.push({ metric: `${gs.name} — Median`, value: gs.median });
+              }
+            }
+            if (r.group1 && r.group2) {
+              testRows.push({ metric: `${r.group1.name} — n`, value: r.group1.n });
+              testRows.push({ metric: `${r.group1.name} — Mean ± SD`, value: `${r.group1.mean} ± ${r.group1.sd}` });
+              testRows.push({ metric: `${r.group2.name} — n`, value: r.group2.n });
+              testRows.push({ metric: `${r.group2.name} — Mean ± SD`, value: `${r.group2.mean} ± ${r.group2.sd}` });
+            }
+            if (statTest.reasoning) {
+              testRows.push({ metric: 'AI Reasoning', value: statTest.reasoning });
+            }
+
+            // Prepend stats rows to existing results_table (or create it)
+            const existing = responseObj.analysisResults.results_table ?? [];
+            responseObj.analysisResults.results_table = [...testRows, ...existing];
+            if (!responseObj.analysisResults.analysis_type) {
+              responseObj.analysisResults.analysis_type = 'llm_table';
+            }
+          }
+        } catch (statsError) {
+          console.error('[StatsEngine] Failed to run statistical test:', statsError);
+          // Non-fatal — the AI's own results will still display
+        }
+      }
+
       // Strip raw JSON dumps and code fences that the LLM sometimes leaks into
       // the analysis field before storing or displaying it.
       let rawContent: string;
@@ -2340,10 +2415,73 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
         const newJson = newChartData ? JSON.stringify(newChartData) : '';
         const chartActuallyChanged = newJson.length > 0 && newJson !== prevJson;
 
+        // ── Specific modification validation checks ─────────────────────
+        // Detect what modification was requested and verify it was applied.
+        const modChecks: Array<{
+          keyword: RegExp;
+          validate: (oldC: any, newC: any) => boolean;
+          failMessage: string;
+        }> = [
+          {
+            keyword: /error.bar|±SD|±SE|±SEM|±CI/i,
+            validate: (_old, next) => {
+              const datasets = next?.datasets ?? [];
+              return datasets.some((ds: any) =>
+                ds?.error_y?.array?.length > 0 || ds?.sd || ds?.SEM || ds?.error_bars
+              ) || next?.show_error_bars === true;
+            },
+            failMessage: 'Error bars were requested but could not be applied. Use the Customize panel → Error Bars toggle instead.',
+          },
+          {
+            keyword: /legend/i,
+            validate: (old, next) => JSON.stringify(old?.legend) !== JSON.stringify(next?.legend),
+            failMessage: 'Legend position was not changed. Use the Customize panel → Legend section.',
+          },
+          {
+            keyword: /trendline|trend\s*line|regression\s*line/i,
+            validate: (old, next) => {
+              const oldLen = (old?.datasets ?? []).length;
+              const newLen = (next?.datasets ?? []).length;
+              return newLen > oldLen || (next?.trendline !== undefined);
+            },
+            failMessage: 'Trendline was requested but not added. Use the Customize panel → Trendline section.',
+          },
+          {
+            keyword: /annotation|asterisk|significance|bracket/i,
+            validate: (old, next) => {
+              const oldAnns = (old?.significance ?? []).length + (old?.annotations ?? []).length;
+              const newAnns = (next?.significance ?? []).length + (next?.annotations ?? []).length;
+              return newAnns > oldAnns;
+            },
+            failMessage: 'Annotations were requested but not added to the chart data.',
+          },
+        ];
+
+        let modValidationFailed = false;
+        let modFailMessage = '';
+        if (chartActuallyChanged && prevChartData && newChartData) {
+          for (const check of modChecks) {
+            if (check.keyword.test(userMessage)) {
+              if (!check.validate(prevChartData, newChartData)) {
+                modValidationFailed = true;
+                modFailMessage = check.failMessage;
+                break;
+              }
+            }
+          }
+        }
+
         updatePanelResult(activeTabIdMemo, realGraphResultId, editPatch);
         clearSelectedGraph();
 
-        if (chartActuallyChanged) {
+        if (modValidationFailed) {
+          // AI claimed success but the specific modification wasn't applied
+          toast.warning(modFailMessage, {
+            style: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
+            duration: 6000,
+          });
+          console.warn('[GraphEdit] Modification validation failed:', modFailMessage, { prevChartData, newChartData });
+        } else if (chartActuallyChanged) {
           toast.success("Graph updated successfully", {
             style: { background: '#f0fdf4', color: '#166534', borderColor: '#86efac' },
           });
@@ -2390,6 +2528,26 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
           graphTitle: responseObj.graphTitle ?? undefined,
           tableData:  responseObj.tableData  ?? undefined,
         });
+      }
+
+      // Auto-rename tab using AI's figure title (never the raw user query)
+      if (activeTabIdMemo) {
+        const currentTab = useTabStore.getState().tabs.find((t) => t.id === activeTabIdMemo);
+        const isDefaultTitle = currentTab?.title?.startsWith('Analysis ') || !currentTab?.title;
+        if (isDefaultTitle) {
+          // Prefer AI's graphTitle; strip "Figure N. " prefix for tab brevity; fallback to generated title
+          let tabTitle = responseObj.graphTitle
+            ?? responseObj.analysisResults?.chart_data?.title
+            ?? '';
+          // Strip "Figure N. " prefix
+          tabTitle = tabTitle.replace(/^Figure\s+\d+\.\s*/i, '').trim();
+          if (!tabTitle) {
+            tabTitle = generateTitleFromQuery(userMessage);
+          }
+          // Truncate to 35 chars with ellipsis
+          if (tabTitle.length > 35) tabTitle = tabTitle.slice(0, 32) + '…';
+          renameTab(activeTabIdMemo, tabTitle);
+        }
       }
 
       setConversationHistory((prev) => [
