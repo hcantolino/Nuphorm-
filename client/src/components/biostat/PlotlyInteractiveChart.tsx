@@ -1010,14 +1010,9 @@ function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
       );
     }
 
-    // ── Level 7: Fallback approximation when flag set but no values ──
-    if ((chartData?.show_error_bars === true || chartData?.error_type) && ds?.data && Array.isArray(ds.data)) {
-      const yVals = ds.data.filter((v: any) => typeof v === 'number');
-      if (yVals.length > 0) {
-        console.warn('[resolveErrorBars] No error bar values found but show_error_bars=true — using 10% approximation');
-        return mkResult(yVals.map((v: number) => Math.abs(v * 0.1)));
-      }
-    }
+    // Level 7: No approximation fallback — local computation handles error bars
+    // when showErrorBars toggle is enabled in the customization panel.
+    // The 10% approximation was removed because it produced misleading error bars.
 
     // If we got here with no match, log for debugging
     if (ds?.error_y || ds?.sd || ds?.SD || ds?.sem || ds?.SEM || chartData?.error_y || chartData?.error_bars) {
@@ -1042,6 +1037,30 @@ interface ComputedErrorBars {
   type: 'sd' | 'se' | 'ci95';
 }
 
+/** t-critical value at alpha/2 = 0.025 (two-tailed 95% CI) for given df.
+ *  Uses lookup table for common small-sample df; falls back to 1.96 for df >= 120. */
+function tCritical025(df: number): number {
+  // Lookup table: df → t-critical at alpha/2 = 0.025
+  const table: Record<number, number> = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+    6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+    11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131,
+    16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+    25: 2.060, 30: 2.042, 40: 2.021, 50: 2.009, 60: 2.000,
+    80: 1.990, 100: 1.984, 120: 1.980,
+  };
+  if (df <= 0) return 1.96;
+  if (table[df]) return table[df];
+  // Interpolate between nearest keys
+  const keys = Object.keys(table).map(Number).sort((a, b) => a - b);
+  if (df > keys[keys.length - 1]) return 1.96;
+  const upper = keys.find(k => k >= df) ?? keys[keys.length - 1];
+  const lower = keys.reverse().find(k => k <= df) ?? keys[0];
+  if (lower === upper) return table[lower];
+  const frac = (df - lower) / (upper - lower);
+  return table[lower] + frac * (table[upper] - table[lower]);
+}
+
 function computeErrorBarsFromRawData(
   rawRows: Record<string, unknown>[],
   rawColumns: string[],
@@ -1062,9 +1081,9 @@ function computeErrorBarsFromRawData(
   // Try to find the group/category column whose unique values match xLabels
   let groupCol: string | null = null;
   for (const col of rawColumns) {
-    const uniq = [...new Set(rawRows.map((r) => String(r[col] ?? '').trim()))].filter(Boolean);
-    const labelSet = new Set(xLabels.map((l) => String(l).trim().toLowerCase()));
-    const matchCount = uniq.filter((v) => labelSet.has(v.toLowerCase())).length;
+    const uniq = Array.from(new Set(rawRows.map((r: Record<string, unknown>) => String(r[col] ?? '').trim()))).filter(Boolean);
+    const labelLower = xLabels.map((l: string) => String(l).trim().toLowerCase());
+    const matchCount = uniq.filter((v: string) => labelLower.includes(v.toLowerCase())).length;
     if (matchCount >= Math.min(xLabels.length, uniq.length) * 0.7 && matchCount >= 2) {
       groupCol = col;
       break;
@@ -1076,10 +1095,10 @@ function computeErrorBarsFromRawData(
     // Group by the first categorical column
     if (!groupCol) {
       for (const col of rawColumns) {
-        const vals = rawRows.map((r) => r[col]);
-        const numericRatio = vals.filter((v) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)))).length / vals.length;
+        const vals = rawRows.map((r: Record<string, unknown>) => r[col]);
+        const numericRatio = vals.filter((v: unknown) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)))).length / vals.length;
         if (numericRatio < 0.5) { // categorical column
-          const uniq = [...new Set(vals.map((v) => String(v ?? '')))];
+          const uniq = Array.from(new Set(vals.map((v: unknown) => String(v ?? ''))));
           if (uniq.length >= 2 && uniq.length <= 50) {
             groupCol = col;
             break;
@@ -1091,10 +1110,9 @@ function computeErrorBarsFromRawData(
 
     // Find best numeric column
     if (!valueCol) {
-      // Try first numeric column that isn't the group column
-      const numCol = rawColumns.find((c) => {
+      const numCol = rawColumns.find((c: string) => {
         if (c === groupCol) return false;
-        const numCount = rawRows.filter((r) => typeof r[c] === 'number' || (typeof r[c] === 'string' && !isNaN(Number(r[c])))).length;
+        const numCount = rawRows.filter((r: Record<string, unknown>) => typeof r[c] === 'number' || (typeof r[c] === 'string' && !isNaN(Number(r[c])))).length;
         return numCount > rawRows.length * 0.5;
       });
       if (!numCol) return null;
@@ -1103,37 +1121,42 @@ function computeErrorBarsFromRawData(
   }
 
   // Group raw data by the group column, compute stats for the value column
-  const groups = new Map<string, number[]>();
+  const groups: Record<string, number[]> = {};
   for (const row of rawRows) {
     const key = String(row[groupCol!] ?? '').trim();
     const val = Number(row[valueCol]);
     if (key && !isNaN(val)) {
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(val);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(val);
     }
   }
 
-  if (groups.size === 0) return null;
+  if (Object.keys(groups).length === 0) return null;
 
   // Build error array matching xLabels order
-  const errorArray: number[] = xLabels.map((label) => {
+  const errorArray: number[] = xLabels.map((label: string) => {
     const labelKey = String(label).trim();
     // Case-insensitive match
-    const values = groups.get(labelKey)
-      ?? [...groups.entries()].find(([k]) => k.toLowerCase() === labelKey.toLowerCase())?.[1]
+    const values = groups[labelKey]
+      ?? Object.entries(groups).find(([k]) => k.toLowerCase() === labelKey.toLowerCase())?.[1]
       ?? [];
 
     if (values.length < 2) return 0;
 
     const n = values.length;
-    const mean = values.reduce((a, b) => a + b, 0) / n;
-    const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1); // sample variance
+    const mean = values.reduce((a: number, b: number) => a + b, 0) / n;
+    const variance = values.reduce((s: number, v: number) => s + (v - mean) ** 2, 0) / (n - 1);
     const sd = Math.sqrt(variance);
     const se = sd / Math.sqrt(n);
 
     switch (errorType) {
       case 'se': return se;
-      case 'ci95': return 1.96 * se;
+      case 'ci95': {
+        // Use t-critical value for df = n-1 at alpha/2 = 0.025
+        // For large samples this approaches 1.96; for small samples it's larger
+        const tCrit = tCritical025(n - 1);
+        return tCrit * se;
+      }
       case 'sd':
       default: return sd;
     }
@@ -2097,22 +2120,17 @@ export default function PlotlyInteractiveChart({
         }
       });
     }
-    // Show error bars — compute from raw dataset when available, not from AI
+    // Show error bars — ALWAYS compute from raw dataset when available (overwrite AI values)
     if (custOverrides.showErrorBars === true) {
       const rawErrType = custOverrides.errorBarType ?? 'sd';
       const errorType: 'sd' | 'se' | 'ci95' = rawErrType === 'std' ? 'sd' : rawErrType as 'sd' | 'se' | 'ci95';
       let anyComputed = false;
       pd.forEach((trace: any) => {
-        // Skip if trace already has valid error bars from the AI
-        if (trace.error_y?.visible && trace.error_y?.array?.length > 0
-            && trace.error_y.array.some((v: number) => v > 0)) {
-          return;
-        }
         const xLabels: string[] = (trace.x ?? []).map(String);
         const yVals: number[] = trace.y ?? [];
         if (xLabels.length === 0 || yVals.length === 0) return;
 
-        // Try computing from raw dataset first
+        // Compute from raw dataset — overwrites whatever the AI returned
         if (rawDataset?.rows && rawDataset.rows.length > 0) {
           const computed = computeErrorBarsFromRawData(
             rawDataset.rows,
@@ -2128,18 +2146,25 @@ export default function PlotlyInteractiveChart({
               array: computed.array,
               visible: true,
               color: trace.marker?.color ?? '#64748b',
-              thickness: 2,
-              width: 6,
+              thickness: 1.5,
+              width: 4,
             };
             anyComputed = true;
             return;
           }
         }
-        // No raw data available — leave without error bars (no fake 10% approximation)
+
+        // Fallback: if AI provided error bars and we couldn't compute locally, keep AI values
+        if (trace.error_y?.array?.length > 0 && trace.error_y.array.some((v: number) => v > 0)) {
+          trace.error_y = { ...trace.error_y, visible: true };
+          anyComputed = true;
+          return;
+        }
+        // No raw data and no AI data — no error bars for this trace
       });
       if (!anyComputed && onValidationWarning) {
         onValidationWarning(
-          'Error bars requested but could not be computed — upload raw data with individual observations per group.'
+          'Error bars could not be computed. Upload raw data with individual observations per group, or ensure your data includes SD/SE/CI columns.'
         );
       }
     } else if (custOverrides.showErrorBars === false) {

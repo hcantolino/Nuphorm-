@@ -175,6 +175,7 @@
 ### Statistics Table
 - [ ] 2-column metric/value table rendering (`GraphTablePanel.tsx`)
 - [ ] Multi-column dataset table rendering (headers + rows)
+- [ ] Object cell value formatting: `typeof cellValue === 'object'` → "mean (lower, upper)" display (`DataPointsTable.tsx`)
 - [ ] Table zebra striping toggle
 - [ ] Table filter input
 - [ ] Table sort: Default / A→Z / Z→A / 0→9 / 9→0
@@ -209,7 +210,10 @@
 - [ ] Auto-detection of Plotly vs Recharts (`isPlotlyChartData()`)
 - [ ] `pharma_type` field routing to correct chart builder
 - [ ] Adaptive legend/margin sizing (`calculateChartSizing`)
-- [ ] Auto-rotate dense x-axis labels (>20 categories)
+- [ ] Smart X-axis label sizing: auto-angle + auto-font-size based on label count/length (`calculateXAxisLabelConfig`)
+- [ ] `automargin: true` on X-axis — Plotly auto-expands bottom margin for angled labels
+- [ ] Bottom margin expansion for long/angled labels
+- [ ] Auto-detect categorical X-axis: `layout.xaxis.type = 'category'` when X values are strings
 - [ ] Research palette for >2 series
 - [ ] KM palette for survival charts
 - [ ] Marker shapes per series (`MARKER_SHAPES`)
@@ -225,10 +229,20 @@
 - [ ] Right-click context menu on chart (`handleContextMenu`)
 - [ ] Escape key closes edit popover and resets highlight
 - [ ] Outside click closes edit popover
-- [ ] "Fit All" button resets zoom (`Plotly.relayout autorange`)
-- [ ] "Values" button toggles data labels
-- [ ] "Trendline" button adds trendline
 - [ ] Bottom action buttons: Add Labels, Pairwise Table, Percent Improvement, Add Trendline
+
+### Inline Editable Labels (`PlotlyInteractiveChart.tsx → InlineEditableText`)
+- [ ] Double-click chart title to edit inline — HTML overlay above Plotly SVG
+- [ ] Double-click subtitle to edit inline
+- [ ] Double-click X-axis label to edit inline (below chart)
+- [ ] Double-click Y-axis label to edit inline (below chart)
+- [ ] Hover hint: faint underline + text cursor on editable labels
+- [ ] Enter commits edit, Escape reverts, blur commits
+- [ ] Empty text revert — blank title not allowed
+- [ ] Full text auto-selected on edit activation
+- [ ] Edits persist via `onLabelEdit` → `setCustomization()` in Zustand store (`GraphTablePanel.tsx`)
+- [ ] Bidirectional sync: inline edits update Customize panel and vice versa
+- [ ] Plotly SVG title suppressed — HTML title rendered externally to avoid double-render
 
 ### Table Interactions (GraphTablePanel)
 - [ ] Click table cell to edit inline (`GraphTablePanel.tsx → EditableCell`)
@@ -248,13 +262,30 @@
 - [ ] Data integrity diff viewer: side-by-side Original vs Generated with Match/Corrected status
 - [ ] Retry analysis button dispatches custom event for re-run with stricter validation
 
-### Error Bars
-- [ ] Dataset-level symmetric error bars (`resolveErrorBars → ds.error_y / sd / sem`)
-- [ ] Dataset-level asymmetric CI bounds (`resolveErrorBars → ci_lower / ci_upper`)
-- [ ] Chart-level error_y array
-- [ ] Chart-level error_bars array with named series matching
-- [ ] Fallback: 10% approximation when `show_error_bars=true` but no values
+### Error Bars — Local Computation Architecture
+- [ ] `computeErrorBarsFromRawData()` — computes SD/SE/95%CI from raw uploaded CSV rows (`PlotlyInteractiveChart.tsx`)
+- [ ] `tCritical025()` — proper t-distribution critical values for small-sample 95% CI, lookup table df 1-120 (`PlotlyInteractiveChart.tsx`)
+- [ ] Local computation OVERWRITES AI-returned error_y — AI signals intent only via `show_error_bars: true`
+- [ ] Auto-detect group column by matching xLabels against unique values in each column (70% threshold)
+- [ ] Auto-detect value column by matching trace series name to column names
+- [ ] Fallback: first categorical column as group, first numeric column as value
+- [ ] Error bar type selector in ControlPanel: ±SD / ±SEM / 95% CI (`ControlPanel.tsx → errorBarType`)
+- [ ] Changing error bar type recomputes locally — no AI call needed
+- [ ] Auto-enable `showErrorBars` when AI sets `show_error_bars: true` or returns error data (`GraphTablePanel.tsx` seeding effect)
+- [ ] Auto-seed `errorBarType` from AI's `error_type` field (ci/confidence → ci95, se → se, else sd)
+- [ ] AI system prompt updated: "Do NOT compute or return error_y arrays" (`biostatisticsAI.ts`)
+- [ ] 10% approximation REMOVED — replaced by local computation from raw data
 - [ ] Customization toggle forces error bars on/off
+- [ ] Fallback: if local computation fails, keep AI-provided error bars if present
+- [ ] `coerceErrorArray()` — handles plain arrays, Plotly objects `{ array: [...] }`, single numbers, case variants
+- [ ] Case-insensitive property normalization in `normalizeChartData()` — `SD`/`SEM`/`Error_Y`/`CI_Lower` mapped to canonical names
+- [ ] Warning toast when error bars requested but cannot be computed (`onValidationWarning`)
+- [ ] Runtime error bar validation in debug useEffect — logs `[ERROR BAR VALIDATION FAILED]` if mismatch
+
+### Box Plot Enforcement
+- [ ] User query keyword detection forces `pharma_type: "box"` even if AI omits it (`biostatisticsAI.ts → forcePharmaMap`)
+- [ ] Same enforcement for survival, forest, volcano, heatmap, waterfall chart types
+- [ ] Box plot response template in system prompt requiring raw individual values (not summary stats)
 
 ### Chart Export
 - [ ] Export PNG via Plotly.toImage for Plotly charts (`GraphTablePanel.tsx → handleImageExport`)
@@ -276,14 +307,8 @@
 - [ ] Blocked analysis alert: red warning when subject mismatch detected (no fabricated data)
 
 ### Plotly Toolbar
-- [ ] Zoom (drag to zoom)
-- [ ] Pan mode
-- [ ] Box select
-- [ ] Reset axes (home)
-- [ ] Zoom In (+) and Zoom Out (-) removed from toolbar
-- [ ] toImage removed (custom export used instead)
-- [ ] Plotly logo hidden
-- [ ] Modebar repositioned with custom colors
+- [ ] `displayModeBar: false` — entire Plotly toolbar hidden (custom export/controls used instead)
+- [ ] `displaylogo: false` — Plotly logo hidden
 
 ---
 
@@ -549,6 +574,25 @@
 - [ ] Chart type rules per analysis type
 - [ ] PDF data handling instructions
 - [ ] Graph edit mode instructions with error bar format
+- [ ] Figure title format: "Figure N. [description]" — never includes chart type, sentence case (`biostatisticsAI.ts → GRAPHTITLE RULES`)
+- [ ] Figure legend instructions: returned in `chart_data.reference` field with error bar type, statistical test, significance definitions, sample sizes
+- [ ] Biostatistics Handbook knowledge base — statistical test decision tree, graph type selection rules, publication-quality graph guidelines (McDonald 2014)
+- [ ] X-axis label abbreviation instructions for long category names
+
+### Response Parsing & Validation
+- [ ] Markdown fence stripping: `/```(?:json)?\s*([\s\S]*?)```/i` (`biostatisticsAI.ts ~line 3887`)
+- [ ] Leading/trailing text stripping before/after JSON braces
+- [ ] Recovery A: repair trailing commas, control chars, unescaped newlines (`biostatisticsAI.ts ~line 3922`)
+- [ ] Recovery B: brace-balanced extraction — longest matched `{...}` substring (`biostatisticsAI.ts ~line 3929`)
+- [ ] Recovery C: markdown table fallback via `parseMarkdownTableToResults()` (`biostatisticsAI.ts ~line 3949`)
+- [ ] Case B recovery: build chart_data from numeric results_table rows instead of blocking (`biostatisticsAI.ts ~line 4310`)
+- [ ] Case C recovery: extract markdown table from analysis text before blocking (`biostatisticsAI.ts ~line 4318`)
+- [ ] Soft "Note" rows instead of hard "Error" blocks for recoverable failures
+- [ ] Amber warning card for "Note" metric rows (`GraphTablePanel.tsx`)
+- [ ] Red error card for "Error" metric rows — subject mismatch vs generic (`GraphTablePanel.tsx`)
+- [ ] Subject fabrication detection and blocking (`biostatisticsAI.ts ~line 4105`)
+- [ ] Hallucinated group filtering from results_table (`biostatisticsAI.ts ~line 4321`)
+- [ ] AJV schema validation with coercion fallback (`biostatisticsAI.ts ~line 4048`)
 
 ---
 

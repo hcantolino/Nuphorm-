@@ -1685,6 +1685,21 @@ export const GraphTablePanel: React.FC = () => {
     if (seedTitle) setCustomization(customizationKey, "chartTitle", seedTitle);
     if (seedX) setCustomization(customizationKey, "xLabel", seedX);
     if (seedY) setCustomization(customizationKey, "yLabel", seedY);
+
+    // Auto-enable error bars when the AI signals they should be shown
+    const wantsErrorBars = cd?.show_error_bars === true || cd?.error_type || cd?.error_y || cd?.error_bars
+      || cd?.datasets?.some((ds: any) => ds.error_y || ds.sd || ds.SD || ds.sem || ds.SEM || ds._ci_lower || ds.ci_lower);
+    if (wantsErrorBars) {
+      setCustomization(customizationKey, "showErrorBars", true);
+      // Seed the error bar type from AI if specified
+      const aiErrType = cd?.error_type?.toLowerCase?.();
+      if (aiErrType?.includes('ci') || aiErrType?.includes('confidence')) {
+        setCustomization(customizationKey, "errorBarType", "ci95");
+      } else if (aiErrType?.includes('se') && !aiErrType?.includes('sd')) {
+        setCustomization(customizationKey, "errorBarType", "se");
+      }
+      // else default 'sd' is fine
+    }
   }, [customizationKey, activeResult?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // NEW: chart error state — set by ChartErrorBoundary when rendering throws

@@ -1416,6 +1416,51 @@ Rules for references:
         }
       }),
 
+    computeErrorBars: publicProcedure
+      .input(
+        z.object({
+          rawData: z.array(z.record(z.string(), z.any())),
+          valueColumns: z.array(z.string()),
+          groupColumn: z.string(),
+          errorType: z.enum(['sd', 'se', 'ci95']).optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          const { computeErrorBars } = await import("./computeErrorBars");
+          return computeErrorBars({
+            rawData: input.rawData,
+            valueColumns: input.valueColumns,
+            groupColumn: input.groupColumn,
+            errorType: input.errorType ?? 'sd',
+          });
+        } catch (error) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Error bar computation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          });
+        }
+      }),
+
+    runStats: publicProcedure
+      .input(
+        z.object({
+          test: z.string(),
+          data: z.any(),
+          params: z.any(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          const { runStatisticalTest } = await import("./statsEngine");
+          return await runStatisticalTest(input.test, input.data, input.params);
+        } catch (error) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: `Statistical test failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          });
+        }
+      }),
   }),
 });
 export type AppRouter = typeof appRouter;

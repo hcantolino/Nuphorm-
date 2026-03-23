@@ -1786,7 +1786,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
 
     if (isFirstQuery && activeTabIdMemo) {
       setIsFirstQuery(false);
-      renameTab(activeTabIdMemo, generateTitleFromQuery(userMessage));
+      // Defer tab rename — will use AI's graphTitle after response arrives
       setTabLastQuery(activeTabIdMemo, userMessage);
     }
 
