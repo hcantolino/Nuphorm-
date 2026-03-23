@@ -1852,7 +1852,14 @@ function buildGenericPlotlyTraces(
     ? '<b>%{x}</b><br>%{y:.2f}<extra>%{fullData.name}</extra>'
     : '<b>%{fullData.name}</b><br>x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>';
 
-  if (mode === 'bar' || (!mode && !isPlotlyChartData(chartData))) {
+  // Detect the original chart type from the AI's chart_data fields.
+  // When a standard bar chart is rerouted to Plotly (e.g., because error bars are enabled),
+  // mode will be 'auto' and isPlotlyChartData returns true — but the AI intended a bar chart.
+  const aiType = (chartData.type ?? chartData.chartType ?? chartData.chart_type ?? '').toLowerCase();
+  const isBarIntent = mode === 'bar' || aiType === 'bar' || aiType === 'grouped_bar' || aiType === 'stacked_bar'
+    || (!mode || mode === 'auto') && !chartData.pharma_type && isCategorical;
+
+  if (isBarIntent) {
     const showValues = chartData.show_values === true; // only show if explicitly requested
     const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
       const color = ds.color ?? ds.borderColor ?? palette[i % palette.length];
