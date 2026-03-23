@@ -1857,7 +1857,7 @@ function buildGenericPlotlyTraces(
   // mode will be 'auto' and isPlotlyChartData returns true — but the AI intended a bar chart.
   const aiType = (chartData.type ?? chartData.chartType ?? chartData.chart_type ?? '').toLowerCase();
   const isBarIntent = mode === 'bar' || aiType === 'bar' || aiType === 'grouped_bar' || aiType === 'stacked_bar'
-    || (!mode || mode === 'auto') && !chartData.pharma_type && isCategorical;
+    || ((!mode || mode === 'auto') && !chartData.pharma_type && isCategorical);
 
   if (isBarIntent) {
     const showValues = chartData.show_values === true; // only show if explicitly requested
@@ -2805,7 +2805,8 @@ export default function PlotlyInteractiveChart({
     }
 
     return { plotData: pd, layout: lo };
-  }, [basePlotData, baseLayout, custOverrides]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basePlotData, baseLayout, custOverrides, rawDataset, config.chartData?.show_error_bars, config.chartData?.error_type, onValidationWarning]);
 
   // Debug: log final traces and layout being rendered + error bar validation
   useEffect(() => {
@@ -2829,21 +2830,9 @@ export default function PlotlyInteractiveChart({
         || cd.datasets?.some((ds: any) => ds.error_y || ds.sd || ds.SD || ds.SEM || ds.sem || ds._ci_lower || ds.ci_lower);
       const tracesHaveErrors = plotData?.some((t: any) => t.error_y?.visible && t.error_y?.array?.length > 0);
       if (sourceHasErrors && !tracesHaveErrors) {
-        console.error('[ERROR BAR VALIDATION FAILED] chartData has error bar data but no traces have visible error bars.');
-        console.error('chartData error fields:', {
-          error_y: typeof cd.error_y, error_bars: typeof cd.error_bars,
-          ci_lower: typeof cd.ci_lower, ci_upper: typeof cd.ci_upper,
-          show_error_bars: cd.show_error_bars,
-          dataset0_error_y: typeof cd.datasets?.[0]?.error_y,
-          dataset0_sd: typeof cd.datasets?.[0]?.sd,
-          dataset0_SD: typeof cd.datasets?.[0]?.SD,
-        });
-        // Surface to user instead of only logging
-        if (onValidationWarning) {
-          onValidationWarning(
-            'Error bars were requested but could not be rendered — the AI response did not include valid error bar values. Try toggling "Show Error Bars" in Customize to compute from your raw data.'
-          );
-        }
+        // Debug log only — the actual user-facing warning is in the error bar computation block
+        // (which fires its own onValidationWarning when local computation fails)
+        console.warn('[ERROR BAR VALIDATION] chartData has show_error_bars but final traces lack error_y. This is expected if the customization toggle is off or rawDataset is not yet loaded.');
       }
     }
     console.log('Layout xaxis type:', (layout as any)?.xaxis?.type);

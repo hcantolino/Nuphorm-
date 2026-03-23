@@ -1,6 +1,19 @@
 # FEATURES.md — Living Feature Checklist
 # NuPhorm Biostatistics Platform
-# Verify after every code change
+#
+# VERIFY AFTER EVERY CODE CHANGE
+#
+# Before modifying any file, check which features that file implements.
+# After your changes, confirm every affected feature still works.
+# If a feature breaks, REVERT and try again.
+#
+# CRITICAL PROTECTED FEATURES (never remove):
+# - Bar click popover with significance buttons (*, **, ***, ns)
+# - Error bar local computation from raw data (computeErrorBarsFromRawData)
+# - Plotly routing for error-bar-enabled bar charts (isPlotlyChartData)
+# - All customization panel controls (colors, axes, data labels, legend, grid)
+# - Figure numbering and legend generation
+# - Inline editable chart title, subtitle, and axis labels
 
 ---
 
@@ -205,7 +218,12 @@
 - [ ] Forest plot (`PlotlyInteractiveChart.tsx → buildForestPlotTraces`)
 - [ ] Volcano plot (`PlotlyInteractiveChart.tsx → buildVolcanoTraces`)
 - [ ] Survival / Kaplan-Meier curve (`PlotlyInteractiveChart.tsx → buildSurvivalTraces`)
-- [ ] Violin plot
+- [ ] Violin plot (`PlotlyInteractiveChart.tsx → buildViolinTraces`) — box inside, mean line, outlier points
+- [ ] Dot plot / strip chart (`PlotlyInteractiveChart.tsx → buildDotPlotTraces`) — jittered individual points per group
+- [ ] Dose-response curve (`PlotlyInteractiveChart.tsx → buildDoseResponseTraces`) — fitted curve + raw data + EC50 annotation
+- [ ] ROC curve (`PlotlyInteractiveChart.tsx → buildROCTraces`) — diagonal reference, AUC label, optimal threshold point
+- [ ] Bland-Altman plot (`PlotlyInteractiveChart.tsx → buildBlandAltmanTraces`) — bias line, ±1.96 SD limits of agreement
+- [ ] Before-After / paired line plot (`PlotlyInteractiveChart.tsx → buildPairedLineTraces`) — individual subject lines + mean
 - [ ] Histogram
 - [ ] Bubble chart
 - [ ] QQ plot
@@ -225,16 +243,18 @@
 - [ ] Reference/citation annotation below chart
 
 ### Chart Interactions
-- [ ] Click data point to highlight trace (`PlotlyInteractiveChart.tsx → handlePlotlyClick`)
-- [ ] Click-to-edit popover on point click — edit Y value via inline input (`EditableCell`)
-- [ ] Click-to-edit popover — per-bar color picker with live update via `applyRestyle()`
-- [ ] Click-to-edit popover — significance annotations (*, **, ***, ns) via `applyRelayout()`
-- [ ] Click-to-edit popover — delete individual data point from trace
-- [ ] Trace highlight: other series fade to 0.35 opacity; reset on close
-- [ ] Right-click context menu on chart (`handleContextMenu`)
-- [ ] Escape key closes edit popover and resets highlight
-- [ ] Outside click closes edit popover
-- [ ] Bottom action buttons: Add Labels, Pairwise Table, Percent Improvement, Add Trendline
+- [x] Bar click popover — clicking any bar opens inline editor with: Y value input, color picker with hex, significance buttons (*, **, ***, ns), delete point, trace name and x-axis category display (`PlotlyInteractiveChart.tsx → handlePlotlyClick + editPopover`)
+- [x] Click data point to highlight trace (`PlotlyInteractiveChart.tsx → handlePlotlyClick`)
+- [x] Click-to-edit popover — edit Y value via inline input
+- [x] Click-to-edit popover — per-bar color picker with live update via `applyRestyle()`
+- [x] Click-to-edit popover — significance annotations (*, **, ***, ns) via `applyRelayout()`
+- [x] Click-to-edit popover — delete individual data point from trace
+- [x] Trace highlight: other series fade to 0.35 opacity; reset on close
+- [x] Right-click context menu on chart (`handleContextMenu`)
+- [x] Escape key closes edit popover and resets highlight
+- [x] Outside click closes edit popover
+- [x] Data labels on hover — hovering a bar shows value and trace name (`PlotlyInteractiveChart.tsx → hovertemplate`)
+- [x] Bottom action buttons: Add Labels, Pairwise Table, Percent Improvement, Add Trendline
 
 ### Inline Editable Labels (`PlotlyInteractiveChart.tsx → InlineEditableText`)
 - [ ] Double-click chart title to edit inline — HTML overlay above Plotly SVG
@@ -268,41 +288,76 @@
 - [ ] Retry analysis button dispatches custom event for re-run with stricter validation
 
 ### Error Bars — Local Computation Architecture
-- [ ] `computeErrorBarsFromRawData()` — computes SD/SE/95%CI from raw uploaded CSV rows (`PlotlyInteractiveChart.tsx`)
-- [ ] `tCritical025()` — proper t-distribution critical values for small-sample 95% CI, lookup table df 1-120 (`PlotlyInteractiveChart.tsx`)
-- [ ] Local computation OVERWRITES AI-returned error_y — AI signals intent only via `show_error_bars: true`
-- [ ] Auto-detect group column by matching xLabels against unique values in each column (70% threshold)
-- [ ] Auto-detect value column by matching trace series name to column names
-- [ ] Fallback: first categorical column as group, first numeric column as value
-- [ ] Error bar type selector in ControlPanel: ±SD / ±SEM / 95% CI (`ControlPanel.tsx → errorBarType`)
-- [ ] Changing error bar type recomputes locally — no AI call needed
-- [ ] Auto-enable `showErrorBars` when AI sets `show_error_bars: true` or returns error data (`GraphTablePanel.tsx` seeding effect)
-- [ ] Auto-seed `errorBarType` from AI's `error_type` field (ci/confidence → ci95, se → se, else sd)
-- [ ] AI system prompt updated: "Do NOT compute or return error_y arrays" (`biostatisticsAI.ts`)
-- [ ] 10% approximation REMOVED — replaced by local computation from raw data
-- [ ] Customization toggle forces error bars on/off
-- [ ] Fallback: if local computation fails, keep AI-provided error bars if present
-- [ ] `coerceErrorArray()` — handles plain arrays, Plotly objects `{ array: [...] }`, single numbers, case variants
-- [ ] Case-insensitive property normalization in `normalizeChartData()` — `SD`/`SEM`/`Error_Y`/`CI_Lower` mapped to canonical names
-- [ ] Warning toast when error bars requested but cannot be computed (`onValidationWarning`)
-- [ ] Runtime error bar validation in debug useEffect — logs `[ERROR BAR VALIDATION FAILED]` if mismatch
+- [x] Error bars render on bar charts via Plotly routing (`PlotlyInteractiveChart.tsx → isPlotlyChartData` returns true when `show_error_bars` is set)
+- [x] Error bars computed locally from raw uploaded data using ±SD (`PlotlyInteractiveChart.tsx → computeErrorBarsFromRawData`)
+- [x] `computeErrorBarsFromRawData()` — computes SD/SE/95%CI from raw uploaded CSV rows (`PlotlyInteractiveChart.tsx`)
+- [x] `tCritical025()` — proper t-distribution critical values for small-sample 95% CI, lookup table df 1-120 (`PlotlyInteractiveChart.tsx`)
+- [x] Local computation OVERWRITES AI-returned error_y — AI signals intent only via `show_error_bars: true`
+- [x] Auto-detect group column by matching xLabels against unique values in each column (70% threshold)
+- [x] Auto-detect value column by matching trace series name to column names
+- [x] Fallback: first categorical column as group, first numeric column as value
+- [x] Error bar type selector in ControlPanel: ±SD / ±SEM / 95% CI (`ControlPanel.tsx → errorBarType`)
+- [x] Changing error bar type recomputes locally — no AI call needed
+- [x] Auto-enable `showErrorBars` when AI sets `show_error_bars: true` or returns error data (`GraphTablePanel.tsx` seeding effect)
+- [x] Auto-seed `errorBarType` from AI's `error_type` field (ci/confidence → ci95, se → se, else sd)
+- [x] AI system prompt updated: "Do NOT compute or return error_y arrays" (`biostatisticsAI.ts`)
+- [x] 10% approximation REMOVED — replaced by local computation from raw data
+- [x] Customization toggle forces error bars on/off
+- [x] Fallback: if local computation fails, keep AI-provided error bars if present
+- [x] `coerceErrorArray()` — handles plain arrays, Plotly objects `{ array: [...] }`, single numbers, case variants
+- [x] Case-insensitive property normalization in `normalizeChartData()` — `SD`/`SEM`/`Error_Y`/`CI_Lower` mapped to canonical names
+- [x] Warning toast when error bars requested but cannot be computed (`onValidationWarning`)
+- [x] Runtime error bar validation in debug useEffect — logs `[ERROR BAR VALIDATION FAILED]` if mismatch
+- [x] Server-side error bar computation: `computeErrorBars()` with Bessel's correction and t-distribution CI (`server/computeErrorBars.ts`)
+- [x] Server endpoint: `POST /api/compute-error-bars` via tRPC (`server/routers.ts → computeErrorBars`)
+- [x] ControlPanel error bar description updated: "Computed locally from raw data (SD, SEM, or 95% CI)" (`ControlPanel.tsx`)
 
 ### Box Plot Enforcement
 - [ ] User query keyword detection forces `pharma_type: "box"` even if AI omits it (`biostatisticsAI.ts → forcePharmaMap`)
 - [ ] Same enforcement for survival, forest, volcano, heatmap, waterfall chart types
 - [ ] Box plot response template in system prompt requiring raw individual values (not summary stats)
+- [ ] Raw data fallback: if AI returns summary stats (≤5 values per group), server rebuilds datasets from raw CSV (`biostatisticsAI.ts ~line 4422`)
+- [ ] Fallback detects group column (categorical) and value columns (numeric) from raw data
+- [ ] Multiple value columns → separate box per group×column combination
+
+### Plotly Rerouting for Error Bars
+- [x] `isPlotlyChartData()` returns `true` when `show_error_bars` or `showErrorBars` is set (`PlotlyInteractiveChart.tsx`)
+- [x] Standard bar/line charts reroute from Recharts to Plotly when error bars enabled
+- [x] Bar intent detection from `chart_data.type`, mode, and categorical x-axis fallback (`buildGenericPlotlyTraces → isBarIntent` at line 1855)
+- [x] Rerouted bar charts render as `type: 'bar'` with `barmode: 'group'`, not scatter
+- [x] All customization controls work for both Recharts and Plotly-routed charts (colors, data labels, axes, legend, grid, etc.)
+
+### Graph Edit Modification Validation
+- [ ] Modification-specific validators: error bars, legend, trendline, annotations (`AIBiostatisticsChatTabIntegrated.tsx`)
+- [ ] Warning toast when AI claims success but specific modification not detected in chart_data diff
+- [ ] Validators check before/after chart_data structure for expected changes
+- [ ] Non-blocking: AI response still applied, warning is informational
+
+### Chart Type Enforcement — New Types
+- [ ] Violin plot: `forcePharmaMap` keyword detection + `pharma_type: "violin"` enforcement (`biostatisticsAI.ts`)
+- [ ] Dot plot / strip chart: keyword detection for "dot plot", "strip chart" (`biostatisticsAI.ts`)
+- [ ] Dose-response: keyword detection for "dose-response", "ec50", "ic50" (`biostatisticsAI.ts`)
+- [ ] ROC curve: keyword detection for "roc curve", "receiver operating" (`biostatisticsAI.ts`)
+- [ ] Bland-Altman: keyword detection for "bland-altman", "method comparison" (`biostatisticsAI.ts`)
+- [ ] Paired line: keyword detection for "before-after", "paired line" (`biostatisticsAI.ts`)
+
+### Chart Display
+- [x] Figure numbering: "Figure 1." auto-incremented in conversation (`biostatisticsAI.ts → GRAPHTITLE RULES`)
+- [x] Figure title in sentence case, no chart type in title
+- [x] Figure legend auto-generated below chart with error bar type, sample sizes, and statistical notes (`chart_data.reference`)
+- [x] Proper axis labels with units auto-populated from AI response
 
 ### Chart Export
-- [ ] Export PNG via Plotly.toImage for Plotly charts (`GraphTablePanel.tsx → handleImageExport`)
-- [ ] Export JPEG
-- [ ] Export JPEG-2000
-- [ ] Export TIFF (custom uncompressed TIFF builder `createTiffBlob`)
-- [ ] Export PDF via jsPDF
-- [ ] Export SVG
-- [ ] Export CSV (chart source data as CSV `downloadChartDataAsCSV`)
-- [ ] Export statistics table as CSV (`downloadTableAsCSV`)
-- [ ] Export statistics table as TXT (`downloadTableAsTxt`)
-- [ ] Copy chart to clipboard (`handleCopy → Plotly.toImage` for Plotly, `html-to-image` fallback)
+- [x] Export PNG via Plotly.toImage for Plotly charts (`GraphTablePanel.tsx → handleImageExport`)
+- [x] Export JPEG
+- [x] Export JPEG-2000
+- [x] Export TIFF (custom uncompressed TIFF builder `createTiffBlob`)
+- [x] Export PDF via jsPDF
+- [x] Export SVG
+- [x] Export CSV (chart source data as CSV `downloadChartDataAsCSV`)
+- [x] Export statistics table as CSV (`downloadTableAsCSV`)
+- [x] Export statistics table as TXT (`downloadTableAsTxt`)
+- [x] Copy chart to clipboard (`handleCopy → Plotly.toImage` for Plotly, `html-to-image` fallback)
 - [ ] Fallback: html-to-image for Recharts charts
 - [ ] Clean export ref — hidden off-screen render for publication-quality (Recharts only)
 - [ ] `data-export-btn` exclusion filter during capture
@@ -320,70 +375,72 @@
 ## Customization Panel (CustomizeSidebar + ControlPanel)
 
 ### Chart Type Section
-- [ ] Chart type buttons: bar, line, area, scatter, pie (`ControlPanel.tsx`)
-- [ ] Corner Radius slider (`onSet("barBorderRadius", v)` → `marker.cornerradius`)
-- [ ] Bar Gap slider (`onSet("barGap", v)` → `layout.bargap`)
+- [x] Chart type buttons: bar, line, area, scatter, pie (`ControlPanel.tsx`)
+- [x] Corner Radius slider (`onSet("barBorderRadius", v)` → `marker.cornerradius`)
+- [x] Bar Gap slider (`onSet("barGap", v)` → `layout.bargap`)
 
 ### Colors Section
-- [ ] 5 preset palettes: finbox, viridis, pastel, highContrast, publication (`ControlPanel.tsx`)
-- [ ] Per-series color picker overrides (`<input type="color">`)
+- [x] 5 preset palettes: Finbox Default, Viridis, Pastel, High Contrast, Publication (`ControlPanel.tsx`)
+- [x] Per-series color picker overrides with hex codes (`<input type="color">`)
 
 ### Axes Section
-- [ ] X-Axis Min / Max inputs → `layout.xaxis.range`
-- [ ] Y-Axis Min / Max inputs → `layout.yaxis.range`
-- [ ] X-Axis Step Size → `layout.xaxis.dtick`
-- [ ] Y-Axis Step Size → `layout.yaxis.dtick`
-- [ ] X-Axis Label Rotation → `layout.xaxis.tickangle`
-- [ ] X-Axis Unit/Label → `layout.xaxis.title.text`
-- [ ] Y-Axis Unit/Label → `layout.yaxis.title.text`
-- [ ] Y-Axis Log Scale toggle → `layout.yaxis.type: 'log'`
-- [ ] X-Axis Log Scale toggle → `layout.xaxis.type: 'log'`
+- [x] X-Axis Min / Max inputs → `layout.xaxis.range`
+- [x] Y-Axis Min / Max inputs → `layout.yaxis.range`
+- [x] X-Axis Step Size → `layout.xaxis.dtick`
+- [x] Y-Axis Step Size → `layout.yaxis.dtick`
+- [x] X-Axis Label Rotation → `layout.xaxis.tickangle`
+- [x] X-Axis Unit/Label → `layout.xaxis.title.text`
+- [x] Y-Axis Unit/Label → `layout.yaxis.title.text`
+- [x] Y-Axis Log Scale toggle → `layout.yaxis.type: 'log'`
+- [x] X-Axis Log Scale toggle → `layout.xaxis.type: 'log'`
+- [x] Proper axis labels with units auto-populated from AI response
 
 ### Titles & Labels Section
-- [ ] Chart Title input → `layout.title.text`
-- [ ] Subtitle input → annotation at top
+- [x] Chart Title input → `layout.title.text`
+- [x] Subtitle input → annotation at top
 
 ### Grid & Background Section
-- [ ] Background Color picker → `plot_bgcolor` + `paper_bgcolor`
-- [ ] Show Grid Lines toggle → `xaxis.showgrid` + `yaxis.showgrid`
-- [ ] Grid Color picker → `xaxis.gridcolor` + `yaxis.gridcolor`
-- [ ] Grid Style buttons: Solid/Dashed/Dotted → `xaxis.griddash` + `yaxis.griddash`
-- [ ] Show Chart Border toggle → `xaxis.showline` + `yaxis.showline` + `mirror`
-- [ ] Border Color picker → `xaxis.linecolor` + `yaxis.linecolor`
-- [ ] Show Minor Ticks toggle → `xaxis.minor.ticks`
+- [x] Background Color picker → `plot_bgcolor` + `paper_bgcolor`
+- [x] Show Grid Lines toggle → `xaxis.showgrid` + `yaxis.showgrid`
+- [x] Grid Color picker → `xaxis.gridcolor` + `yaxis.gridcolor`
+- [x] Grid Style buttons: Solid/Dashed/Dotted → `xaxis.griddash` + `yaxis.griddash`
+- [x] Show Chart Border toggle → `xaxis.showline` + `yaxis.showline` + `mirror`
+- [x] Border Color picker → `xaxis.linecolor` + `yaxis.linecolor`
+- [x] Show Minor Ticks toggle → `xaxis.minor.ticks`
 
 ### Legend Section
-- [ ] Legend Position selector (Top/Bottom/Left/Right/None + corners)
-- [ ] Legend Anchor (fine-grained: top-right, outside-right, etc.)
-- [ ] Show Legend Border toggle → `legend.borderwidth`
-- [ ] Legend Background color → `legend.bgcolor`
-- [ ] Legend Font Size → `legend.font.size`
+- [x] Legend Position selector (Top/Bottom/Left/Right/None + corners)
+- [x] Legend Anchor (fine-grained: top-right, outside-right, etc.)
+- [x] Show Legend Border toggle → `legend.borderwidth`
+- [x] Legend Background color → `legend.bgcolor`
+- [x] Legend Font Size → `legend.font.size`
 
 ### Series / Lines / Bars Section (CustomizeSidebar)
-- [ ] Per-series color picker
-- [ ] Per-series line style dropdown (solid, dashed, dotted, dashdot)
-- [ ] Per-series line width slider
-- [ ] Per-series marker shape dropdown
-- [ ] Per-series marker size slider
-- [ ] Per-series show error bars toggle
-- [ ] Per-series visible toggle
+- [x] Per-series color picker
+- [x] Per-series line style dropdown (solid, dashed, dotted, dashdot)
+- [x] Per-series line width slider
+- [x] Per-series marker shape dropdown
+- [x] Per-series marker size slider
+- [x] Per-series show error bars toggle
+- [x] Per-series visible toggle
 
 ### Data Values Section
-- [ ] Show Values toggle → `trace.text` + `trace.textposition`
-- [ ] Value position (above/below/inside)
-- [ ] Value font size
-- [ ] Data label format
-- [ ] Data label decimal places
+- [x] Show Values / Data labels toggle → `trace.text` + `trace.textposition`
+- [x] Value position (above/below/inside)
+- [x] Value font size
+- [x] Data label format
+- [x] Data label decimal places
 
 ### Other Controls
-- [ ] Stroke Width slider (global line width)
-- [ ] Marker Size slider (global marker size)
-- [ ] Fill Opacity slider (area charts)
-- [ ] Chart Theme: Light/Dark
-- [ ] Show Data Labels toggle (`ControlPanel.tsx`)
-- [ ] Table filter input (`ControlPanel.tsx`)
-- [ ] Table sort options: Default/A→Z/Z→A/0→9/9→0 (`ControlPanel.tsx`)
-- [ ] Zebra Striping toggle for tables (`ControlPanel.tsx`)
+- [x] Stroke Width slider (global line width)
+- [x] Marker Size slider (global marker size)
+- [x] Fill Opacity slider (area charts)
+- [x] Chart Theme: Light/Dark
+- [x] Trendlines toggle
+- [x] Show Data Labels toggle (`ControlPanel.tsx`)
+- [x] Table filter input (`ControlPanel.tsx`)
+- [x] Table sort options: Default/A→Z/Z→A/0→9/9→0 (`ControlPanel.tsx`)
+- [x] Zebra Striping toggle for tables (`ControlPanel.tsx`)
 
 ---
 
@@ -496,6 +553,8 @@
 - [ ] `analyzeBiostatisticsData` — main AI analysis endpoint
 - [ ] `parseDataFile` — parse uploaded data files
 - [ ] `validateAndCorrect` — data validation/cleaning
+- [ ] `computeErrorBars` — server-side SD/SEM/CI computation from raw data (`server/computeErrorBars.ts`)
+- [ ] `runStats` — execute statistical tests via Python scipy/statsmodels (`server/statsEngine.ts`)
 
 ### Subscription (`subscription` router)
 - [ ] `getStatus` — fetch subscription status (active/trial/canceled/free)
@@ -558,6 +617,50 @@
 - [ ] PK parameter analysis (Cmax, AUC, Tmax, etc.)
 - [ ] Bioequivalence assessment
 - [ ] Data cleaning / validation
+
+### Statistical Test Engine (`server/statsEngine.ts`)
+- [ ] Python-backed test execution via `executePython()` subprocess
+- [ ] Two-group tests: unpaired t-test (Student's/Welch's), paired t-test, Mann-Whitney U, Wilcoxon signed-rank
+- [ ] Multi-group tests: one-way ANOVA, Kruskal-Wallis, Friedman, two-way ANOVA, repeated-measures ANOVA
+- [ ] Post-hoc tests: Tukey HSD, Bonferroni, Dunnett, Dunn (auto-run when ANOVA significant)
+- [ ] Correlation: Pearson, Spearman, Kendall
+- [ ] Regression: linear (OLS), logistic
+- [ ] Categorical: chi-squared, Fisher's exact
+- [ ] Survival: Kaplan-Meier, log-rank, Cox proportional hazards
+- [ ] Normality checks: Shapiro-Wilk, D'Agostino-Pearson, Levene's test
+- [ ] Effect size computation: Cohen's d, eta-squared, Cramér's V, rank-biserial r
+- [ ] Confidence intervals for all test statistics
+- [ ] Significance stars: * p<0.05, ** p<0.01, *** p<0.001, **** p<0.0001
+
+### Statistical Test Selection (AI prompt in `biostatisticsAI.ts`)
+- [ ] Decision tree in system prompt: 2-group vs 3+-group, paired vs independent, parametric vs non-parametric
+- [ ] AI returns `statistical_test: { test, params, reasoning }` JSON key
+- [ ] AI never computes statistics — selects test only, Python runs it
+- [ ] Reasoning field explains test choice for transparency
+
+### Stats Engine Integration (`AIBiostatisticsChatTabIntegrated.tsx`)
+- [ ] Detects `statistical_test` key in AI response after parsing (`~line 2187`)
+- [ ] Calls `runStats` tRPC endpoint with test name, raw data, and AI params
+- [ ] Merges `assumptions`, `post_hoc`, and test results into `analysisResults`
+- [ ] Test results prepended to `results_table` with formatted rows (test statistic, p-value, CI, effect size)
+- [ ] Group descriptive stats (n, mean±SD, median) added to results table
+- [ ] AI reasoning shown as a row in results table
+- [ ] Non-fatal: if stats engine fails, AI's own results still display
+
+### Assumptions Panel (`biostat/AssumptionsPanel.tsx`)
+- [ ] Expandable panel above Statistics Summary table when `analysisResults.assumptions` present
+- [ ] Normality check per group: Shapiro-Wilk W and p-value, pass/fail indicator
+- [ ] Equal variance check: Levene's test statistic and p-value
+- [ ] Warning banner when assumptions violated + suggested non-parametric alternative
+- [ ] "Run [alternative] instead" button (calls `onRunAlternative` callback)
+- [ ] Sample sizes display per group and total
+- [ ] Color-coded: green border for all-pass, amber for warnings
+
+### Post-Hoc Comparisons Table (`GraphTablePanel.tsx`)
+- [ ] Rendered when `analysisResults.post_hoc.comparisons` present
+- [ ] Columns: Comparison, Mean Diff, P (adj), Significance stars
+- [ ] Method label header (Tukey HSD, Dunn, etc.)
+- [ ] Hover highlight on rows
 
 ### Data Handling
 - [ ] CSV/TSV/TXT/XLSX data accepted
