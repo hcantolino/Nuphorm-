@@ -66,8 +66,15 @@ async function startServer() {
         /^https?:\/\/localhost(:\d+)?$/,
         /^https:\/\/[a-z0-9-]+\.[a-z]{2}\d+\.manus\.computer$/,
         /^https:\/\/[a-z0-9-]+\.up\.railway\.app$/,
+        /^https:\/\/(www\.)?nuphorm\.xyz$/,
       ];
-      
+
+      // Allow the Railway public domain if set (e.g. "myapp-production.up.railway.app")
+      const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+      if (railwayDomain && origin === `https://${railwayDomain}`) {
+        return callback(null, true);
+      }
+
       const isAllowed = !origin || allowedOriginPatterns.some(pattern => pattern.test(origin));
       
       if (isAllowed) {
@@ -99,8 +106,12 @@ async function startServer() {
     next();
   });
   
-  // OAuth callback under /api/oauth/callback
-  registerOAuthRoutes(app);
+  // OAuth callback under /api/oauth/callback — skip if no server configured
+  if (process.env.OAUTH_SERVER_URL) {
+    registerOAuthRoutes(app);
+  } else {
+    console.log("[OAuth] OAUTH_SERVER_URL not set — OAuth routes disabled");
+  }
   
   // DEV ONLY: LLM connectivity check — GET /dev/llm-check
   // Returns { ok, mode, model, error } so you can confirm the API key works.
