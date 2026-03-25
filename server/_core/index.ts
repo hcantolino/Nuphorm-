@@ -65,6 +65,7 @@ async function startServer() {
       const allowedOriginPatterns = [
         /^https?:\/\/localhost(:\d+)?$/,
         /^https:\/\/[a-z0-9-]+\.[a-z]{2}\d+\.manus\.computer$/,
+        /^https:\/\/[a-z0-9-]+\.up\.railway\.app$/,
       ];
       
       const isAllowed = !origin || allowedOriginPatterns.some(pattern => pattern.test(origin));
