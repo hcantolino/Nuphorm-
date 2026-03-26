@@ -62,6 +62,14 @@ async function startServer() {
     origin: function (origin, callback) {
       // Allow requests from any subdomain of .manus.computer (all regions)
       // Also allow localhost for development
+      // Exact string matches — always allowed
+      const allowedOrigins = [
+        'https://nuphorm-production.up.railway.app',
+        'https://nuphorm.xyz',
+        'https://www.nuphorm.xyz',
+      ];
+
+      // Regex patterns for dynamic subdomains
       const allowedOriginPatterns = [
         /^https?:\/\/localhost(:\d+)?$/,
         /^https:\/\/[a-z0-9-]+\.[a-z]{2}\d+\.manus\.computer$/,
@@ -72,6 +80,11 @@ async function startServer() {
       // Allow the Railway public domain if set (e.g. "myapp-production.up.railway.app")
       const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
       if (railwayDomain && origin === `https://${railwayDomain}`) {
+        return callback(null, true);
+      }
+
+      // Check exact string matches first
+      if (origin && allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
