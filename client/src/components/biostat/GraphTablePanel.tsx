@@ -1606,6 +1606,9 @@ export const GraphTablePanel: React.FC = () => {
   // Clean export ref — hidden off-screen render for publication-quality exports
   const cleanExportRef = useRef<HTMLDivElement>(null);
 
+  // Plotly graph div ref — exposed from PlotlyInteractiveChart via onPlotRef callback
+  const plotDivRef = useRef<HTMLElement | null>(null);
+
   // Editable graph title
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const displayTitle = titleOverride ?? activeResult?.graphTitle ?? null;
@@ -2265,6 +2268,7 @@ export const GraphTablePanel: React.FC = () => {
                             style: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
                           });
                         }}
+                        onPlotRef={(el) => { plotDivRef.current = el; }}
                         onPointClick={(pt) => {
                           console.log('[PlotlyChart] Point clicked:', pt);
                         }}
@@ -2956,6 +2960,16 @@ export const GraphTablePanel: React.FC = () => {
         tabs={tabs}
         resultsByTab={resultsByTab}
         projectName={projectName}
+        plotDivRef={plotDivRef}
+        titleOverride={titleOverride}
+        customizationsByResult={
+          Object.fromEntries(
+            results.map((r) => [
+              r.id,
+              customizationsByTab[`${activeTabId}::${r.id}`] ?? {},
+            ])
+          )
+        }
       />
     </div>
     {/* End of main content div */}

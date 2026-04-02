@@ -960,7 +960,7 @@ function LibrarySidebar({
     const children = folders.filter((f) => f.parentId === folder.id);
 
     return (
-      <Droppable droppableId={`folder-${folder.id}`} key={folder.id}>
+      <Droppable droppableId={`folder-${folder.id}`} key={folder.id} isDropDisabled={false}>
         {(provided, snapshot) => (
           <div ref={provided.innerRef} {...provided.droppableProps}>
             <div
@@ -1003,7 +1003,7 @@ function LibrarySidebar({
   return (
     <div className="space-y-1">
       {/* All Files */}
-      <Droppable droppableId="folder-root">
+      <Droppable droppableId="folder-root" isDropDisabled={false}>
         {(provided, snapshot) => (
           <div ref={provided.innerRef} {...provided.droppableProps}>
             <button
@@ -2092,7 +2092,7 @@ export default function DataUploaded() {
 
               {/* Grid / List / Gallery views with grouping */}
               {(
-                <Droppable droppableId="main-grid" direction={viewMode === "grid" || viewMode === "gallery" ? "horizontal" : "vertical"}>
+                <Droppable droppableId="main-grid" direction={viewMode === "grid" || viewMode === "gallery" ? "horizontal" : "vertical"} isDropDisabled={false}>
                   {(provided: DroppableProvided) => (
                     <div ref={provided.innerRef} {...provided.droppableProps}>
                       {isLoading

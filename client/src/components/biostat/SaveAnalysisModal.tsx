@@ -37,6 +37,20 @@ import Papa from "papaparse";
 import { jsPDF } from "jspdf";
 import { toPng } from "html-to-image";
 import html2canvas from "html2canvas";
+// Plotly is loaded lazily at capture time — not a top-level import.
+// This avoids pulling 3MB+ into the initial bundle and avoids Vite transform issues.
+let _plotlyModule: any = null;
+async function getPlotly(): Promise<any> {
+  if (_plotlyModule) return _plotlyModule;
+  try {
+    // @ts-ignore — plotly.js UMD dist has no default-export type declarations
+    const mod = await import("plotly.js/dist/plotly");
+    _plotlyModule = mod.default ?? mod;
+    return _plotlyModule;
+  } catch {
+    return null;
+  }
+}
 import type { PanelResult } from "@/stores/aiPanelStore";
 import type { Tab } from "@/stores/tabStore";
 
@@ -44,35 +58,118 @@ import type { Tab } from "@/stores/tabStore";
  * Capture a chart from the live DOM by result ID.
  * Returns a base64 PNG data URL, or null if no chart element is found.
  */
-async function captureChartImage(resultId: string): Promise<string | null> {
+async function captureChartImage(resultId: string, plotElement?: HTMLElement | null): Promise<string | null> {
+  console.log('[captureChartImage] Starting capture for result:', resultId);
+
+  // ── Check if this is a Plotly chart ──
+  // Scoped selectors ONLY — no global fallback. If this resultId's chart
+  // is not in the DOM (because it's not the active result), return null
+  // so the caller can navigate to it first and retry.
+  const plotlyDiv = plotElement
+    ?? document.querySelector<HTMLElement>(`[data-chart-export="${resultId}"] .js-plotly-plot`)
+    ?? document.querySelector<HTMLElement>(`[data-chart-capture="${resultId}"] .js-plotly-plot`);
+
+  if (plotlyDiv) {
+    console.log('[captureChartImage] Plotly div found for', resultId, '— using Plotly.toImage()');
+    const Plotly = await getPlotly();
+    if (!Plotly?.toImage) {
+      console.error('[captureChartImage] Plotly module loaded but toImage not available');
+      return null;
+    }
+    try {
+      const dataUrl = await Plotly.toImage(plotlyDiv, {
+        format: 'png',
+        width: 900,
+        height: 500,
+        scale: 2,
+      });
+      console.log('[captureChartImage] Plotly.toImage SUCCESS, base64 length:', dataUrl?.length ?? 0);
+      return dataUrl;
+    } catch (plotlyErr) {
+      console.error('[captureChartImage] Plotly.toImage FAILED:', plotlyErr);
+      return null;
+    }
+  }
+
+  // ── RECHARTS PATH — only reached when no Plotly element exists for this resultId ──
   const el = document.querySelector<HTMLElement>(`[data-chart-capture="${resultId}"]`);
-  if (!el) return null;
+  if (!el) {
+    console.warn('[captureChartImage] No chart-capture element found for result:', resultId);
+    return null;
+  }
   try {
-    const canvas = await html2canvas(el, {
-      backgroundColor: "#ffffff",
-      scale: 2,
-      logging: false,
-      useCORS: true,
+    // Poll until the Recharts SVG has rendered content
+    const maxWait = 2000;
+    const interval = 100;
+    let waited = 0;
+    while (waited < maxWait) {
+      const svg = el.querySelector('svg.recharts-surface') ?? el.querySelector('svg');
+      if (svg && svg.querySelectorAll('path, rect, circle, line, polyline').length > 0) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, interval));
+      waited += interval;
+    }
+    if (waited >= maxWait) {
+      console.warn(`[captureChartImage] Recharts SVG for "${resultId}" did not populate within ${maxWait}ms`);
+    }
+
+    console.log('[captureChartImage] toPng starting, SVG waited:', waited, 'ms');
+    const dataUrl = await toPng(el, {
+      pixelRatio: 2,
+      backgroundColor: '#ffffff',
+      cacheBust: true,
+      filter: (node: any) => {
+        if (node instanceof HTMLElement && node.hasAttribute('data-export-btn')) return false;
+        return true;
+      },
     });
-    return canvas.toDataURL("image/png");
+    console.log('[captureChartImage] toPng SUCCESS, base64 length:', dataUrl?.length ?? 0);
+    return dataUrl;
   } catch (err) {
-    console.warn("[SaveAnalysisModal] Chart capture failed:", err);
+    console.warn('[captureChartImage] toPng FAILED:', err);
     return null;
   }
 }
 
 /**
  * Pre-capture chart images for a batch of results.
+ * Navigates to each result in turn (so its chart is rendered in the DOM),
+ * waits for the chart to appear, captures it, then restores the original result.
  * Returns a map of resultId → base64 PNG data URL.
  */
-async function captureChartImages(results: PanelResult[]): Promise<Record<string, string>> {
+async function captureChartImages(
+  results: PanelResult[],
+  tabId: string | null,
+): Promise<Record<string, string>> {
   const map: Record<string, string> = {};
+  if (!tabId) return map;
+
+  const store = (await import("@/stores/aiPanelStore")).useAIPanelStore;
+  const originalActiveId = store.getState().activeResultIdByTab[tabId] ?? null;
+
   for (const r of results) {
-    if (r.analysisResults?.chart_data && r.id) {
-      const img = await captureChartImage(r.id);
-      if (img) map[r.id] = img;
+    if (!r.analysisResults?.chart_data || !r.id) continue;
+
+    // Navigate to this result so its chart renders in the DOM
+    console.log('[loop] switching to result:', r.id);
+    store.getState().setActiveResult(tabId, r.id);
+    // Wait for Plotly to mount and render (lazy-loaded + requestAnimationFrame)
+    await new Promise((res) => setTimeout(res, 800));
+
+    console.log('[loop] capturing result:', r.id);
+    const img = await captureChartImage(r.id);
+    console.log('[loop] captured:', r.id, '→', img ? img.length : 'NULL');
+    if (img) {
+      map[r.id] = img;
     }
   }
+
+  // Restore the original active result
+  if (originalActiveId) {
+    store.getState().setActiveResult(tabId, originalActiveId);
+  }
+
   return map;
 }
 
@@ -337,16 +434,38 @@ function buildPDFExport(
 
     // ── Chart image (above the stats table)
     const chartImg = r.id ? chartImages[r.id] : undefined;
+    console.log('[buildPDFExport] chartImg present:', !!chartImg, 'for result:', r.id);
     if (chartImg) {
       const imgW = contentW;
       const imgH = imgW * 0.55; // ~16:9 aspect ratio
       checkPage(imgH + 4);
+      console.log('[buildPDFExport] about to addImage – chartImg starts with:', chartImg.substring(0, 60));
       try {
-        doc.addImage(chartImg, "PNG", margin, y, imgW, imgH);
-        y += imgH + 4;
-      } catch (imgErr) {
-        console.warn("[buildPDFExport] addImage failed:", imgErr);
+        const imgData = chartImg.includes(',')
+          ? chartImg.split(',')[1]
+          : chartImg;
+        doc.addImage(imgData, 'PNG', margin, y, imgW, imgH);
+        console.log('[buildPDFExport] addImage SUCCESS ✅ – chart should now appear');
+        y += imgH + 10;
+      } catch (err: any) {
+        console.error('[buildPDFExport] addImage FAILED:', err.message, '– chartImg prefix:', chartImg.substring(0, 40));
+        // fallback: still advance y so layout doesn't break
+        y += imgH + 10;
       }
+    } else if (r.analysisResults?.chart_data) {
+      // Chart data exists but capture failed — show placeholder
+      console.warn('[buildPDFExport] PDF chart capture returned null for result:', r.id);
+      const boxH = 30;
+      checkPage(boxH + 4);
+      (doc as any).setDrawColor(203, 213, 225);
+      doc.setLineDashPattern([2, 2], 0);
+      doc.rect(margin, y, contentW, boxH);
+      doc.setLineDashPattern([], 0);
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "italic");
+      (doc as any).setTextColor(148, 163, 184);
+      doc.text("Chart capture failed — please view results in the app", margin + contentW / 2, y + boxH / 2, { align: "center" });
+      y += boxH + 4;
     }
 
     if (tbl.length > 0) {
@@ -460,10 +579,11 @@ function buildSingleResultPDF(
     const imgH = imgW * 0.55;
     checkPage(imgH + 4);
     try {
-      doc.addImage(chartImg, "PNG", margin, y, imgW, imgH);
+      const imgData = chartImg.includes(",") ? chartImg.split(",")[1] : chartImg;
+      doc.addImage(imgData, "PNG", margin, y, imgW, imgH);
       y += imgH + 4;
     } catch (imgErr) {
-      console.warn("[buildSingleResultPDF] addImage failed:", imgErr);
+      console.error("[buildSingleResultPDF] addImage FAILED:", imgErr);
     }
   }
 
@@ -656,24 +776,40 @@ async function captureChartAsPNG(
   resultId: string,
   chartTitle: string
 ): Promise<string> {
-  // Find the chart container in the DOM by data attribute
   const chartEl = document.querySelector(
     `[data-chart-export="${resultId}"]`
   ) as HTMLElement | null;
   if (!chartEl) throw new Error("Chart element not found in DOM");
 
-  // Create a temporary wrapper with white background, title, and watermark
+  // Strategy 1: Plotly native export (best quality for Plotly charts)
+  const plotlyDiv = chartEl.querySelector<HTMLElement>('.js-plotly-plot');
+  if (plotlyDiv) {
+    const Plotly = await getPlotly();
+    if (Plotly?.toImage) {
+      try {
+        const dataUrl = await Plotly.toImage(plotlyDiv, {
+          format: 'png',
+          width: 900,
+          height: 500,
+          scale: 2,
+        });
+        return dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+      } catch (plotlyErr) {
+        console.warn("[captureChartAsPNG] Plotly.toImage failed, using DOM capture:", plotlyErr);
+      }
+    }
+  }
+
+  // Strategy 2: html-to-image with a temporary wrapper for title
   const wrapper = document.createElement("div");
   wrapper.style.cssText =
     "position:fixed;left:-9999px;top:0;background:#fff;padding:32px 24px 20px;font-family:system-ui,-apple-system,sans-serif;";
 
-  // Title
   const titleEl = document.createElement("div");
   titleEl.style.cssText = "font-size:16px;font-weight:600;color:#1f2937;margin-bottom:16px;text-align:center;";
   titleEl.textContent = chartTitle;
   wrapper.appendChild(titleEl);
 
-  // Clone chart content
   const clone = chartEl.cloneNode(true) as HTMLElement;
   clone.style.cssText = "background:#fff;";
   wrapper.appendChild(clone);
@@ -681,12 +817,13 @@ async function captureChartAsPNG(
   document.body.appendChild(wrapper);
 
   try {
+    // Wait for cloned SVGs to settle
+    await new Promise((r) => setTimeout(r, 300));
     const dataUrl = await toPng(wrapper, {
       pixelRatio: 2,
       backgroundColor: "#ffffff",
       cacheBust: true,
     });
-    // Strip the data URI prefix → return raw base64
     return dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
   } finally {
     document.body.removeChild(wrapper);
@@ -823,6 +960,12 @@ interface Props {
   resultsByTab: Record<string, PanelResult[]>;
   /** Active project name — auto-creates project subfolder */
   projectName?: string;
+  /** Direct ref to the Plotly graph div for accurate PDF chart capture */
+  plotDivRef?: React.RefObject<HTMLElement | null>;
+  /** User-edited title override from GraphTablePanel */
+  titleOverride?: string | null;
+  /** Per-result customization overrides (keyed by result ID) */
+  customizationsByResult?: Record<string, any>;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -838,8 +981,17 @@ export default function SaveAnalysisModal({
   tabs,
   resultsByTab,
   projectName,
+  plotDivRef,
+  titleOverride,
+  customizationsByResult,
 }: Props) {
-  const derivedTitle = [tabName ?? "Analysis", graphTitle ?? "Results", todayMMDDYYYY()]
+  const bestTitle =
+    customizationsByResult?.[result?.id ?? '']?.chartTitle
+    ?? titleOverride
+    ?? graphTitle
+    ?? "Results";
+
+  const derivedTitle = [tabName ?? "Analysis", bestTitle, todayMMDDYYYY()]
     .filter(Boolean)
     .join(" – ");
 
@@ -1176,7 +1328,7 @@ export default function SaveAnalysisModal({
           const tabPath = `${basePath} / ${ti.tabTitle}`;
           for (let idx = 0; idx < graphs.length; idx++) {
             const r = graphs[idx];
-            const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Chart ${idx + 1}`;
+            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Chart ${idx + 1}`;
             try {
               const pngBase64 = await captureChartAsPNG(r.id, rTitle);
               const fileName = `${tabPath} / ${safe(ti.tabTitle)} – ${safe(rTitle)} – ${dateStr}.png`;
@@ -1204,8 +1356,12 @@ export default function SaveAnalysisModal({
       }
 
       // ── Pre-capture chart images from the live DOM ──────────────────────────
-      const allSelectedResults = perTab.flatMap((pt) => pt.allResults);
-      const chartImages = await captureChartImages(allSelectedResults);
+      // Navigate to each result in turn so its chart is in the DOM for capture.
+      let chartImages: Record<string, string> = {};
+      for (const pt of perTab) {
+        const tabCharts = await captureChartImages(pt.allResults, pt.ti.tabId);
+        Object.assign(chartImages, tabCharts);
+      }
       console.log(`[SaveAnalysisModal] Captured ${Object.keys(chartImages).length} chart image(s) for PDF`);
 
       // ── Process each tab ────────────────────────────────────────────────────
@@ -1239,7 +1395,7 @@ export default function SaveAnalysisModal({
         if (graphs.length > 0) {
           const useSubfolder = graphs.length > 2;
           graphs.forEach((r, idx) => {
-            const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Graph ${idx + 1}`;
+            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Graph ${idx + 1}`;
             const pdf = buildSingleResultPDF(rTitle, "Graph", r, chartImages);
             const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
             const content = buildStorageContent("pdf", pdf, true, html);
@@ -1254,7 +1410,7 @@ export default function SaveAnalysisModal({
         if (tables.length > 0) {
           const useSubfolder = tables.length > 2;
           tables.forEach((r, idx) => {
-            const rTitle = r.graphTitle || r.query?.slice(0, 40) || `Table ${idx + 1}`;
+            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Table ${idx + 1}`;
             const pdf = buildSingleResultPDF(rTitle, "Table", r, chartImages);
             const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
             const content = buildStorageContent("pdf", pdf, true, html);
@@ -1269,7 +1425,7 @@ export default function SaveAnalysisModal({
         if (queries.length > 0) {
           const useSubfolder = queries.length > 2;
           queries.forEach((r, idx) => {
-            const rTitle = r.query?.slice(0, 40) || `Query ${idx + 1}`;
+            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Query ${idx + 1}`;
             const pdf = buildSingleResultPDF(rTitle, "Query", r);
             const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
             const content = buildStorageContent("pdf", pdf, true, html);
@@ -1770,6 +1926,12 @@ export default function SaveAnalysisModal({
                               {ti.graphs.map((r) => {
                                 const key = makeKey(ti.tabId, "graph", r.id);
                                 const sel = selectedItems.has(key);
+                                const displayTitle =
+                                  customizationsByResult?.[r.id]?.chartTitle
+                                  ?? titleOverride
+                                  ?? r.graphTitle
+                                  ?? r.analysisResults?.chart_data?.title
+                                  ?? 'Graph';
                                 return (
                                   <button
                                     key={key}
@@ -1781,11 +1943,11 @@ export default function SaveAnalysisModal({
                                       color: sel ? "white" : "#334155",
                                       border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
                                     }}
-                                    title={r.graphTitle || r.query.slice(0, 60)}
+                                    title={displayTitle.slice(0, 60)}
                                   >
                                     {sel && <Check className="w-2.5 h-2.5" />}
-                                    {(r.graphTitle || r.query).slice(0, 28)}
-                                    {(r.graphTitle || r.query).length > 28 ? "…" : ""}
+                                    {displayTitle.slice(0, 28)}
+                                    {displayTitle.length > 28 ? "…" : ""}
                                   </button>
                                 );
                               })}

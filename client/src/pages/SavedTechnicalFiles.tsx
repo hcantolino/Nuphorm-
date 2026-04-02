@@ -771,7 +771,7 @@ export default function SavedTechnicalFiles() {
             const droppableId = `folder-${openFolder}__tab-${tabName}`;
             return (
               <div key={tabKey} style={{ marginBottom: isLast ? 0 : 16 }}>
-                <Droppable droppableId={droppableId}>
+                <Droppable droppableId={droppableId} isDropDisabled={false}>
                   {(droppableProvided, snapshot) => (
                     <div ref={droppableProvided.innerRef} {...droppableProvided.droppableProps}>
                 <div
@@ -1171,7 +1171,7 @@ export default function SavedTechnicalFiles() {
                       {folderKeys.map(name => {
                         const fn = tree.get(name)!;
                         return (
-                          <Droppable key={name} droppableId={`folder-${name}`}>
+                          <Droppable key={name} droppableId={`folder-${name}`} isDropDisabled={false}>
                             {(dropProv, dropSnap) => (
                               <div ref={dropProv.innerRef} {...dropProv.droppableProps} style={{ position: 'relative' }}>
                                 <FolderCard

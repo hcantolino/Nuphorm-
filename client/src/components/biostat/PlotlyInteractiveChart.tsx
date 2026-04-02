@@ -113,6 +113,8 @@ interface PlotlyInteractiveChartProps {
   rawDataset?: { rows: Record<string, unknown>[]; columns: string[] } | null;
   /** Callback when validation detects a mismatch (e.g. error bars requested but missing) */
   onValidationWarning?: (message: string) => void;
+  /** Callback to expose the Plotly graph div to the parent for PDF export */
+  onPlotRef?: (el: HTMLElement | null) => void;
   height?: number;
 }
 
@@ -453,17 +455,75 @@ function buildBoxPlotTraces(
 ): { plotData: Plotly.Data[]; layout: Partial<Plotly.Layout> } {
   const datasets = chartData.datasets ?? [];
   const labels = chartData.labels ?? [];
+  const points: Array<{ x: any; y: number }> = chartData.points ?? [];
 
-  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => ({
-    y: ds.data ?? [],
-    name: ds.label ?? labels[i] ?? `Group ${i + 1}`,
-    type: 'box' as const,
-    marker: { color: ds.color ?? ds.borderColor ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
-    boxpoints: 'outliers' as const,
-    jitter: 0.3,
-    pointpos: -1.5,
-    hovertemplate: `<b>${ds.label ?? `Group ${i + 1}`}</b><br>%{y:.2f}<extra></extra>`,
-  }));
+  const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
+    let yValues: number[] = ds.data ?? [];
+
+    // If ds.data is empty but chart_data.points exists, extract y values
+    // grouped by the x category that matches this dataset's label.
+    if ((!yValues || yValues.length === 0) && points.length > 0) {
+      const dsName = (ds.label ?? labels[i] ?? '').toString().toLowerCase();
+      yValues = points
+        .filter((p: any) => String(p.x ?? '').toLowerCase() === dsName)
+        .map((p: any) => Number(p.y))
+        .filter((v: number) => !isNaN(v));
+    }
+
+    // If still empty and points exist but no matching x, try using labels array
+    if ((!yValues || yValues.length === 0) && points.length > 0 && labels[i]) {
+      const labelName = String(labels[i]).toLowerCase();
+      yValues = points
+        .filter((p: any) => String(p.x ?? '').toLowerCase() === labelName)
+        .map((p: any) => Number(p.y))
+        .filter((v: number) => !isNaN(v));
+    }
+
+    // Last fallback: if only one dataset and all points have the same x or no x,
+    // use all point y-values for a single box
+    if ((!yValues || yValues.length === 0) && points.length > 0 && datasets.length === 1) {
+      yValues = points.map((p: any) => Number(p.y)).filter((v: number) => !isNaN(v));
+    }
+
+    return {
+      y: yValues,
+      name: ds.label ?? labels[i] ?? `Group ${i + 1}`,
+      type: 'box' as const,
+      marker: { color: ds.color ?? ds.borderColor ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
+      boxpoints: 'outliers' as const,
+      jitter: 0.3,
+      pointpos: -1.5,
+      hovertemplate: `<b>${ds.label ?? `Group ${i + 1}`}</b><br>%{y:.2f}<extra></extra>`,
+    };
+  });
+
+  // If datasets produced no traces but points exist, build traces by grouping points by x
+  if (plotData.every((t: any) => !t.y || t.y.length === 0) && points.length > 0) {
+    const groups = new Map<string, number[]>();
+    for (const p of points) {
+      const key = String(p.x ?? 'Group');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(Number(p.y));
+    }
+    const fromPoints: Plotly.Data[] = Array.from(groups.entries()).map(([name, yVals], i) => ({
+      y: yVals.filter((v) => !isNaN(v)),
+      name,
+      type: 'box' as const,
+      marker: { color: DEFAULT_PALETTE[i % DEFAULT_PALETTE.length] },
+      boxpoints: 'outliers' as const,
+      jitter: 0.3,
+      pointpos: -1.5,
+      hovertemplate: `<b>${name}</b><br>%{y:.2f}<extra></extra>`,
+    }));
+    return {
+      plotData: fromPoints,
+      layout: {
+        xaxis: { title: { text: chartData.x_axis ?? chartData.xLabel ?? 'Group' }, ...GRID_STYLE },
+        yaxis: { title: { text: chartData.y_axis ?? chartData.yLabel ?? 'Value' }, ...GRID_STYLE },
+        boxmode: 'group' as const,
+      },
+    };
+  }
 
   return {
     plotData,
@@ -1975,6 +2035,7 @@ export default function PlotlyInteractiveChart({
   onLabelEdit,
   rawDataset,
   onValidationWarning,
+  onPlotRef,
   height = 420,
 }: PlotlyInteractiveChartProps) {
   const [selectedPoint, setSelectedPoint] = useState<{
@@ -3005,6 +3066,19 @@ export default function PlotlyInteractiveChart({
   // Close context menu on outside click
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
+  // Build a layout copy that suppresses Plotly's own title + axis title text
+  // so our HTML overlays don't double-render.
+  // IMPORTANT: this useMemo must be BEFORE the early return to satisfy Rules of Hooks.
+  const plotLayout = useMemo(() => {
+    const lo: any = { ...layout };
+    // Hide Plotly title — we render it as HTML above the chart
+    lo.title = { ...(typeof lo.title === 'object' ? lo.title : {}), text: '' };
+    // Reduce top margin since our HTML title is outside
+    lo.margin = { ...lo.margin, t: Math.max((lo.margin?.t ?? 60) - 30, 35) };
+    return lo;
+  }, [layout]);
+
+  // ── Empty state — no chart data available ─────────────────────────────────
   if (plotData.length === 0) {
     return (
       <div className="flex items-center justify-center text-sm text-slate-400" style={{ height }}>
@@ -3019,7 +3093,6 @@ export default function PlotlyInteractiveChart({
     if (!t) return '';
     if (typeof t === 'string') return t;
     const raw = t.text ?? '';
-    // Strip Plotly bold tags for display
     return raw.replace(/<\/?b>/gi, '');
   })();
 
@@ -3038,17 +3111,6 @@ export default function PlotlyInteractiveChart({
     if (typeof ax === 'string') return ax;
     return ax.text ?? '';
   })();
-
-  // Build a layout copy that suppresses Plotly's own title + axis title text
-  // so our HTML overlays don't double-render.
-  const plotLayout = useMemo(() => {
-    const lo: any = { ...layout };
-    // Hide Plotly title — we render it as HTML above the chart
-    lo.title = { ...(typeof lo.title === 'object' ? lo.title : {}), text: '' };
-    // Reduce top margin since our HTML title is outside
-    lo.margin = { ...lo.margin, t: Math.max((lo.margin?.t ?? 60) - 30, 35) };
-    return lo;
-  }, [layout]);
 
   return (
     <div className="flex flex-col">
@@ -3116,6 +3178,8 @@ export default function PlotlyInteractiveChart({
               displaylogo: false,
             }}
             onClick={handlePlotlyClick}
+            onInitialized={(_: any, graphDiv: HTMLElement) => onPlotRef?.(graphDiv)}
+            onPurge={() => onPlotRef?.(null)}
             useResizeHandler
             style={{ width: '100%', height: '100%' }}
           />
