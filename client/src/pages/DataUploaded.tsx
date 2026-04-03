@@ -1582,8 +1582,11 @@ export default function DataUploaded() {
 
   const handleDelete = useCallback(async (id: string | number) => {
     const sid = String(id);
-    const dataset = datasets.find(d => d.id === sid);
     setDeleteTarget(null);
+
+    // Optimistically remove from UI immediately (no lag)
+    removeFromUI(sid);
+    toast.success("File deleted");
 
     // Technical file — id looks like "tech-123"
     if (sid.startsWith("tech-")) {
@@ -1591,12 +1594,10 @@ export default function DataUploaded() {
       if (!Number.isNaN(techId)) {
         try {
           await deleteTechMutation.mutateAsync({ fileId: techId });
-          removeFromUI(sid);
-          toast.success("File deleted");
           utils.technical.getFiles.invalidate();
         } catch (e) {
           console.error("[Delete Technical Error]", e);
-          toast.error("Failed to delete file. Please try again.");
+          toast.error("Server delete failed — file may reappear on refresh.");
         }
         return;
       }
@@ -1607,19 +1608,13 @@ export default function DataUploaded() {
     if (!Number.isNaN(numericId) && numericId > 0) {
       try {
         await deleteFilesMutation.mutateAsync({ fileIds: [numericId] });
-        removeFromUI(id);
-        toast.success("File deleted");
         utils.files.list.invalidate();
       } catch (e) {
         console.error("[Delete Error]", e);
-        toast.error("Failed to delete file. Please try again.");
+        toast.error("Server delete failed — file may reappear on refresh.");
       }
-    } else {
-      // Sample/demo data — just remove from local state
-      removeFromUI(id);
-      toast.success("File deleted");
     }
-  }, [datasets, deleteFilesMutation, deleteTechMutation, removeFromUI, utils.files.list, utils.technical.getFiles]);
+  }, [deleteFilesMutation, deleteTechMutation, removeFromUI, utils.files.list, utils.technical.getFiles]);
 
   const handleDeleteConfirm = useCallback((id: string) => {
     const dataset = datasets.find((d) => d.id === id);
@@ -1655,21 +1650,21 @@ export default function DataUploaded() {
         else sampleIds.push(sid);
       }
     }
-    setBulkDeleteConfirm(false);
+    // Optimistically remove from UI immediately (no lag)
+    stringIds.forEach(removeFromUI);
+    sampleIds.forEach(removeFromUI);
+    setSelectedFileIds(new Set());
+    toast.success(`Deleted ${stringIds.length} file(s)`);
     try {
       const promises: Promise<any>[] = [];
       if (uploadedIds.length > 0) {
         promises.push(deleteFilesMutation.mutateAsync({ fileIds: uploadedIds }));
       }
-      // Technical files must be deleted one at a time (API takes single fileId)
+      // Fire all tech deletes in parallel (not sequentially)
       for (const tid of techIds) {
         promises.push(deleteTechMutation.mutateAsync({ fileId: tid }));
       }
       await Promise.all(promises);
-      // Remove all from UI
-      stringIds.forEach(removeFromUI);
-      setSelectedFileIds(new Set());
-      toast.success(`Deleted ${stringIds.length} file(s)`);
       utils.files.list.invalidate();
       if (techIds.length > 0) utils.technical.getFiles.invalidate();
     } catch (e) {
@@ -1958,7 +1953,7 @@ export default function DataUploaded() {
                   Deselect all
                 </button>
                 <button
-                  onClick={() => setBulkDeleteConfirm(true)}
+                  onClick={() => handleBulkDelete()}
                   disabled={deleteFilesMutation.isPending}
                   className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-red-50 border border-red-200 text-red-600 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
                 >
@@ -2130,7 +2125,7 @@ export default function DataUploaded() {
                                         {(dragProvided: DraggableProvided) => (
                                           <DatasetCard dataset={d} selected={selectedFileIds.has(d.id)} viewMode={viewMode} allTags={tags}
                                             onSelect={handleSelectFile} onPreview={handlePreview} onDownload={handleDownload}
-                                            onDelete={handleDeleteConfirm} onClick={(ds) => handleCtrlClick(ds, { ctrlKey: false, metaKey: false, preventDefault: () => {} } as any)}
+                                            onDelete={(id: string) => handleDelete(id)} onClick={(ds) => handleCtrlClick(ds, { ctrlKey: false, metaKey: false, preventDefault: () => {} } as any)}
                                             onRename={setRenamingId} onMove={setMovingFileId} onAddTag={setTagPickerFileId} onContextMenu={handleFileContextMenu}
                                             renamingId={renamingId} onRenameSubmit={handleRenameSubmit} onRenameCancel={() => setRenamingId(null)} provided={dragProvided} />
                                         )}
@@ -2205,7 +2200,7 @@ export default function DataUploaded() {
                 <CtxBtn icon={<Copy className="w-3.5 h-3.5" />} label="Copy" onClick={() => { toast.info("Copy not yet implemented"); setCtxMenu(null); }} />
                 <CtxBtn icon={<Tag className="w-3.5 h-3.5" />} label="Add/Remove Tags" onClick={() => { setTagPickerFileId(ctxMenu.dataset!.id); setCtxMenu(null); }} />
                 <div className="h-px bg-[#f3f4f6] my-1" />
-                <CtxBtn icon={<Trash2 className="w-3.5 h-3.5" />} label="Delete" danger onClick={() => { handleDeleteConfirm(ctxMenu.dataset!.id); setCtxMenu(null); }} />
+                <CtxBtn icon={<Trash2 className="w-3.5 h-3.5" />} label="Delete" danger onClick={() => { handleDelete(ctxMenu.dataset!.id); setCtxMenu(null); }} />
               </>
             )}
           </div>

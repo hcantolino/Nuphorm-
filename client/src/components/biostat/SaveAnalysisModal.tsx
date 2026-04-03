@@ -701,7 +701,8 @@ function buildCSV(table: Array<{ metric: string; value: any }>): string {
 function buildHTML(
   title: string,
   table: Array<{ metric: string; value: any }>,
-  analysis: string
+  analysis: string,
+  chartImgDataUrl?: string
 ): string {
   const rows = table
     .map(
@@ -712,6 +713,11 @@ function buildHTML(
         </tr>`
     )
     .join("");
+
+  // If a chart image was captured, embed it as an <img> tag above the table
+  const chartSection = chartImgDataUrl
+    ? `<div style="margin-bottom:24px;text-align:center"><img src="${chartImgDataUrl}" alt="${title}" style="max-width:100%;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08)" /></div>`
+    : "";
 
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>${title}</title>
 <style>body{font-family:system-ui,sans-serif;background:#f8fafc;color:#0f172a;padding:32px}
@@ -724,6 +730,7 @@ th:last-child{text-align:right}
 pre{white-space:pre-wrap;font-size:.85rem;line-height:1.6;color:#334155}
 </style></head><body>
 <h1>${title}</h1>
+${chartSection}
 <table><thead><tr><th>Metric</th><th style="text-align:right">Value</th></tr></thead>
 <tbody>${rows}</tbody></table>
 <div class="ai"><h2 style="font-size:1rem;font-weight:600;margin-bottom:12px">AI Interpretation</h2>
@@ -1378,7 +1385,8 @@ export default function SaveAnalysisModal({
           .map((r) => buildHTML(
             `${ti.tabTitle} – Full Results`,
             r.editedTable ?? r.analysisResults?.results_table ?? [],
-            r.analysis
+            r.analysis,
+            r.id ? chartImages[r.id] : undefined
           ))
           .join("\n\n<hr/>\n\n");
 
@@ -1396,13 +1404,23 @@ export default function SaveAnalysisModal({
           const useSubfolder = graphs.length > 2;
           graphs.forEach((r, idx) => {
             const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Graph ${idx + 1}`;
+            const chartImg = r.id ? chartImages[r.id] : undefined;
             const pdf = buildSingleResultPDF(rTitle, "Graph", r, chartImages);
-            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
+            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis, chartImg);
             const content = buildStorageContent("pdf", pdf, true, html);
             const fileName = useSubfolder
               ? `${tabPath} / Graphs / Graph ${idx + 1} – ${safe(rTitle)}.pdf`
               : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Graph")}`;
             saveFile(fileName, content, ["filetype:graph"]);
+
+            // Also save the chart as a standalone PNG image to Technical Files
+            if (chartImg) {
+              const pngFileName = useSubfolder
+                ? `${tabPath} / Graphs / Graph ${idx + 1} – ${safe(rTitle)}.png`
+                : `${tabPath} / ${safe(rTitle)} – Chart.png`;
+              const pngContent = buildStorageContent("png", chartImg, true, `<img src="${chartImg}" alt="${rTitle}" style="max-width:100%" />`);
+              saveFile(pngFileName, pngContent, ["filetype:graph-image"]);
+            }
           });
         }
 
@@ -1412,7 +1430,7 @@ export default function SaveAnalysisModal({
           tables.forEach((r, idx) => {
             const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Table ${idx + 1}`;
             const pdf = buildSingleResultPDF(rTitle, "Table", r, chartImages);
-            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
+            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis, r.id ? chartImages[r.id] : undefined);
             const content = buildStorageContent("pdf", pdf, true, html);
             const fileName = useSubfolder
               ? `${tabPath} / Tables / Table ${idx + 1} – ${safe(rTitle)}.pdf`

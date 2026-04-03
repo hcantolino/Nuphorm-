@@ -115,7 +115,7 @@ export const TabBarDraggable: React.FC = () => {
                   const isEditing = tab.id === editingTabId;
 
                   return (
-                    <Draggable key={tab.id} draggableId={tab.id} index={index}>
+                    <Draggable key={tab.id} draggableId={tab.id} index={index} isDragDisabled={false}>
                       {(provided, snapshot) => (
                         <div
                           ref={provided.innerRef}
