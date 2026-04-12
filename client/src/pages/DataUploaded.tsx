@@ -2121,7 +2121,7 @@ export default function DataUploaded() {
                                     "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-4"
                                   )}>
                                     {group.items.map((d, i) => (
-                                      <Draggable key={d.id} draggableId={`file-${d.id}`} index={globalIndex + i}>
+                                      <Draggable key={d.id} draggableId={`file-${d.id}`} index={globalIndex + i} isDragDisabled={false}>
                                         {(dragProvided: DraggableProvided) => (
                                           <DatasetCard dataset={d} selected={selectedFileIds.has(d.id)} viewMode={viewMode} allTags={tags}
                                             onSelect={handleSelectFile} onPreview={handlePreview} onDownload={handleDownload}

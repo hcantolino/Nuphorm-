@@ -801,7 +801,7 @@ export default function SavedTechnicalFiles() {
                       <ColHead style={{ width:140, textAlign:'right' }}>Actions</ColHead>
                     </div>
                     {tab.files.map((file, fIdx) => (
-                      <Draggable key={file.id} draggableId={`file-${file.id}`} index={fIdx}>
+                      <Draggable key={file.id} draggableId={`file-${file.id}`} index={fIdx} isDragDisabled={false}>
                         {(dragProvided, dragSnapshot) => (
                           <div
                             ref={dragProvided.innerRef}

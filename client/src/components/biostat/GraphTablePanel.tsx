@@ -1864,6 +1864,24 @@ export const GraphTablePanel: React.FC = () => {
   //         React.useEffect(() => { if (results.length > 0) setView("results"); }, [results.length])
   // AFTER:  view state removed — single panel always shows results
 
+  // ── Series labels for sidebar ────────────────────────────────────────────
+  // (Moved before early return to maintain consistent hook call order)
+  const seriesLabels = useMemo(() => {
+    if (!chartData?.datasets) return undefined;
+    return chartData.datasets.map((ds: any) => ds.label ?? "Series");
+  }, [chartData]);
+
+  // ── DataPointsTable handler — updates chart_data in store ────────────
+  const handleDataPointsChange = useCallback((updatedChartData: any) => {
+    if (!activeTabId || !activeResult) return;
+    updatePanelResult(activeTabId, activeResult.id, {
+      analysisResults: {
+        ...activeResult.analysisResults,
+        chart_data: updatedChartData,
+      },
+    });
+  }, [activeTabId, activeResult, updatePanelResult]);
+
   // ── BLANK STATE ─────────────────────────────────────────────────────────
   if (results.length === 0) {
     return (
@@ -1922,23 +1940,6 @@ export const GraphTablePanel: React.FC = () => {
 
   // BEFORE: if (view === "charts") { return <PharmaChartPanel … /> }
   // AFTER:  Charts tab removed — single results view always rendered below
-
-  // ── Series labels for sidebar ────────────────────────────────────────────
-  const seriesLabels = useMemo(() => {
-    if (!chartData?.datasets) return undefined;
-    return chartData.datasets.map((ds: any) => ds.label ?? "Series");
-  }, [chartData]);
-
-  // ── DataPointsTable handler — updates chart_data in store ────────────
-  const handleDataPointsChange = useCallback((updatedChartData: any) => {
-    if (!activeTabId || !activeResult) return;
-    updatePanelResult(activeTabId, activeResult.id, {
-      analysisResults: {
-        ...activeResult.analysisResults,
-        chart_data: updatedChartData,
-      },
-    });
-  }, [activeTabId, activeResult, updatePanelResult]);
 
   // ── RESULTS VIEW ────────────────────────────────────────────────────────
   return (

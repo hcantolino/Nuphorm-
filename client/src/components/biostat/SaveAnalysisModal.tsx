@@ -445,12 +445,11 @@ function buildPDFExport(
           ? chartImg.split(',')[1]
           : chartImg;
         doc.addImage(imgData, 'PNG', margin, y, imgW, imgH);
-        console.log('[buildPDFExport] addImage SUCCESS ✅ – chart should now appear');
+        console.log('[buildPDFExport] addImage SUCCESS ✅ – real chart image added');
         y += imgH + 10;
       } catch (err: any) {
-        console.error('[buildPDFExport] addImage FAILED:', err.message, '– chartImg prefix:', chartImg.substring(0, 40));
-        // fallback: still advance y so layout doesn't break
-        y += imgH + 10;
+        console.error('[buildPDFExport] addImage FAILED:', err.message, '– chartImg prefix:', chartImg?.substring(0, 40));
+        y += imgH + 10; // keep layout intact
       }
     } else if (r.analysisResults?.chart_data) {
       // Chart data exists but capture failed — show placeholder
@@ -525,6 +524,125 @@ function buildPDFExport(
   // Return raw base64 (strip data URI prefix if present)
   const uri = doc.output("datauristring");
   return uri.includes(",") ? uri.split(",")[1] : uri;
+}
+
+/**
+ * Build a per-query PDF bundling selected artifacts (graph + table + query text).
+ * Returns base64 PDF string.
+ */
+function buildQueryBundlePDF(
+  resultTitle: string,
+  r: PanelResult,
+  chartImages: Record<string, string>,
+  include: { graph: boolean; table: boolean; query: boolean }
+): string {
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const margin = 14;
+  const pageW = 210;
+  const contentW = pageW - margin * 2;
+  let y = 28;
+
+  const checkPage = (needed = 0) => { if (y + needed > 272) { doc.addPage(); y = 20; } };
+
+  // Header bar
+  doc.setFillColor(37, 99, 235);
+  doc.rect(0, 0, pageW, 20, "F");
+
+  // Title
+  (doc as any).setTextColor(15, 23, 42);
+  doc.setFontSize(13);
+  doc.setFont("helvetica", "bold");
+  const titleLines = doc.splitTextToSize(resultTitle, contentW) as string[];
+  doc.text(titleLines, margin, y);
+  y += titleLines.length * 6 + 3;
+
+  // Date line
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  (doc as any).setTextColor(100, 116, 139);
+  const dateStr = new Date().toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
+  doc.text(`Generated: ${dateStr}`, margin, y);
+  y += 6;
+
+  // Query text
+  if (r.query) {
+    checkPage();
+    doc.setFont("helvetica", "bold");
+    (doc as any).setTextColor(15, 23, 42);
+    doc.setFontSize(10);
+    const qLines = doc.splitTextToSize(`Query: ${r.query.slice(0, 200)}`, contentW) as string[];
+    doc.text(qLines, margin, y);
+    y += qLines.length * 5 + 4;
+  }
+
+  // ── Chart image ──
+  if (include.graph) {
+    const chartImg = r.id ? chartImages[r.id] : undefined;
+    if (chartImg) {
+      const imgW = contentW;
+      const imgH = imgW * 0.55;
+      checkPage(imgH + 4);
+      try {
+        const imgData = chartImg.includes(",") ? chartImg.split(",")[1] : chartImg;
+        doc.addImage(imgData, "PNG", margin, y, imgW, imgH);
+        y += imgH + 6;
+      } catch (imgErr) {
+        console.error("[buildQueryBundlePDF] addImage FAILED:", imgErr);
+      }
+    }
+  }
+
+  // ── Table ──
+  if (include.table) {
+    const tbl = r.editedTable ?? r.analysisResults?.results_table ?? [];
+    if (tbl.length > 0) {
+      checkPage();
+      const colMetric = margin;
+      const colValue = margin + 110;
+      doc.setFillColor(241, 245, 249);
+      doc.rect(margin, y - 4, contentW, 7, "F");
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "bold");
+      (doc as any).setTextColor(51, 65, 85);
+      doc.text("Metric", colMetric + 2, y);
+      doc.text("Value", colValue + 2, y);
+      y += 5;
+      doc.setFont("helvetica", "normal");
+      (doc as any).setTextColor(15, 23, 42);
+      doc.setFontSize(8.5);
+      for (const row of tbl) {
+        checkPage();
+        const mLines = doc.splitTextToSize(String(row.metric ?? ""), 104) as string[];
+        const vLines = doc.splitTextToSize(String(row.value ?? ""), contentW - 114) as string[];
+        const maxL = Math.max(mLines.length, vLines.length);
+        mLines.forEach((l: string, i: number) => doc.text(l, colMetric + 2, y + i * 3.5));
+        vLines.forEach((l: string, i: number) => doc.text(l, colValue + 2, y + i * 3.5));
+        y += maxL * 3.5 + 1.5;
+      }
+      y += 4;
+    }
+  }
+
+  // ── AI interpretation ──
+  if (include.query && r.analysis) {
+    checkPage();
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "bold");
+    (doc as any).setTextColor(15, 23, 42);
+    doc.text("AI Interpretation", margin, y);
+    y += 5;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    (doc as any).setTextColor(51, 65, 85);
+    const aLines = doc.splitTextToSize(r.analysis.slice(0, 3000), contentW) as string[];
+    for (const line of aLines) {
+      checkPage();
+      doc.text(line, margin, y);
+      y += 3.5;
+    }
+  }
+
+  return doc.output("datauristring");
 }
 
 /** Build a single-result PDF (graph OR table OR query) — returns base64 */
@@ -1371,96 +1489,99 @@ export default function SaveAnalysisModal({
       }
       console.log(`[SaveAnalysisModal] Captured ${Object.keys(chartImages).length} chart image(s) for PDF`);
 
-      // ── Process each tab ────────────────────────────────────────────────────
+      // ── Process each tab: ONE PDF per query bundling selected artifacts ─────
+      const filesToGenerate: { filename: string; tabPath: string; content: string; measurements: string[] }[] = [];
+
       for (const { ti, graphs, tables, queries, allResults: tabAllResults } of perTab) {
         const tabPath = `${basePath} / ${ti.tabTitle}`;
 
-        // 1. ALWAYS: Combined "Full Results" PDF for this tab
-        const fullResultsPDF = buildPDFExport(
-          `${ti.tabTitle} – Full Results`,
-          tabAllResults,
-          chartImages
-        );
-        const fullResultsHTML = tabAllResults
-          .map((r) => buildHTML(
-            `${ti.tabTitle} – Full Results`,
-            r.editedTable ?? r.analysisResults?.results_table ?? [],
-            r.analysis,
-            r.id ? chartImages[r.id] : undefined
-          ))
-          .join("\n\n<hr/>\n\n");
+        // Build set of selected result IDs by category for this tab
+        const graphIds = new Set(graphs.map((r) => r.id));
+        const tableIds = new Set(tables.map((r) => r.id));
+        const queryIds = new Set(queries.map((r) => r.id));
 
-        const fullResultsContent = buildStorageContent(
-          "pdf", fullResultsPDF, true, fullResultsHTML
-        );
-        saveFile(
-          `${tabPath} / ${safe(ti.tabTitle)} – Full Results.pdf`,
-          fullResultsContent,
-          ["filetype:full-results"]
-        );
-
-        // 2. Individual Graph files
-        if (graphs.length > 0) {
-          const useSubfolder = graphs.length > 2;
-          graphs.forEach((r, idx) => {
-            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Graph ${idx + 1}`;
-            const chartImg = r.id ? chartImages[r.id] : undefined;
-            const pdf = buildSingleResultPDF(rTitle, "Graph", r, chartImages);
-            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis, chartImg);
-            const content = buildStorageContent("pdf", pdf, true, html);
-            const fileName = useSubfolder
-              ? `${tabPath} / Graphs / Graph ${idx + 1} – ${safe(rTitle)}.pdf`
-              : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Graph")}`;
-            saveFile(fileName, content, ["filetype:graph"]);
-
-            // Also save the chart as a standalone PNG image to Technical Files
-            if (chartImg) {
-              const pngFileName = useSubfolder
-                ? `${tabPath} / Graphs / Graph ${idx + 1} – ${safe(rTitle)}.png`
-                : `${tabPath} / ${safe(rTitle)} – Chart.png`;
-              const pngContent = buildStorageContent("png", chartImg, true, `<img src="${chartImg}" alt="${rTitle}" style="max-width:100%" />`);
-              saveFile(pngFileName, pngContent, ["filetype:graph-image"]);
-            }
-          });
+        // Iterate unique results that have at least one selection
+        const seenIds = new Set<string>();
+        const orderedResults: PanelResult[] = [];
+        for (const r of tabAllResults) {
+          if (!seenIds.has(r.id)) {
+            seenIds.add(r.id);
+            orderedResults.push(r);
+          }
         }
 
-        // 3. Individual Table files
-        if (tables.length > 0) {
-          const useSubfolder = tables.length > 2;
-          tables.forEach((r, idx) => {
-            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Table ${idx + 1}`;
-            const pdf = buildSingleResultPDF(rTitle, "Table", r, chartImages);
-            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis, r.id ? chartImages[r.id] : undefined);
-            const content = buildStorageContent("pdf", pdf, true, html);
-            const fileName = useSubfolder
-              ? `${tabPath} / Tables / Table ${idx + 1} – ${safe(rTitle)}.pdf`
-              : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Table")}`;
-            saveFile(fileName, content, ["filetype:table"]);
-          });
-        }
+        orderedResults.forEach((r, qi) => {
+          const includeGraph = graphIds.has(r.id);
+          const includeTable = tableIds.has(r.id);
+          const includeQuery = queryIds.has(r.id);
 
-        // 4. Individual Query files
-        if (queries.length > 0) {
-          const useSubfolder = queries.length > 2;
-          queries.forEach((r, idx) => {
-            const rTitle = customizationsByResult?.[r.id]?.chartTitle || titleOverride || r.graphTitle || r.query?.slice(0, 40) || `Query ${idx + 1}`;
-            const pdf = buildSingleResultPDF(rTitle, "Query", r);
-            const html = buildHTML(rTitle, r.editedTable ?? r.analysisResults?.results_table ?? [], r.analysis);
-            const content = buildStorageContent("pdf", pdf, true, html);
-            const fileName = useSubfolder
-              ? `${tabPath} / Queries / Query ${idx + 1} – ${safe(rTitle)}.pdf`
-              : `${tabPath} / ${itemFilename(ti.tabTitle, rTitle, "Query")}`;
-            saveFile(fileName, content, ["filetype:query"]);
+          // Build title
+          const rTitle =
+            customizationsByResult?.[r.id]?.chartTitle
+            || titleOverride
+            || r.graphTitle
+            || r.analysisResults?.chart_data?.title
+            || r.query?.slice(0, 50)
+            || `Query ${qi + 1}`;
+
+          // Build PDF with selected artifacts bundled
+          const pdf = buildQueryBundlePDF(rTitle, r, chartImages, {
+            graph: includeGraph,
+            table: includeTable,
+            query: includeQuery,
           });
+
+          // Build HTML preview with chart image embedded
+          const chartImg = r.id ? chartImages[r.id] : undefined;
+          const html = buildHTML(
+            rTitle,
+            includeTable ? (r.editedTable ?? r.analysisResults?.results_table ?? []) : [],
+            includeQuery ? r.analysis : "",
+            includeGraph ? chartImg : undefined
+          );
+
+          const content = buildStorageContent("pdf", pdf, true, html);
+
+          // Build filename: "[TabName] – Q[N] – [ShortTitle] – [MM-DD-YYYY].pdf"
+          const formattedDate = new Date().toLocaleDateString("en-US", {
+            month: "2-digit", day: "2-digit", year: "numeric",
+          }).replace(/\//g, "-");
+          let filename = `${safe(ti.tabTitle)} – Q${qi + 1} – ${safe(rTitle)} – ${formattedDate}.pdf`;
+
+          // Artifact type tags
+          const typeTags: string[] = [];
+          if (includeGraph) typeTags.push("filetype:graph");
+          if (includeTable) typeTags.push("filetype:table");
+          if (includeQuery) typeTags.push("filetype:query");
+
+          filesToGenerate.push({
+            filename,
+            tabPath,
+            content,
+            measurements: typeTags,
+          });
+        });
+      }
+
+      // Deduplicate filenames
+      const nameCount = new Map<string, number>();
+      for (const f of filesToGenerate) {
+        const count = (nameCount.get(f.filename) ?? 0) + 1;
+        nameCount.set(f.filename, count);
+        if (count > 1) {
+          f.filename = f.filename.replace(".pdf", ` (${count}).pdf`);
         }
       }
 
+      console.log("[Save] Files to generate:", filesToGenerate.map((f) => f.filename));
+
+      // Save all files
+      for (const f of filesToGenerate) {
+        saveFile(`${f.tabPath} / ${f.filename}`, f.content, f.measurements);
+      }
+
       // Summary toast
-      const totalFiles = perTab.reduce(
-        (sum, { graphs, tables, queries }) => sum + 1 + graphs.length + tables.length + queries.length,
-        0
-      );
-      toast.success(`Saved ${totalFiles} files → "${basePath}"`, {
+      toast.success(`Saved ${filesToGenerate.length} file${filesToGenerate.length !== 1 ? "s" : ""} → "${basePath}"`, {
         description: `${perTab.length} tab(s) saved. View under Saved Technical Files.`,
         duration: 5000,
       });
@@ -1928,127 +2049,139 @@ export default function SaveAnalysisModal({
                       </button>
                     </div>
 
-                    {/* Expanded content: Graphs, Tables, Queries */}
+                    {/* Expanded content: horizontal table grouped by query */}
                     {isExpanded && (
-                      <div className="px-3 pb-3 space-y-2.5" style={{ background: "#f8fafc" }}>
-                        {/* Graphs */}
-                        {ti.graphs.length > 0 && (
-                          <div>
-                            <div className="flex items-center gap-1.5 mb-1.5">
-                              <BarChart2 className="w-3 h-3" style={{ color: "#2563eb" }} />
-                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#2563eb" }}>
-                                Graphs ({ti.graphs.length})
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {ti.graphs.map((r) => {
-                                const key = makeKey(ti.tabId, "graph", r.id);
-                                const sel = selectedItems.has(key);
-                                const displayTitle =
-                                  customizationsByResult?.[r.id]?.chartTitle
-                                  ?? titleOverride
-                                  ?? r.graphTitle
-                                  ?? r.analysisResults?.chart_data?.title
-                                  ?? 'Graph';
-                                return (
-                                  <button
-                                    key={key}
-                                    type="button"
-                                    onClick={() => toggleItem(key)}
-                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                                    style={{
-                                      background: sel ? "#2563eb" : "white",
-                                      color: sel ? "white" : "#334155",
-                                      border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
-                                    }}
-                                    title={displayTitle.slice(0, 60)}
-                                  >
-                                    {sel && <Check className="w-2.5 h-2.5" />}
-                                    {displayTitle.slice(0, 28)}
-                                    {displayTitle.length > 28 ? "…" : ""}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Tables */}
-                        {ti.tables.length > 0 && (
-                          <div>
-                            <div className="flex items-center gap-1.5 mb-1.5">
-                              <Table2 className="w-3 h-3" style={{ color: "#2563eb" }} />
-                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#2563eb" }}>
-                                Tables ({ti.tables.length})
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {ti.tables.map((r) => {
-                                const key = makeKey(ti.tabId, "table", r.id);
-                                const sel = selectedItems.has(key);
-                                const rowCount = (r.editedTable ?? r.analysisResults?.results_table ?? []).length;
-                                return (
-                                  <button
-                                    key={key}
-                                    type="button"
-                                    onClick={() => toggleItem(key)}
-                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                                    style={{
-                                      background: sel ? "#2563eb" : "white",
-                                      color: sel ? "white" : "#334155",
-                                      border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
-                                    }}
-                                    title={`${r.query.slice(0, 60)} (${rowCount} rows)`}
-                                  >
-                                    {sel && <Check className="w-2.5 h-2.5" />}
-                                    {r.query.slice(0, 24)}{r.query.length > 24 ? "…" : ""} ({rowCount})
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Queries */}
-                        {ti.queries.length > 0 && (
-                          <div>
-                            <div className="flex items-center gap-1.5 mb-1.5">
-                              <MessageSquare className="w-3 h-3" style={{ color: "#3b82f6" }} />
-                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#3b82f6" }}>
-                                Queries ({ti.queries.length})
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {ti.queries.map((r) => {
-                                const key = makeKey(ti.tabId, "query", r.id);
-                                const sel = selectedItems.has(key);
-                                return (
-                                  <button
-                                    key={key}
-                                    type="button"
-                                    onClick={() => toggleItem(key)}
-                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                                    style={{
-                                      background: sel ? "#2563eb" : "white",
-                                      color: sel ? "white" : "#334155",
-                                      border: `1px solid ${sel ? "#2563eb" : "#e5e7eb"}`,
-                                    }}
-                                    title={r.query.slice(0, 80)}
-                                  >
-                                    {sel && <Check className="w-2.5 h-2.5" />}
-                                    {r.query.slice(0, 28)}{r.query.length > 28 ? "…" : ""}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Empty tab */}
-                        {ti.graphs.length === 0 && ti.tables.length === 0 && ti.queries.length === 0 && (
+                      <div className="px-3 pb-3" style={{ background: "#f8fafc" }}>
+                        {ti.queries.length === 0 ? (
                           <p className="text-[11px] italic py-1" style={{ color: "#94a3b8" }}>
                             No results in this tab yet.
                           </p>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[11px]" style={{ borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr style={{ borderBottom: "2px solid #d1d5db" }}>
+                                  <th className="text-left py-1.5 pr-2 font-semibold" style={{ color: "#94a3b8", width: 32 }}></th>
+                                  <th className="text-left py-1.5 px-1.5 font-semibold" style={{ color: "#64748b" }}>
+                                    <span className="inline-flex items-center gap-1">
+                                      <BarChart2 className="w-3 h-3" style={{ color: "#2563eb" }} />
+                                      Graph
+                                    </span>
+                                  </th>
+                                  <th className="text-left py-1.5 px-1.5 font-semibold" style={{ color: "#64748b" }}>
+                                    <span className="inline-flex items-center gap-1">
+                                      <Table2 className="w-3 h-3" style={{ color: "#2563eb" }} />
+                                      Table
+                                    </span>
+                                  </th>
+                                  <th className="text-left py-1.5 px-1.5 font-semibold" style={{ color: "#64748b" }}>
+                                    <span className="inline-flex items-center gap-1">
+                                      <MessageSquare className="w-3 h-3" style={{ color: "#3b82f6" }} />
+                                      Query
+                                    </span>
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {ti.queries.map((r, qi) => {
+                                  const hasGraph = ti.graphs.some((g) => g.id === r.id);
+                                  const hasTable = ti.tables.some((t) => t.id === r.id);
+                                  const rowCount = (r.editedTable ?? r.analysisResults?.results_table ?? []).length;
+                                  const graphLabel =
+                                    customizationsByResult?.[r.id]?.chartTitle
+                                    ?? titleOverride
+                                    ?? r.graphTitle
+                                    ?? r.analysisResults?.chart_data?.title
+                                    ?? `Graph ${qi + 1}`;
+                                  const tableLabel = `${r.query.slice(0, 22)}${r.query.length > 22 ? "…" : ""} (${rowCount})`;
+                                  const queryLabel = `${r.query.slice(0, 24)}${r.query.length > 24 ? "…" : ""}`;
+
+                                  const graphKey = makeKey(ti.tabId, "graph", r.id);
+                                  const tableKey = makeKey(ti.tabId, "table", r.id);
+                                  const queryKey = makeKey(ti.tabId, "query", r.id);
+
+                                  const graphSel = selectedItems.has(graphKey);
+                                  const tableSel = selectedItems.has(tableKey);
+                                  const querySel = selectedItems.has(queryKey);
+
+                                  return (
+                                    <tr key={r.id} style={{ borderBottom: "1px solid #e5e7eb" }}>
+                                      <td className="py-1.5 pr-2 font-medium" style={{ color: "#94a3b8" }}>
+                                        Q{qi + 1}
+                                      </td>
+                                      {/* Graph cell */}
+                                      <td className="py-1.5 px-1.5">
+                                        {hasGraph ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => toggleItem(graphKey)}
+                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all max-w-[180px]"
+                                            style={{
+                                              background: graphSel ? "#2563eb" : "white",
+                                              color: graphSel ? "white" : "#334155",
+                                              border: `1px solid ${graphSel ? "#2563eb" : "#e5e7eb"}`,
+                                            }}
+                                            title={graphLabel.slice(0, 60)}
+                                          >
+                                            {graphSel && <Check className="w-2.5 h-2.5 flex-shrink-0" />}
+                                            <span className="truncate">{graphLabel.slice(0, 24)}{graphLabel.length > 24 ? "…" : ""}</span>
+                                          </button>
+                                        ) : (
+                                          <span
+                                            className="inline-flex items-center justify-center w-6 h-6 rounded-full"
+                                            style={{ border: "1.5px dashed #d1d5db", cursor: "not-allowed" }}
+                                            title="No graph for this query"
+                                          />
+                                        )}
+                                      </td>
+                                      {/* Table cell */}
+                                      <td className="py-1.5 px-1.5">
+                                        {hasTable ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => toggleItem(tableKey)}
+                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all max-w-[180px]"
+                                            style={{
+                                              background: tableSel ? "#2563eb" : "white",
+                                              color: tableSel ? "white" : "#334155",
+                                              border: `1px solid ${tableSel ? "#2563eb" : "#e5e7eb"}`,
+                                            }}
+                                            title={`${r.query.slice(0, 60)} (${rowCount} rows)`}
+                                          >
+                                            {tableSel && <Check className="w-2.5 h-2.5 flex-shrink-0" />}
+                                            <span className="truncate">{tableLabel}</span>
+                                          </button>
+                                        ) : (
+                                          <span
+                                            className="inline-flex items-center justify-center w-6 h-6 rounded-full"
+                                            style={{ border: "1.5px dashed #d1d5db", cursor: "not-allowed" }}
+                                            title="No table for this query"
+                                          />
+                                        )}
+                                      </td>
+                                      {/* Query cell */}
+                                      <td className="py-1.5 px-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleItem(queryKey)}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all max-w-[180px]"
+                                          style={{
+                                            background: querySel ? "#2563eb" : "white",
+                                            color: querySel ? "white" : "#334155",
+                                            border: `1px solid ${querySel ? "#2563eb" : "#e5e7eb"}`,
+                                          }}
+                                          title={r.query.slice(0, 80)}
+                                        >
+                                          {querySel && <Check className="w-2.5 h-2.5 flex-shrink-0" />}
+                                          <span className="truncate">{queryLabel}</span>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
                         )}
                       </div>
                     )}

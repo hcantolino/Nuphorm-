@@ -452,14 +452,18 @@
 - [ ] Format selector: CSV, XLSX, PDF, PNG, JSON, SAS, DTA
 - [ ] CSV export — metrics + values, AI interpretation as comments
 - [ ] XLSX export — multi-sheet workbook (metadata sheet + one per result)
-- [ ] PDF export — teal-branded, chart images + stats table + interpretation per result
+- [ ] PDF export — one PDF per query bundling selected artifacts: chart image + table + interpretation (`buildQueryBundlePDF`)
+- [ ] Per-query filename: "[TabName] – Q[N] – [ShortTitle] – [MM-DD-YYYY].pdf"
+- [ ] Filename deduplication with "(2)", "(3)" suffix for duplicates
 - [ ] JSON export — structured with title, folder, tags, results array
 - [ ] SAS/DTA export — uppercase column names, alphanumeric-safe metric names
 - [ ] PNG export — captures chart from DOM at 2x retina resolution
 - [ ] Tag management — dropdown with existing tags, add new tags, remove tags
 - [ ] Folder selection — choose existing folder or create new
 - [ ] Subfolder auto-creation (Graphs/, Tables/, Queries/ when >2 items)
-- [ ] Tab selection — expand/collapse tabs, select individual graphs/tables/queries
+- [ ] Tab selection — expand/collapse tabs, horizontal table with Graph/Table/Query columns per query row (`SaveAnalysisModal.tsx`)
+- [ ] Query-grouped layout: each result row shows Q1/Q2/Q3 label with Graph, Table, Query pill buttons
+- [ ] Disabled cells: dashed gray circle when a query has no graph or no table
 - [ ] "Include All Tabs" master select button
 - [ ] Per-tab "Select All" button
 - [ ] Selection counter showing "X graphs, Y tables, Z queries"
