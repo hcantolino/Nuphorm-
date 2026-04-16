@@ -376,7 +376,7 @@ function fromAnthropicResponse(raw: any): InvokeResult {
   return {
     id: raw.id ?? `anthropic-${Date.now()}`,
     created: Math.floor(Date.now() / 1000),
-    model: raw.model ?? (process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"),
+    model: raw.model ?? (process.env.ANTHROPIC_MODEL ?? "claude-opus-4-6"),
     choices: [{ index: 0, message, finish_reason: finishReason }],
     usage: {
       prompt_tokens: raw.usage?.input_tokens ?? 0,
@@ -393,12 +393,14 @@ async function invokeAnthropicLLM(params: InvokeParams): Promise<InvokeResult> {
   const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
 
   const payload: Record<string, unknown> = {
-    model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+    model: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-6",
     max_tokens: maxTokens ?? max_tokens ?? 16000,
     messages: anthropicMessages,
+    temperature: 0,       // Hard-coded to 0 — no hallucination, maximum determinism
   };
 
   if (system) payload.system = system;
+  // Allow caller to override temperature only if explicitly set (default stays 0)
   if (typeof temperature === "number") payload.temperature = temperature;
 
   if (tools && tools.length > 0) {

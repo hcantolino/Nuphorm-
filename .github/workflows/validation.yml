@@ -1,0 +1,51 @@
+name: Statistical Validation
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'server/statsEngine.ts'
+      - 'server/pythonExecutor.ts'
+      - 'server/validation/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install numpy scipy statsmodels lifelines pandas openpyxl
+
+      - name: Run simulation validation
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: python3 server/validation/run_all.py
+
+      - name: Commit results
+        if: success() && github.event_name == 'push'
+        run: |
+          git config --local user.email "validation-bot@nuphorm.xyz"
+          git config --local user.name "Validation Bot"
+          git add server/validation/results/
+          git diff --staged --quiet || git commit -m "chore: update validation results [skip ci]"
+          git push
+
+      - name: Upload results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-results
+          path: server/validation/results/latest.json

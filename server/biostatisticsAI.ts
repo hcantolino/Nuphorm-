@@ -3,6 +3,9 @@ import Ajv from 'ajv';
 import { create as createDiffPatcher } from 'jsondiffpatch';
 import { invokeLLM } from './_core/llm';
 import { executePython, buildDataSummary, isPythonAvailable } from './pythonExecutor';
+import { validateDataForAnalysis } from './analysisValidator';
+import { profileData, selectTest } from './testSelector';
+import { citeResults } from './resultsCiter';
 
 // Cache Python availability check (checked once at startup)
 let _pythonAvailable: boolean | null = null;
@@ -617,7 +620,19 @@ function synthesizeVizChartData(
  * Build system prompt for biostatistics analysis
  */
 function buildSystemPrompt(): string {
-  return `## MANDATORY CHART FIELDS — EVERY CHART RESPONSE MUST INCLUDE THESE
+  return `## CORE IDENTITY & RULES
+You are an expert pharmaceutical biostatistician with 15+ years of experience in clinical laboratory data analysis, longitudinal biomarker studies, and regulatory-grade reporting. You are highly proficient in R (tidyverse, ggplot2, lubridate, gt, flextable) and Python (pandas, scipy, statsmodels) for reproducible analysis.
+
+CRITICAL RULES:
+- Use ONLY the exact data the user provides. NEVER hallucinate, fabricate, or use placeholder values.
+- NEVER invent subject IDs, measurements, or statistical results not derivable from the provided data.
+- If data is insufficient, say so explicitly — do not fill gaps with made-up numbers.
+- For scanned PDFs: if text extraction is unreliable, instruct the user to paste the pre-extracted data as a tidy table or CSV.
+- Apply the Finbox color theme to all visualizations: deep blues #0A2540 / #194CFF, teal accents #00D4FF / #14B8A6, neutral grays.
+- Produce clean, well-commented, production-ready code and high-resolution (300 dpi) output.
+- Confirm you have loaded the correct data before proceeding with analysis.
+
+## MANDATORY CHART FIELDS — EVERY CHART RESPONSE MUST INCLUDE THESE
 Every chart_data object you return MUST include ALL of these fields:
   "title": "A descriptive scientific chart title"
   "x_label": "Descriptive X-axis label with units in parentheses"
@@ -3166,6 +3181,8 @@ export async function analyzeBiostatistics(
   let subjectCountLine = "";
   let uniqueSubjectCount = 0;
 
+  console.log(`[analyzeBiostatistics] Data received — fullData: ${fullData?.length ?? 0} rows, dataColumns: ${dataColumns?.length ?? 0} cols${dataColumns?.length > 0 ? ` [${dataColumns.slice(0, 5).join(', ')}${dataColumns.length > 5 ? '...' : ''}]` : ''}, classifications: ${Object.keys(classifications ?? {}).length} keys`);
+
   if (fullData && fullData.length > 0 && dataColumns.length > 0) {
     try {
       const csvText = reconstructCSV(dataColumns, fullData);
@@ -3200,6 +3217,8 @@ export async function analyzeBiostatistics(
       const preview = fullData.slice(0, 10).map((r: any) => JSON.stringify(r)).join("\n");
       csvDataBlock = `UPLOADED DATA (partial — full CSV reconstruction failed):\nColumns: ${dataColumns.join(", ")}\nSample rows:\n${preview}`;
     }
+  } else {
+    console.warn(`[analyzeBiostatistics] NO DATA BLOCK — fullData: ${fullData?.length ?? 0}, dataColumns: ${dataColumns?.length ?? 0}. AI will receive no structured data.`);
   }
 
   // When dataPreview contains text but we have no fullData/csvDataBlock, include it
@@ -3287,6 +3306,32 @@ export async function analyzeBiostatistics(
       const analysisType = detectAnalysisType(userQuery, dataColumns);
       console.timeEnd("[analyzeBiostatistics] Analysis type detection");
       console.log(`[analyzeBiostatistics] Detected analysis type: ${analysisType}`);
+
+      // ── Stage 2: Validate data suitability for this analysis type ──
+      const validation = validateDataForAnalysis(analysisType, fullData, dataColumns, classifications);
+      if (!validation.valid) {
+        console.warn(`[analyzeBiostatistics] Data validation FAILED for ${analysisType}:`, validation.errors);
+        return {
+          analysis: `**Data validation failed for ${analysisType} analysis:**\n\n${validation.errors.map(e => `- ${e}`).join('\n')}${validation.suggestion ? `\n\n**Suggestion:** ${validation.suggestion}` : ''}`,
+          suggestions: ["Upload a dataset with the required columns", "Try a different analysis type"],
+          measurements: [],
+          chartSuggestions: [],
+          analysisResults: {
+            analysis_type: analysisType,
+            results_table: validation.errors.map(e => ({ metric: "Validation Error", value: e })),
+          },
+          graphTitle: `Data Validation — ${analysisType}`,
+          llmUsed: false,
+        };
+      }
+      if (validation.warnings.length > 0) {
+        console.log(`[analyzeBiostatistics] Data validation warnings:`, validation.warnings);
+      }
+
+      // ── Stage 3: Autonomous test selection ──
+      const dataProfile = profileData(fullData, dataColumns, classifications);
+      const testSelection = selectTest(analysisType, dataProfile, userQuery);
+      console.log(`[analyzeBiostatistics] Test selected: ${testSelection.primaryTest} (${testSelection.reasoning.slice(0, 80)})`);
 
       // Detect numeric columns from actual data if classifications aren't available
       let numericColumns = dataColumns.filter(
@@ -3847,7 +3892,7 @@ export async function analyzeBiostatistics(
     // Temperature 0.2 → deterministic, fact-focused outputs to reduce hallucination.
     let response;
     const MAX_LLM_ATTEMPTS = 3;
-    const LLM_TEMPERATURE = 0.2;
+    const LLM_TEMPERATURE = 0;  // Hard-coded 0 for deterministic biostatistical output
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < MAX_LLM_ATTEMPTS; attempt++) {
@@ -4139,7 +4184,7 @@ export async function analyzeBiostatistics(
           ];
 
           try {
-            const followUpResponse = await invokeLLM({ messages: followUpMessages as any, temperature: 0.2 });
+            const followUpResponse = await invokeLLM({ messages: followUpMessages as any, temperature: 0 });
             const followUpContent = followUpResponse?.choices?.[0]?.message?.content;
             if (typeof followUpContent === 'string') {
               try {
@@ -4906,6 +4951,28 @@ export async function analyzeBiostatistics(
       // Safety: if analysis field is a raw JSON object (LLM sometimes nests), convert to string
       if (parsed.analysis && typeof parsed.analysis === "object") {
         parsed.analysis = parsed.analysis.message ?? parsed.analysis.text ?? JSON.stringify(parsed.analysis);
+      }
+
+      // ── Stage 7: Auto-cite numeric claims against computed results ──
+      if (typeof parsed.analysis === "string" && parsed.analysisResults?.results_table) {
+        try {
+          const cited = citeResults(
+            parsed.analysis,
+            parsed.analysisResults ?? {},
+            parsed.analysisResults.results_table ?? [],
+          );
+          if (cited.unverifiedClaims.length > 0) {
+            console.warn(`[analyzeBiostatistics] ${cited.unverifiedClaims.length} unverified numeric claim(s) in LLM interpretation`);
+          }
+          if (cited.citations.length > 0) {
+            parsed._citations = cited.citations;
+          }
+          if (cited.unverifiedClaims.length > 0) {
+            parsed._unverifiedClaims = cited.unverifiedClaims;
+          }
+        } catch (citeErr) {
+          console.warn("[analyzeBiostatistics] Citation check failed (non-blocking):", citeErr);
+        }
       }
 
       return parsed;

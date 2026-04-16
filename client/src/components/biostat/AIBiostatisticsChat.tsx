@@ -333,6 +333,12 @@ export const AIBiostatisticsChat: React.FC<AIBiostatisticsChatProps> = ({
 
     try {
       setIsLoading(true);
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+      if (['xlsx', 'xls'].includes(ext)) {
+        toast.error('Excel files should be uploaded via the main Biostatistics AI tab for proper server-side parsing.');
+        return;
+      }
+
       const content = await file.text();
       const parsedData = parseCSVData(content);
 

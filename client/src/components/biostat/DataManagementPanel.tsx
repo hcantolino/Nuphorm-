@@ -118,7 +118,12 @@ export default function DataManagementPanel() {
             throw new Error('API unavailable');
           }
         } catch {
-          // Local CSV fallback
+          // Local CSV fallback — only for text-based files
+          const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+          if (['xlsx', 'xls', 'sas7bdat', 'xpt'].includes(ext)) {
+            toast.error(`${ext.toUpperCase()} files require the server API. Please try again later.`);
+            return;
+          }
           const text = await file.text();
           const lines = text.split('\n').filter(Boolean);
           columns = lines[0].split(',').map((c) => c.trim().replace(/"/g, ''));

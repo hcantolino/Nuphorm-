@@ -47,11 +47,102 @@ async function parsePdfBuffer(buffer: Buffer) {
     numpages = (infoResult as any).numPages ?? numpages;
   } catch {}
   await parser.destroy();
-  return {
-    text: textResult.text ?? "",
-    numpages,
-    info,
-  };
+
+  const text = textResult.text?.trim() ?? "";
+
+  // ── OCR fallback for scanned/image-based PDFs ──
+  // If pdf-parse returned no text (or only whitespace), the PDF is likely
+  // a scanned image. Attempt OCR via tesseract.js as a last resort.
+  if (text.length < 20) {
+    console.log("[parsePdfBuffer] Text extraction returned near-empty result — attempting OCR fallback");
+    try {
+      const ocrText = await ocrPdfBuffer(buffer);
+      if (ocrText && ocrText.trim().length > text.length) {
+        console.log("[parsePdfBuffer] OCR succeeded:", ocrText.length, "chars extracted");
+        return {
+          text: `[OCR-EXTRACTED — some values may contain recognition errors]\n\n${ocrText.trim()}`,
+          numpages,
+          info,
+          ocr: true,
+        };
+      }
+    } catch (ocrErr) {
+      console.warn("[parsePdfBuffer] OCR fallback failed:", ocrErr);
+    }
+  }
+
+  return { text, numpages, info, ocr: false };
+}
+
+/**
+ * OCR fallback: convert PDF buffer to a base64 PNG data URL, then run
+ * tesseract.js recognize() on it. Works best on single-page or few-page
+ * scanned lab reports.
+ */
+async function ocrPdfBuffer(buffer: Buffer): Promise<string> {
+  // tesseract.js v7 can accept image buffers directly.
+  // For PDFs we pass the buffer as-is — Tesseract's worker handles
+  // common image formats. If the PDF can't be processed as an image,
+  // we convert the first few pages via pdfjs-dist.
+  try {
+    const { recognize } = await import("tesseract.js");
+
+    // Strategy 1: Try treating the buffer as a direct image (works for
+    // single-page scanned PDFs that are essentially wrapped images)
+    const result = await recognize(buffer, "eng", {
+      logger: (m: any) => {
+        if (m.status === "recognizing text") {
+          console.log(`[OCR] Progress: ${Math.round((m.progress ?? 0) * 100)}%`);
+        }
+      },
+    });
+    return result.data.text;
+  } catch (directErr) {
+    console.log("[OCR] Direct buffer recognition failed, trying page-by-page extraction");
+  }
+
+  // Strategy 2: Use pdfjs-dist to render pages as images, then OCR each
+  try {
+    const pdfjsLib = await import("pdfjs-dist");
+    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
+    const pdf = await loadingTask.promise;
+    const pageTexts: string[] = [];
+    const maxPages = Math.min(pdf.numPages, 10); // Cap at 10 pages for performance
+
+    const { recognize } = await import("tesseract.js");
+
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2.0 }); // 2x for better OCR quality
+
+      // Create a minimal canvas-like structure for pdfjs
+      // pdfjs-dist in Node requires a canvas implementation
+      let createCanvas: any;
+      try {
+        // @ts-ignore — canvas is an optional peer dependency for server-side PDF rendering
+        createCanvas = require("canvas").createCanvas;
+      } catch {
+        console.log("[OCR] canvas package not available — skipping page rendering");
+        break;
+      }
+
+      const canvas = createCanvas(viewport.width, viewport.height);
+      const context = canvas.getContext("2d");
+
+      await (page as any).render({ canvasContext: context, viewport }).promise;
+
+      const pngBuffer = canvas.toBuffer("image/png");
+      const pageResult = await recognize(pngBuffer, "eng");
+      if (pageResult.data.text.trim()) {
+        pageTexts.push(`--- Page ${i} ---\n${pageResult.data.text.trim()}`);
+      }
+    }
+
+    return pageTexts.join("\n\n");
+  } catch (pageErr) {
+    console.warn("[OCR] Page-by-page extraction failed:", pageErr);
+    return "";
+  }
 }
 
 const COOKIE_NAME = "session";
@@ -570,6 +661,113 @@ export const appRouter = router({
         };
       }),
 
+    /** Convert XLSX/XLS to CSV on the server using Python pandas + openpyxl.
+     *  Falls back to JS SheetJS parser if Python is unavailable. */
+    parseXlsx: publicProcedure
+      .input(z.object({
+        fileData: z.string(), // base64
+        fileName: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const buffer = Buffer.from(input.fileData, "base64");
+
+        // ── Strategy 1: Python pandas + openpyxl (robust, handles merges + headers) ──
+        try {
+          const { execFile } = await import("child_process");
+          const { promisify } = await import("util");
+          const execFileAsync = promisify(execFile);
+
+          // Write buffer to a temp file for Python to read
+          const tmpDir = path.join(UPLOADS_DIR, ".tmp");
+          await fs.promises.mkdir(tmpDir, { recursive: true });
+          const tmpFile = path.join(tmpDir, `parse-${Date.now()}-${input.fileName}`);
+          await fs.promises.writeFile(tmpFile, buffer);
+
+          const scriptPath = path.join(__dirname, "..", "scripts", "parse_excel.py");
+          console.log("[XLSX-Python] Parsing:", input.fileName, "via", scriptPath);
+
+          const { stdout, stderr } = await execFileAsync("python3", [scriptPath, tmpFile], {
+            timeout: 30000,
+            maxBuffer: 50 * 1024 * 1024,
+          });
+
+          // Clean up temp file
+          fs.promises.unlink(tmpFile).catch(() => {});
+
+          if (stderr) console.warn("[XLSX-Python] stderr:", stderr.slice(0, 200));
+
+          const result = JSON.parse(stdout);
+
+          if (result.success) {
+            console.log("[XLSX-Python] Success:",
+              result.metadata?.total_rows, "rows,",
+              result.metadata?.total_columns, "columns,",
+              result.metadata?.merges_fixed, "merges fixed,",
+              "header at row", result.metadata?.header_row
+            );
+            return {
+              success: true,
+              csvText: result.csvText ?? "",
+              rows: result.rows ?? [],
+              columns: result.columns ?? [],
+              rowCount: result.metadata?.total_rows ?? 0,
+            };
+          } else {
+            console.warn("[XLSX-Python] Parse returned failure:", result.error);
+            // Fall through to JS fallback
+          }
+        } catch (pyErr) {
+          console.warn("[XLSX-Python] Failed, falling back to JS parser:", pyErr instanceof Error ? pyErr.message : pyErr);
+        }
+
+        // ── Strategy 2: JS SheetJS fallback (basic xlsx files) ──
+        try {
+          const XLSX = await import("xlsx");
+          const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
+          console.log("[parseXlsx-JS] Fallback — File:", input.fileName, "Sheets:", workbook.SheetNames);
+
+          const sheetName = workbook.SheetNames[0];
+          const sheet = workbook.Sheets[sheetName];
+          if (!sheet || !sheet["!ref"]) {
+            return { success: true, csvText: "", rows: [], columns: [], rowCount: 0 };
+          }
+
+          if (sheet["!merges"]?.length) {
+            console.log("[parseXlsx-JS] Removing", sheet["!merges"].length, "merge regions");
+            delete sheet["!merges"];
+          }
+
+          // Simple parse: use first row as header
+          const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: "" });
+          if (rows.length === 0) {
+            return { success: true, csvText: "", rows: [], columns: [], rowCount: 0 };
+          }
+
+          const columns = Object.keys(rows[0]).filter(c => !c.startsWith("__EMPTY"));
+          const csvText = XLSX.utils.sheet_to_csv(sheet);
+
+          console.log("[parseXlsx-JS] Result:", rows.length, "rows,", columns.length, "columns");
+
+          return {
+            success: true,
+            csvText,
+            rows,
+            columns,
+            rowCount: rows.length,
+          };
+        } catch (err) {
+          console.error("[parseXlsx] Both parsers failed:", err);
+          return {
+            success: false,
+            csvText: "",
+            rows: [],
+            columns: [],
+            rowCount: 0,
+            error: `XLSX parsing failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+          };
+        }
+      }),
+
     /** Extract text from a PDF uploaded as base64 — used for inline preview and AI context */
     parsePdf: publicProcedure
       .input(z.object({
@@ -586,6 +784,7 @@ export const appRouter = router({
             text: extractedText,
             pages: pdfData.numpages,
             info: pdfData.info,
+            ocr: pdfData.ocr ?? false,
           };
         } catch (err) {
           console.error('[parsePdf] Extraction failed:', err);
@@ -594,6 +793,7 @@ export const appRouter = router({
             text: null,
             pages: 0,
             error: `PDF extraction failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            ocr: false,
           };
         }
       }),
@@ -1318,6 +1518,20 @@ Rules for references:
           return { found: false as const, state: null };
         }
       }),
+  }),
+
+  admin: router({
+    validationResults: publicProcedure.query(async () => {
+      const resultsPath = path.join(process.cwd(), "server/validation/results/latest.json");
+      if (!fs.existsSync(resultsPath)) {
+        return { methods: {}, last_run: null, message: "No validation results yet. Run: python3 server/validation/run_all.py" };
+      }
+      const raw = fs.readFileSync(resultsPath, "utf-8");
+      const data = JSON.parse(raw);
+      const timestamps = Object.values(data).map((m: any) => m.timestamp);
+      const lastRun = timestamps.sort().reverse()[0] || null;
+      return { methods: data, last_run: lastRun };
+    }),
   }),
 
   biostatistics: router({

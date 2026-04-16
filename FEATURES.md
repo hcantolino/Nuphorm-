@@ -26,6 +26,12 @@
 - [ ] Biostatistics main workspace (`pages/Biostatistics.tsx`)
 - [ ] Data Library / uploaded files page (`pages/DataUploaded.tsx`)
 - [ ] Saved Technical Files page (`pages/SavedTechnicalFiles.tsx`)
+- [ ] Technical Files: Project → Tab → Files hierarchy with breadcrumbs (`SavedTechnicalFiles.tsx → parseTitleParts`)
+- [ ] Technical Files: breadcrumb navigation "Technical Files > ProjectName" with clickable segments
+- [ ] Technical Files: tab subfolders inside each project with expand/collapse
+- [ ] Technical Files: delete tab folder with warning "Delete [TabName] and all [N] files?"
+- [ ] Technical Files: empty state "No saved files yet..." for projects view
+- [ ] Technical Files: "All Files" view shows path subtitle "ProjectName / TabName" below filename
 - [ ] Saved Files page (`pages/SavedFiles.tsx`)
 - [ ] Regulatory documents page (`pages/Regulatory.tsx`)
 - [ ] Regulatory Enhanced page (`pages/RegulatoryEnhanced.tsx`)
@@ -59,9 +65,11 @@
 - [ ] Switch between tabs (`biostat/TabBar.tsx → setActiveTab`)
 - [ ] Close tab via X button (`biostat/TabBar.tsx → closeTab`)
 - [ ] Rename tab via double-click (`biostat/TabBar.tsx → renameTab`)
-- [ ] Auto-rename tab using AI's `graphTitle` after response arrives — never raw user query (`AIBiostatisticsChatTabIntegrated.tsx ~line 2395`)
-- [ ] Tab title strips "Figure N." prefix for brevity, truncates to 35 chars with ellipsis
-- [ ] Fallback to `generateTitleFromQuery()` only when AI provides no title (`utils/titleGeneration.ts`)
+- [ ] Auto-rename tab using AI's `graphTitle` after first response — never raw user query (`AIBiostatisticsChatTabIntegrated.tsx ~line 2534`)
+- [ ] `shortenChartTitle()` strips "Figure/Table N." prefixes, removes filler words, replaces long terms (Kaplan-Meier→KM, confidence intervals→CI), caps at 35 chars (`AIBiostatisticsChatTabIntegrated.tsx`)
+- [ ] Only renames once — on first result when tab has default "Analysis ..." name
+- [ ] 4-strategy tab naming: (1) AI chart title, (2) first heading/bold from analysis, (3) filename title-cased, (4) `generateTitleFromQuery()` with ≥2 word validation
+- [ ] Single-word tab names rejected — must be ≥5 chars and ≥2 words to pass validation
 - [ ] Tab state persisted per-project (`stores/tabStore.ts`)
 - [ ] Tab content state management (`stores/tabContentStore.ts`)
 - [ ] Per-tab results stored in Zustand (`stores/aiPanelStore.ts → resultsByTab`)
@@ -125,7 +133,7 @@
 
 ### File Attachment & Data Loading
 - [ ] Upload CSV from computer (`AIBiostatisticsChatTabIntegrated.tsx → handleComputerUpload`)
-- [ ] Upload XLSX/XLS from computer with SheetJS parsing
+- [ ] Upload XLSX/XLS from computer with robust SheetJS parsing: auto-detect header row, unmerge cells, handle title rows, fill empty headers (`AIBiostatisticsChatTabIntegrated.tsx → parseXLSXFile`)
 - [ ] Upload PDF with server-side text extraction (`parsePdfMutation`)
 - [ ] PDF table extraction — pipe-delimited detection (`AIBiostatisticsChatTabIntegrated.tsx ~line 1668`)
 - [ ] PDF table extraction — CSV/TSV fallback (`AIBiostatisticsChatTabIntegrated.tsx ~line 1693`)
@@ -459,8 +467,8 @@
 - [ ] SAS/DTA export — uppercase column names, alphanumeric-safe metric names
 - [ ] PNG export — captures chart from DOM at 2x retina resolution
 - [ ] Tag management — dropdown with existing tags, add new tags, remove tags
-- [ ] Folder selection — choose existing folder or create new
-- [ ] Subfolder auto-creation (Graphs/, Tables/, Queries/ when >2 items)
+- [ ] Auto-determined save location: Project / Tab (no manual folder selector)
+- [ ] Save path format: `[ProjectName] / [TabName] / [filename].pdf` (`SaveAnalysisModal.tsx`)
 - [ ] Tab selection — expand/collapse tabs, horizontal table with Graph/Table/Query columns per query row (`SaveAnalysisModal.tsx`)
 - [ ] Query-grouped layout: each result row shows Q1/Q2/Q3 label with Graph, Table, Query pill buttons
 - [ ] Disabled cells: dashed gray circle when a query has no graph or no table
@@ -691,6 +699,39 @@
 - [ ] Biostatistics Handbook knowledge base — statistical test decision tree, graph type selection rules, publication-quality graph guidelines (McDonald 2014)
 - [ ] X-axis label abbreviation instructions for long category names
 
+### Stage 2: Analysis-Specific Data Validation (`analysisValidator.ts`)
+- [ ] `validateDataForAnalysis()` — checks data suitability before analysis runs
+- [ ] Descriptive: requires ≥1 numeric column
+- [ ] T-test: requires numeric outcome + 2-group categorical, warns on n<30
+- [ ] ANOVA: requires numeric outcome + 3+ group categorical
+- [ ] Survival: requires time column + event/censor column (pattern-matched)
+- [ ] Correlation: requires ≥2 numeric columns
+- [ ] Chi-square: requires ≥2 categorical columns
+- [ ] Logistic: requires numeric predictors + binary outcome
+- [ ] Bioequivalence: checks for PK parameter columns + period/sequence
+- [ ] NCA: requires time + concentration columns
+- [ ] Returns actionable errors with suggestions when validation fails
+- [ ] Blocks analysis with clear error card instead of hallucinated results
+
+### Stage 3: Autonomous Test Selection (`testSelector.ts`, `server/src/llm/router.ts`)
+- [ ] `profileData()` — auto-detects group columns, numeric/categorical split, pairing, time/event columns
+- [ ] `selectTest()` — decision tree: analysis type + data profile → specific test + assumptions
+- [ ] Two-group: paired → paired t-test/Wilcoxon; unpaired n<30 → Mann-Whitney; unpaired n≥30 → unpaired t-test
+- [ ] Multi-group: one-way ANOVA + Tukey HSD; repeated → repeated-measures ANOVA + Bonferroni
+- [ ] Correlation: n≥30 → Pearson; n<30 → Spearman
+- [ ] Categorical: n<40 → Fisher's exact; n≥40 → Chi-squared
+- [ ] Survival: no covariates → KM + log-rank; covariates → Cox PH
+- [ ] Returns `primaryTest`, `alternativeTest`, `postHocTest`, `assumptionChecks`, `reasoning`
+- [ ] `selectMethod()` in `server/src/llm/router.ts` — alternative router with method_id, compute_function, rationale
+
+### Stage 7: Auto-Citation of Computed Results (`resultsCiter.ts`)
+- [ ] `extractNumericClaims()` — regex extraction of p-values, CIs, means, effect sizes, test statistics from LLM text
+- [ ] `findSource()` — fuzzy matches claims against results_table and stats engine output
+- [ ] `citeResults()` — returns verified citations + list of unverified claims
+- [ ] Unverified claims logged as warnings (non-blocking)
+- [ ] Citations attached to response as `_citations` array for frontend display
+- [ ] Tolerance-based matching: 0.1% for large numbers, 1% for small
+
 ### Response Parsing & Validation
 - [ ] Markdown fence stripping: `/```(?:json)?\s*([\s\S]*?)```/i` (`biostatisticsAI.ts ~line 3887`)
 - [ ] Leading/trailing text stripping before/after JSON braces
@@ -847,7 +888,7 @@
 
 - [ ] CSV — pipe/comma/tab-delimited, auto-detected separator
 - [ ] XLSX / XLS — Excel via SheetJS parsing
-- [ ] PDF — server-side text extraction via pdf-parse
+- [ ] PDF — server-side text extraction via pdf-parse, OCR fallback via tesseract.js for scanned PDFs (`server/routers.ts → ocrPdfBuffer`)
 - [ ] JSON — direct parsing
 - [ ] TSV / TXT — tab-delimited text files
 

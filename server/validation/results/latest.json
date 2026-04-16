@@ -1,0 +1,664 @@
+{
+  "descriptive_summary": {
+    "method_name": "descriptive_summary",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:02:15.926491",
+    "scenarios": [
+      {
+        "name": "mean_normal_null_n30",
+        "description": "Null: mean of N(50,10), n=30. Type I error should be ~0.05.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0515,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9401,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 0.02759809645863561,
+        "bias_relative": 0.0005519619291727123,
+        "mse": 3.36293774276341,
+        "power": null,
+        "runtime_seconds": 7.404103994369507,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "mean_normal_null_n100",
+        "description": "Null: mean of N(50,10), n=100. Coverage of 95% CI.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0511,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9456,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.001369197780330486,
+        "bias_relative": 2.738395560660971e-05,
+        "mse": 1.000749935461307,
+        "power": null,
+        "runtime_seconds": 7.73460578918457,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "mean_normal_alt_d05",
+        "description": "Alternative: true mean=55 (d=0.5), n=30. Power check.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9448,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.041653750365120396,
+        "bias_relative": 0.0007573409157294617,
+        "mse": 3.3252334444860163,
+        "power": 0.7618,
+        "runtime_seconds": 3.735771894454956,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "mean_skewed_n30",
+        "description": "Null: mean of Gamma(4,2) (skewed), n=30. Robustness check.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": 0.051,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.939,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 0.014506878659718265,
+        "bias_relative": 0.0018133598324647832,
+        "mse": 0.533352686632077,
+        "power": null,
+        "runtime_seconds": 4.0045318603515625,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 22.88314390182495
+  },
+  "welch_t_test": {
+    "method_name": "welch_t_test",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:03:10.004312",
+    "scenarios": [
+      {
+        "name": "welch_null_equal_var",
+        "description": "Null: two groups N(0,1) n=30 each. Type I error.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0525,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9475,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.002465115951430927,
+        "bias_relative": null,
+        "mse": 0.06788178311796561,
+        "power": null,
+        "runtime_seconds": 13.016798973083496,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_null_unequal_var",
+        "description": "Null: N(0,1) vs N(0,2) n=30. Welch robustness to unequal variance.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0521,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9479,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.0021704222569983037,
+        "bias_relative": null,
+        "mse": 0.1699104396129642,
+        "power": null,
+        "runtime_seconds": 14.734617948532104,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_alt_d05",
+        "description": "Alternative: d=0.5, n=30 per group. Power ~0.48.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9496,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.0018927394210048925,
+        "bias_relative": 0.003785478842009785,
+        "mse": 0.06692723852850309,
+        "power": 0.4798,
+        "runtime_seconds": 8.674069166183472,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_alt_d08",
+        "description": "Alternative: d=0.8, n=30 per group. Power ~0.86.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9496,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.0018927394210048927,
+        "bias_relative": 0.002365924276256118,
+        "mse": 0.06692723852850309,
+        "power": 0.8594,
+        "runtime_seconds": 5.587116956710815,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_coverage_n100",
+        "description": "Null: N(0,1) n=100 per group. 95% CI coverage.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0542,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9458,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": -0.0004096953096242926,
+        "bias_relative": null,
+        "mse": 0.020449105820476553,
+        "power": null,
+        "runtime_seconds": 12.052786827087402,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 54.070075035095215
+  },
+  "unpaired_ttest": {
+    "method_name": "unpaired_ttest",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:04:05.174981",
+    "scenarios": [
+      {
+        "name": "welch_null_equal_var",
+        "description": "Null: two groups N(0,1) n=30 each. Type I error.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0525,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9475,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.002465115951430927,
+        "bias_relative": null,
+        "mse": 0.06788178311796561,
+        "power": null,
+        "runtime_seconds": 12.785529136657715,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_null_unequal_var",
+        "description": "Null: N(0,1) vs N(0,2) n=30. Welch robustness to unequal variance.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0521,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9479,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.0021704222569983037,
+        "bias_relative": null,
+        "mse": 0.1699104396129642,
+        "power": null,
+        "runtime_seconds": 15.747737884521484,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_alt_d05",
+        "description": "Alternative: d=0.5, n=30 per group. Power ~0.48.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9496,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.0018927394210048925,
+        "bias_relative": 0.003785478842009785,
+        "mse": 0.06692723852850309,
+        "power": 0.4798,
+        "runtime_seconds": 6.655333995819092,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_alt_d08",
+        "description": "Alternative: d=0.8, n=30 per group. Power ~0.86.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9496,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.0018927394210048927,
+        "bias_relative": 0.002365924276256118,
+        "mse": 0.06692723852850309,
+        "power": 0.8594,
+        "runtime_seconds": 6.164458990097046,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "welch_coverage_n100",
+        "description": "Null: N(0,1) n=100 per group. 95% CI coverage.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0542,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9458,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": -0.0004096953096242926,
+        "bias_relative": null,
+        "mse": 0.020449105820476553,
+        "power": null,
+        "runtime_seconds": 13.809205055236816,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 55.167210817337036
+  },
+  "paired_t_test": {
+    "method_name": "paired_t_test",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:04:24.049187",
+    "scenarios": [
+      {
+        "name": "paired_null",
+        "description": "Null: paired diff=0, n=30. Type I error.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0524,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9476,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.00029469369443262214,
+        "bias_relative": null,
+        "mse": 0.03388812540233355,
+        "power": null,
+        "runtime_seconds": 8.33659315109253,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "paired_alt_d05",
+        "description": "Alternative: paired diff=0.5, n=30. Power check.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9496,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": 0.002272635615507129,
+        "bias_relative": 0.004545271231014258,
+        "mse": 0.0331058746481149,
+        "power": 0.753,
+        "runtime_seconds": 3.517732858657837,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "paired_coverage",
+        "description": "Null: paired diff=0, n=50. CI coverage.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0517,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 0.9483,
+        "coverage_target": 0.95,
+        "coverage_pass": "True",
+        "bias": -0.0014714529489766555,
+        "bias_relative": null,
+        "mse": 0.020324999510758095,
+        "power": null,
+        "runtime_seconds": 7.014379024505615,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 18.871274948120117
+  },
+  "mann_whitney": {
+    "method_name": "mann_whitney",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:04:36.859772",
+    "scenarios": [
+      {
+        "name": "mw_null",
+        "description": "Null: two groups N(0,1) n=20. Type I error for Mann-Whitney.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0512,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 1.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 0.0018287365140321383,
+        "bias_relative": null,
+        "mse": 0.14639998610786092,
+        "power": null,
+        "runtime_seconds": 8.582297086715698,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "mw_alt_shift",
+        "description": "Alternative: shift=1.0, n=20. Power of Mann-Whitney.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 1.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": -0.0010864272809401896,
+        "bias_relative": -0.0010864272809401896,
+        "mse": 0.1431235091607864,
+        "power": 0.8472,
+        "runtime_seconds": 4.224914073944092,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 12.808801889419556
+  },
+  "one_way_anova": {
+    "method_name": "one_way_anova",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:04:49.889413",
+    "scenarios": [
+      {
+        "name": "anova_null_3groups",
+        "description": "Null: 3 groups N(0,1) n=30 each. Type I error.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0536,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 1.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 1.0343055553348912,
+        "bias_relative": null,
+        "mse": 2.2087782083991203,
+        "power": null,
+        "runtime_seconds": 6.217344045639038,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "anova_alt_medium",
+        "description": "Alternative: 3 groups mu=[0, 0.5, 1.0] n=30. Power check.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.9984,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 7.580722434694327,
+        "bias_relative": 7.580722434694327,
+        "mse": 75.86073909231663,
+        "power": 0.9362,
+        "runtime_seconds": 3.10332989692688,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "anova_null_5groups",
+        "description": "Null: 5 groups N(0,1) n=20 each. Type I with more groups.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": 0.0448,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 1.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 1.017589963346284,
+        "bias_relative": null,
+        "mse": 1.5667912287627235,
+        "power": null,
+        "runtime_seconds": 3.702968120574951,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 13.025799989700317
+  },
+  "kruskal_wallis": {
+    "method_name": "kruskal_wallis",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:04:55.826112",
+    "scenarios": [
+      {
+        "name": "kruskal_null",
+        "description": "Null: 3 groups N(0,1) n=20. Type I for Kruskal-Wallis.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0486,
+        "type_I_target": 0.05,
+        "type_I_pass": "True",
+        "coverage": 1.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 1.9913370819672134,
+        "bias_relative": null,
+        "mse": 7.794476880268744,
+        "power": null,
+        "runtime_seconds": 5.933733940124512,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 5.93476676940918
+  },
+  "chi_square": {
+    "method_name": "chi_square",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:05:03.107061",
+    "scenarios": [
+      {
+        "name": "chi2_null_2x2",
+        "description": "Null: 2x2 table, equal proportions, n=100. Type I error.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0332,
+        "type_I_target": 0.05,
+        "type_I_pass": "False",
+        "coverage": 0.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 0.7201383422229973,
+        "bias_relative": null,
+        "mse": 1.9137130485467806,
+        "power": null,
+        "runtime_seconds": 4.89837908744812,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      },
+      {
+        "name": "chi2_alt_moderate",
+        "description": "Alternative: p1=0.5 vs p2=0.7, n=100. Power check.",
+        "n_replications": 5000,
+        "n_successful": 5000,
+        "type_I_error": null,
+        "type_I_target": null,
+        "type_I_pass": null,
+        "coverage": 0.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 4.511775507006641,
+        "bias_relative": 22.55887753503321,
+        "mse": 34.285208797864335,
+        "power": 0.4656,
+        "runtime_seconds": 2.377485752105713,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 7.277467966079712
+  },
+  "fisher_exact": {
+    "method_name": "fisher_exact",
+    "compute_file_hash": "0913057334907d3d",
+    "git_sha": "local",
+    "timestamp": "2026-04-16T14:05:09.393801",
+    "scenarios": [
+      {
+        "name": "fisher_null_small",
+        "description": "Null: 2x2 table, equal proportions, n=30. Type I for Fisher.",
+        "n_replications": 10000,
+        "n_successful": 10000,
+        "type_I_error": 0.0173,
+        "type_I_target": 0.05,
+        "type_I_pass": "False",
+        "coverage": 0.0,
+        "coverage_target": 0.95,
+        "coverage_pass": "False",
+        "bias": 1.3771056868951754,
+        "bias_relative": null,
+        "mse": 3.67295270701251,
+        "power": null,
+        "runtime_seconds": 6.283847093582153,
+        "pass_criteria": {
+          "alpha": 0.05,
+          "tolerance_SE": 3
+        },
+        "failures": []
+      }
+    ],
+    "overall_pass": true,
+    "total_runtime_seconds": 6.284865856170654
+  }
+}

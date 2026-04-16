@@ -20,29 +20,30 @@ export default function UploadSection() {
     }
   };
 
-  const processFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        Papa.parse(content, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (results: any) => {
-            if (results.data && results.data.length > 0) {
-              const cols = Object.keys(results.data[0] as Record<string, any>);
-              setData(results.data as any[], cols, file.name);
-            }
-          },
-          error: (error: any) => {
-            console.error('CSV parsing error:', error);
-          },
-        });
-      } catch (err) {
-        console.error('Error reading file:', err);
-      }
-    };
-    reader.readAsText(file);
+  const processFile = async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    if (ext === 'xlsx' || ext === 'xls') {
+      console.warn('[UploadSection] Excel files must be uploaded via the main AI chat for server-side parsing.');
+      return;
+    }
+    try {
+      const content = await file.text();
+      Papa.parse(content, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results: any) => {
+          if (results.data && results.data.length > 0) {
+            const cols = Object.keys(results.data[0] as Record<string, any>);
+            setData(results.data as any[], cols, file.name);
+          }
+        },
+        error: (error: any) => {
+          console.error('CSV parsing error:', error);
+        },
+      });
+    } catch (err) {
+      console.error('Error reading file:', err);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {

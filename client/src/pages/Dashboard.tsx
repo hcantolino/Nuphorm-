@@ -33,60 +33,50 @@ export default function Dashboard() {
     }, 1000);
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setLoading(true);
     setError("");
 
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-
-        if (file.name.endsWith(".csv")) {
-          Papa.parse(content, {
-            header: true,
-            skipEmptyLines: true,
-            complete: (results: any) => {
-              if (results.data && results.data.length > 0) {
-                const columns = Object.keys(results.data[0] as Record<string, any>);
-                setUploadedFile({
-                  name: file.name,
-                  data: results.data as Record<string, any>[],
-                  columns,
-                });
-              }
-              setLoading(false);
-            },
-            error: (error: any) => {
-              setError(`CSV parsing error: ${error.message}`);
-              setLoading(false);
-            },
-          });
-        } else if (file.name.endsWith(".xlsx")) {
-          // For XLSX, we'd need to use a library like xlsx
-          // For now, show a message
-          setError("XLSX support requires additional setup. Please use CSV files.");
-          setLoading(false);
-        } else {
-          setError("Please upload a CSV or XLSX file.");
-          setLoading(false);
-        }
-      } catch (err) {
-        setError(`Error reading file: ${err instanceof Error ? err.message : "Unknown error"}`);
-        setLoading(false);
-      }
-    };
-
-    reader.onerror = () => {
-      setError("Error reading file");
+    if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+      setError("Excel files should be uploaded via the Biostatistics panel for proper parsing. Please use CSV here.");
       setLoading(false);
-    };
+      return;
+    }
 
-    reader.readAsText(file);
+    if (!file.name.endsWith(".csv")) {
+      setError("Please upload a CSV file.");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const content = await file.text();
+      Papa.parse(content, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results: any) => {
+          if (results.data && results.data.length > 0) {
+            const columns = Object.keys(results.data[0] as Record<string, any>);
+            setUploadedFile({
+              name: file.name,
+              data: results.data as Record<string, any>[],
+              columns,
+            });
+          }
+          setLoading(false);
+        },
+        error: (error: any) => {
+          setError(`CSV parsing error: ${error.message}`);
+          setLoading(false);
+        },
+      });
+    } catch (err) {
+      setError(`Error reading file: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setLoading(false);
+    }
   };
 
   return (

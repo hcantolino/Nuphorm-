@@ -64,6 +64,12 @@ export function BiostatisticsChat() {
 
     setFileLoading(true);
     try {
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+      if (['xlsx', 'xls'].includes(ext)) {
+        toast.error('Excel files should be uploaded via the main Biostatistics AI tab for proper server-side parsing.');
+        setFileLoading(false);
+        return;
+      }
       const text = await file.text();
       Papa.parse(text, {
         header: true,

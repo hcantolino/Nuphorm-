@@ -105,6 +105,54 @@ type PreviewEntry =
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /**
+ * Shorten a chart/figure title to fit as a tab label.
+ * Strips "Figure N." / "Table N." prefixes, removes filler words when needed,
+ * keeps core nouns and metrics, caps at `maxLen` characters.
+ */
+function shortenChartTitle(raw: string, maxLen = 35): string {
+  if (!raw || !raw.trim()) return '';
+  let t = raw.trim();
+
+  // Strip "Figure N.", "Table N.", "Chart:" prefixes
+  t = t.replace(/^(?:Figure|Table|Chart|Fig\.?)\s*\d*\.?\s*/i, '').trim();
+
+  // Remove parenthetical notes like "(N=150)" or "(2026-2030)" — keep date ranges separately
+  const dateRange = t.match(/\((\d{4})\s*[-–]\s*(\d{4})\)/);
+  t = t.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+  if (dateRange) t += ` ${dateRange[1]}-${dateRange[2]}`;
+
+  // If already short enough, return
+  if (t.length <= maxLen) return t;
+
+  // Remove filler words progressively
+  const fillers = ['across', 'over', 'with', 'the', 'and', 'of', 'for', 'in', 'by', 'from', 'between', 'among', 'within', 'through', 'versus', 'vs\\.?'];
+  for (const filler of fillers) {
+    if (t.length <= maxLen) break;
+    t = t.replace(new RegExp(`\\b${filler}\\b`, 'gi'), ' ').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  // Replace "and" with "&" for brevity
+  t = t.replace(/\band\b/gi, '&').replace(/\s{2,}/g, ' ').trim();
+
+  // Replace common long words
+  t = t.replace(/\bconfidence intervals?\b/gi, 'CI');
+  t = t.replace(/\bstandard deviation\b/gi, 'SD');
+  t = t.replace(/\bkaplan-meier\b/gi, 'KM');
+  t = t.replace(/\btreatment\b/gi, 'Tx');
+  t = t.replace(/\btrajectory\b/gi, '');
+  t = t.replace(/\bhorizon\b/gi, '');
+  t = t.replace(/\bforecast\b/gi, 'Forecast');
+  t = t.replace(/\s{2,}/g, ' ').trim();
+
+  // Final truncation
+  if (t.length > maxLen) {
+    t = t.slice(0, maxLen - 1).replace(/\s+\S*$/, '') + '…';
+  }
+
+  return t;
+}
+
+/**
  * Robust CSV/TSV parser using PapaParse.
  * Handles quoted fields, auto-detects delimiters, coerces numeric values.
  * Falls back to manual line splitting only if PapaParse returns no data.
@@ -210,19 +258,119 @@ function fileToText(f: File): Promise<string> {
   });
 }
 
-/** Parse XLSX/XLS file to array of row objects using the first sheet */
+/** Parse XLSX/XLS file to array of row objects with robust header detection */
 function parseXLSXFile(file: File): Promise<Array<Record<string, any>>> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array" });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        if (!firstSheet) { resolve([]); return; }
-        const rows = XLSX.utils.sheet_to_json<Record<string, any>>(firstSheet, { defval: "" });
+        const workbook = XLSX.read(data, { type: "array", cellDates: true });
+
+        console.log("[Excel Parse] File:", file.name);
+        console.log("[Excel Parse] Sheets found:", workbook.SheetNames);
+
+        // Prefer active sheet, fall back to first sheet
+        const activeIdx = workbook.Workbook?.Sheets?.findIndex((s: any) => s?.Hidden === 0) ?? 0;
+        const sheetName = workbook.SheetNames[Math.max(0, activeIdx)] ?? workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        console.log("[Excel Parse] Using sheet:", sheetName);
+
+        if (!sheet) { console.warn("[Excel Parse] Sheet is empty"); resolve([]); return; }
+
+        // Record merge regions for context but do NOT propagate merge values
+        // into the sheet. Propagating causes a title merged across 138 columns
+        // to fill 138 cells with the same value, making it look like 138 headers.
+        // Instead, just delete the merge metadata so sheet_to_json reads
+        // each cell independently (empty cells stay empty).
+        const mergeCount = sheet["!merges"]?.length ?? 0;
+        if (mergeCount > 0) {
+          console.log("[Excel Parse] Removing", mergeCount, "merge metadata (cells read as-is)");
+          delete sheet["!merges"];
+        }
+
+        // Read first 10 rows as raw arrays to detect the actual header row
+        const rawRows = XLSX.utils.sheet_to_json<any[]>(sheet, {
+          header: 1, defval: "", range: 0,
+        }).slice(0, 10);
+
+        // Find the header row: the first row where ≥3 cells are filled with
+        // UNIQUE text values (not numbers). Title rows have 1-2 cells; data
+        // rows have numbers; real headers have many unique text labels.
+        let headerRowIdx = 0;
+        for (let i = 0; i < rawRows.length; i++) {
+          const cells = (rawRows[i] ?? []).map((v: any) => String(v ?? "").trim()).filter(Boolean);
+          const uniqueTexts = new Set(cells.filter((c) => isNaN(Number(c)))).size;
+          console.log(`[Excel] Row ${i + 1}: ${cells.length} filled, ${uniqueTexts} unique text values`);
+          if (uniqueTexts >= 3) {
+            headerRowIdx = i;
+            break; // First row with ≥3 unique text values is the header
+          }
+        }
+        console.log("[Excel] Header row selected: row", headerRowIdx + 1);
+
+        // Build headers: ensure all are strings, deduplicate merge artifacts,
+        // fill empty ones with "Column_X"
+        const rawHeader: any[] = rawRows[headerRowIdx] ?? [];
+        const seenHeaders = new Set<string>();
+        const headers: string[] = [];
+        // Find the last column index that has actual data in the rows below the header
+        let lastDataCol = 0;
+        for (let ri = headerRowIdx + 1; ri < Math.min(rawRows.length, headerRowIdx + 4); ri++) {
+          const row = rawRows[ri] ?? [];
+          for (let ci = row.length - 1; ci >= 0; ci--) {
+            if (String(row[ci] ?? "").trim() !== "" && ci > lastDataCol) {
+              lastDataCol = ci;
+            }
+          }
+        }
+        // Only process columns up to where data exists (strips trailing merge artifacts)
+        const maxCols = Math.max(lastDataCol + 1, 1);
+        for (let i = 0; i < Math.min(rawHeader.length, maxCols); i++) {
+          let s = String(rawHeader[i] ?? "").trim();
+          if (!s) s = `Column_${String.fromCharCode(65 + (i % 26))}${i >= 26 ? Math.floor(i / 26) : ""}`;
+          // Deduplicate: if we've seen this header already, append a suffix
+          if (seenHeaders.has(s)) {
+            let suffix = 2;
+            while (seenHeaders.has(`${s}_${suffix}`)) suffix++;
+            s = `${s}_${suffix}`;
+          }
+          seenHeaders.add(s);
+          headers.push(s);
+        }
+        console.log("[Excel Parse] Headers detected:", headers.length, "columns:", headers.slice(0, 10));
+
+        // Read all data starting from the row after the header
+        const allRows = XLSX.utils.sheet_to_json<any[]>(sheet, {
+          header: 1, defval: "", range: headerRowIdx + 1,
+        });
+
+        // Map array rows to keyed objects using the detected headers
+        const rows: Record<string, any>[] = [];
+        for (const row of allRows) {
+          if (!Array.isArray(row)) continue;
+          // Skip completely empty rows
+          const hasData = row.some((v: any) =>
+            v !== null && v !== undefined && String(v).trim() !== ""
+          );
+          if (!hasData) continue;
+
+          const obj: Record<string, any> = {};
+          for (let c = 0; c < headers.length; c++) {
+            obj[headers[c]] = row[c] ?? "";
+          }
+          rows.push(obj);
+        }
+
+        console.log("[Excel Parse] Rows found:", rows.length, "| Columns:", Object.keys(rows[0] || {}).length);
+        if (rows.length > 0) {
+          console.log("[Excel Parse] Column names:", Object.keys(rows[0]));
+          console.log("[Excel Parse] First data row:", JSON.stringify(rows[0]).slice(0, 200));
+        }
+
         resolve(rows);
       } catch (err) {
+        console.error("[Excel Parse] Failed:", err);
         reject(err);
       }
     };
@@ -1188,6 +1336,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
     onError: (err) => toast.error(`Upload failed: ${err.message}`),
   });
   const parsePdfMutation = trpc.files.parsePdf.useMutation();
+  const parseXlsxMutation = trpc.files.parseXlsx.useMutation();
 
   const { pendingMessage, pendingAutoSend, setPendingMessage } = useMeasurementTriggerStore();
   const trpcUtils = trpc.useUtils();
@@ -1534,10 +1683,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       for (const file of files) {
         toast.info(`Uploading ${file.name}…`);
         try {
-          const [base64, text] = await Promise.all([
-            fileToBase64(file),
-            fileToText(file),
-          ]);
+          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+          const isTextFile = ["csv", "tsv", "txt"].includes(ext);
+
+          const base64 = await fileToBase64(file);
+          const text = isTextFile ? await fileToText(file) : "";
 
           // Fire upload to server (don't block UI on the result)
           uploadFileMutation.mutate({
@@ -1555,13 +1705,12 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             id: tempId,
             name: file.name,
             size: `${(file.size / 1024).toFixed(0)} KB`,
-            type: file.name.split(".").pop()?.toUpperCase() ?? "FILE",
+            type: ext.toUpperCase() || "FILE",
             uploadedDate: new Date().toLocaleDateString(),
           };
 
-          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-
           // Route to project-level store or tab-level list based on attachScope.
+          // For binary formats (xlsx, pdf), preview is set later after server parsing.
           if (attachScope === 'project' && activeProjectId) {
             addProjectSource(activeProjectId, {
               id: tempId,
@@ -1569,7 +1718,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               size: file.size,
               type: ext || 'file',
               uploadedAt: Date.now(),
-              preview: text.slice(0, 2 * 1024 * 1024),
+              preview: isTextFile ? text.slice(0, 2 * 1024 * 1024) : '',
             });
             toast.success(`"${file.name}" added to project sources (all tabs)`);
           } else {
@@ -1613,33 +1762,70 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
               toast.success(`${file.name} attached`);
             }
           } else if (["xlsx", "xls"].includes(ext)) {
-            // XLSX / XLS — parse with xlsx.js
+            // XLSX / XLS — server-side conversion handles merged cells + header detection
+            console.log("[1-UPLOAD] XLSX file received:", file.name, newFile.size);
             try {
-              const parsed = await parseXLSXFile(file);
-              if (parsed.length > 0) {
-                setColumnClassifications(deriveColumnTypes(parsed));
+              const result = await parseXlsxMutation.mutateAsync({
+                fileData: base64,
+                fileName: file.name,
+              });
+              console.log("[2-PARSE] Server XLSX result:", {
+                success: result.success,
+                rowCount: result.rowCount,
+                columns: result.columns?.slice(0, 10),
+              });
+              if (result.success && result.rows && result.rows.length > 0) {
+                const parsed = result.rows as Array<Record<string, any>>;
+                const cols = result.columns as string[];
+                const cls = deriveColumnTypes(parsed);
+                console.log("[3-CLASSIFY] Column classifications:", Object.keys(cls).length, "keys");
+                setColumnClassifications(cls);
                 setUploadedData({ filename: file.name, size: newFile.size });
                 setFullData(parsed);
                 onDataLoaded?.(parsed);
                 useCurrentDatasetStore.getState().setCurrentDataset({
                   filename: file.name,
                   rowCount: parsed.length,
-                  columns: Object.keys(parsed[0] ?? {}),
+                  columns: cols,
                   rows: parsed as Record<string, unknown>[],
                   cleaned: false,
                 });
+                // Update preview with parsed CSV text so AI context gets real column names
+                if (attachScope === 'project' && activeProjectId) {
+                  const csvPreview = (result as any).csvText ?? cols.join(',') + '\n' + parsed.slice(0, 20).map(r => cols.map(c => r[c] ?? '').join(',')).join('\n');
+                  removeProjectSource(activeProjectId, tempId);
+                  addProjectSource(activeProjectId, {
+                    id: tempId,
+                    name: file.name,
+                    size: file.size,
+                    type: ext || 'file',
+                    uploadedAt: Date.now(),
+                    preview: csvPreview.slice(0, 2 * 1024 * 1024),
+                  });
+                }
                 addChatMessage({
                   id: `msg-${Date.now()}`,
                   role: "assistant",
-                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${Object.keys(parsed[0] ?? {}).length} columns. Would you like me to clean it first?`,
+                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${cols.length} columns (${cols.slice(0, 5).join(', ')}${cols.length > 5 ? '...' : ''}). Ready for analysis.`,
                   timestamp: Date.now(),
                 });
               } else {
-                toast.success(`${file.name} attached (no rows found in first sheet)`);
+                toast.success(`${file.name} attached (${result.error || 'no data rows detected'})`);
               }
-            } catch (xlsxErr) {
-              console.error("XLSX parse error:", xlsxErr);
-              toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid XLSX file.`, { style: { backgroundColor: "#f56565", color: "#fff" } });
+            } catch (xlsxErr: any) {
+              console.error("[XLSX] Server parse failed:", xlsxErr);
+              const errMsg = xlsxErr?.message || xlsxErr?.data?.message || String(xlsxErr);
+              toast.error(`Excel parse failed: ${errMsg}`, {
+                style: { backgroundColor: "#f56565", color: "#fff" },
+                duration: 8000,
+              });
+              // Also show in chat so it's visible in screenshots
+              addChatMessage({
+                id: `msg-${Date.now()}`,
+                role: "assistant",
+                content: `⚠️ **Excel parsing failed** for ${file.name}: \`${errMsg}\`. Try saving the file as CSV and re-uploading.`,
+                timestamp: Date.now(),
+              });
             }
           } else if (ext === "pdf") {
             // PDF — extract text via server-side pdf-parse, then attempt table extraction
@@ -1756,7 +1942,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       }
       e.target.value = "";
     },
-    [uploadFileMutation, onDataLoaded, attachScope, activeProjectId, addProjectSource, removeProjectSource, parsePdfMutation]
+    [uploadFileMutation, onDataLoaded, attachScope, activeProjectId, addProjectSource, removeProjectSource, parsePdfMutation, parseXlsxMutation]
   );
 
   // ── Send message ───────────────────────────────────────────────────────
@@ -2158,6 +2344,14 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
       // consecutive user-role messages at the end of the context, which causes the
       // model to treat the new request as a continuation of the previous one instead
       // of a fresh task — the root cause of the "same chart reused" bug.
+      console.log("[4-PROMPT] Data context being sent to AI:", {
+        queryLength: augmentedQuery.length,
+        dataPreviewLength: dataPreview?.length ?? 0,
+        dataColumns: dataColumns?.slice(0, 8),
+        classificationKeys: Object.keys(effectiveClassifications ?? {}).slice(0, 8),
+        fullDataRows: effectiveData?.length ?? 0,
+        fullDataFirstRow: effectiveData?.[0] ? JSON.stringify(effectiveData[0]).slice(0, 200) : "EMPTY",
+      });
       const response = await analyzeMutation.mutateAsync({
         userQuery: augmentedQuery,
         dataPreview,
@@ -2530,22 +2724,54 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
         });
       }
 
-      // Auto-rename tab using AI's figure title (never the raw user query)
+      // Auto-rename tab using AI's figure title (never the raw user query).
+      // Only fires ONCE — on the first result when the tab still has its default name.
       if (activeTabIdMemo) {
         const currentTab = useTabStore.getState().tabs.find((t) => t.id === activeTabIdMemo);
         const isDefaultTitle = currentTab?.title?.startsWith('Analysis ') || !currentTab?.title;
         if (isDefaultTitle) {
-          // Prefer AI's graphTitle; strip "Figure N. " prefix for tab brevity; fallback to generated title
-          let tabTitle = responseObj.graphTitle
+          let tabTitle = '';
+
+          // Strategy 1: AI's graphTitle or chart_data.title
+          const rawTitle = responseObj.graphTitle
             ?? responseObj.analysisResults?.chart_data?.title
+            ?? responseObj.analysisResults?.chart_data?.layout?.title
             ?? '';
-          // Strip "Figure N. " prefix
-          tabTitle = tabTitle.replace(/^Figure\s+\d+\.\s*/i, '').trim();
-          if (!tabTitle) {
-            tabTitle = generateTitleFromQuery(userMessage);
+          tabTitle = shortenChartTitle(rawTitle, 35);
+
+          // Strategy 2: First heading or bold text from AI analysis
+          if (!tabTitle || tabTitle.length < 5 || tabTitle.split(' ').length <= 1) {
+            const analysis = responseObj.analysis ?? content ?? '';
+            const headingMatch = analysis.match(/^#{1,3}\s+(.+)/m)
+              ?? analysis.match(/\*\*(.{8,60})\*\*/);
+            if (headingMatch) {
+              tabTitle = shortenChartTitle(headingMatch[1], 35);
+            }
           }
-          // Truncate to 35 chars with ellipsis
-          if (tabTitle.length > 35) tabTitle = tabTitle.slice(0, 32) + '…';
+
+          // Strategy 3: Uploaded filename (sans extension), title-cased
+          if (!tabTitle || tabTitle.length < 5 || tabTitle.split(' ').length <= 1) {
+            const dsFilename = useCurrentDatasetStore.getState().currentDataset?.filename;
+            if (dsFilename) {
+              const nameOnly = dsFilename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
+              const titleCased = nameOnly.replace(/\b\w/g, (c) => c.toUpperCase());
+              tabTitle = titleCased.length > 35 ? titleCased.slice(0, 32) + '…' : titleCased;
+            }
+          }
+
+          // Strategy 4: generateTitleFromQuery — validate it's not a single word
+          if (!tabTitle || tabTitle.length < 5 || tabTitle.split(' ').length <= 1) {
+            const generated = generateTitleFromQuery(userMessage);
+            // Only use if it's at least 2 words and 5+ chars
+            if (generated.split(' ').length >= 2 && generated.length >= 5) {
+              tabTitle = generated;
+            } else {
+              // Last resort: "Analysis [tab index]"
+              const tabIdx = useTabStore.getState().tabs.findIndex((t) => t.id === activeTabIdMemo);
+              tabTitle = `Analysis ${tabIdx >= 0 ? tabIdx + 1 : ''}`.trim();
+            }
+          }
+
           renameTab(activeTabIdMemo, tabTitle);
         }
       }
@@ -2697,6 +2923,23 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
         className
       )}
     >
+      {/* ── TEMPORARY DEBUG BANNER — data state visibility ─────────────── */}
+      {process.env.NODE_ENV === 'development' && (
+        <div style={{
+          background: '#fef3c7',
+          border: '1px solid #f59e0b',
+          padding: '4px 12px',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          flexShrink: 0,
+          zIndex: 50,
+        }}>
+          DATA: {fullData?.length || 0} rows |{' '}
+          COLS: {fullData?.[0] ? Object.keys(fullData[0]).slice(0, 6).join(', ') : 'none'}{fullData?.[0] && Object.keys(fullData[0]).length > 6 ? '...' : ''} |{' '}
+          STORE: {useCurrentDatasetStore.getState().currentDataset?.rows?.length || 0} rows
+        </div>
+      )}
+
       {/* ── Header strip (hidden in compact/embedded mode) ─────────────── */}
       {!compact && (
         <div className="flex-shrink-0 border-b border-border px-4 py-3 bg-muted/30 flex items-center justify-between">

@@ -120,11 +120,18 @@ interface CtxMenuState {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function parseTitleParts(title: string): { folder: string; filename: string } {
-  const idx = title.indexOf(' / ');
-  return idx >= 0
-    ? { folder: title.slice(0, idx).trim(), filename: title.slice(idx + 3).trim() }
-    : { folder: 'General', filename: title };
+/** Parse "ProjectName / TabName / filename.pdf" into its three segments */
+function parseTitleParts(title: string): { folder: string; tabName: string; filename: string } {
+  const segments = title.split(' / ').map(s => s.trim());
+  if (segments.length >= 3) {
+    // ProjectName / TabName / filename
+    return { folder: segments[0], tabName: segments[1], filename: segments.slice(2).join(' / ') };
+  }
+  if (segments.length === 2) {
+    // ProjectName / filename (legacy)
+    return { folder: segments[0], tabName: 'Analysis', filename: segments[1] };
+  }
+  return { folder: 'General', tabName: 'Analysis', filename: title };
 }
 
 function extractTabName(content: string): string {
@@ -241,8 +248,11 @@ function buildTree(rawFiles: any[], search: string, vf: ViewFilter): Map<string,
 
   for (const raw of rawFiles) {
     if (!matchesViewFilter(raw, vf)) continue;
-    const { folder, filename } = parseTitleParts(raw.title ?? '');
-    const tabName    = extractTabName(raw.content ?? '');
+    const parsed = parseTitleParts(raw.title ?? '');
+    const folder = parsed.folder;
+    const filename = parsed.filename;
+    // Prefer tabName from title path; fall back to content extraction for legacy files
+    const tabName = parsed.tabName !== 'Analysis' ? parsed.tabName : extractTabName(raw.content ?? '');
     const folderType = getFolderType(raw);
     const file: RawFile = { ...raw, folder, tabName, filename, folderType };
 
@@ -373,30 +383,40 @@ export default function SavedTechnicalFiles() {
   // ── Actions ──────────────────────────────────────────────────────────────────
 
   const dlFile = (file: RawFile) => {
+    console.log('[Download] clicked, filename:', file.filename);
     const format     = extractFormat(file.content);
     const ext        = FORMAT_EXT_MAP[format] ?? 'html';
     const mime       = FORMAT_MIME_MAP[format] ?? 'text/html';
     const isBinary   = format === 'xlsx' || format === 'pdf';
-    const exportData = extractExportData(file.content);
+    let exportData = extractExportData(file.content);
     const safeTitle  = file.filename.replace(/\s+/g, '_');
 
-    let blob: Blob;
-    if (isBinary && exportData) {
-      const binary = atob(exportData);
-      const bytes  = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      blob = new Blob([bytes], { type: mime });
-    } else if (!isBinary && exportData) {
-      blob = new Blob([exportData], { type: mime });
-    } else {
-      blob = new Blob([file.content], { type: 'text/html' });
-    }
+    try {
+      let blob: Blob;
+      if (isBinary && exportData) {
+        // Strip data URI prefix if present (jsPDF datauristring format)
+        if (exportData.includes(',')) {
+          exportData = exportData.split(',').pop()!;
+        }
+        const binary = atob(exportData);
+        const bytes  = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        blob = new Blob([bytes], { type: mime });
+      } else if (!isBinary && exportData) {
+        blob = new Blob([exportData], { type: mime });
+      } else {
+        blob = new Blob([file.content], { type: 'text/html' });
+      }
 
-    const url = URL.createObjectURL(blob);
-    const a   = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.${ext}` });
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast.success('Downloaded');
+      const url = URL.createObjectURL(blob);
+      const a   = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.${ext}` });
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success('Downloaded');
+    } catch (err) {
+      console.error('[Download] Failed:', err);
+      toast.error('Download failed — check console for details.');
+    }
   };
 
   const delFile = async (file: RawFile, e?: React.MouseEvent) => {
@@ -436,8 +456,10 @@ export default function SavedTechnicalFiles() {
     const files = Array.from(fn.tabs.values()).flatMap(t => t.files);
     try {
       for (const f of files) {
-        const { filename } = parseTitleParts(f.title);
-        const newTitle = `${newName} / ${filename}`;
+        const parsed = parseTitleParts(f.title);
+        const newTitle = parsed.tabName && parsed.tabName !== 'Analysis'
+          ? `${newName} / ${parsed.tabName} / ${parsed.filename}`
+          : `${newName} / ${parsed.filename}`;
         await updateMutation.mutateAsync({ fileId: f.id, title: newTitle });
       }
       toast.success(`Renamed to "${newName}"`);
@@ -452,7 +474,9 @@ export default function SavedTechnicalFiles() {
 
   const renameFile = async (file: RawFile, newFilename: string) => {
     try {
-      const newTitle = `${file.folder} / ${newFilename}`;
+      const newTitle = file.tabName && file.tabName !== 'Analysis'
+        ? `${file.folder} / ${file.tabName} / ${newFilename}`
+        : `${file.folder} / ${newFilename}`;
       await updateMutation.mutateAsync({ fileId: file.id, title: newTitle });
       toast.success(`Renamed to "${newFilename}"`);
       refetch();
@@ -461,7 +485,11 @@ export default function SavedTechnicalFiles() {
 
   const moveFileToFolder = async (file: RawFile, targetFolder: string) => {
     try {
-      const newTitle = targetFolder === 'General' ? file.filename : `${targetFolder} / ${file.filename}`;
+      const newTitle = targetFolder === 'General'
+        ? file.filename
+        : file.tabName && file.tabName !== 'Analysis'
+          ? `${targetFolder} / ${file.tabName} / ${file.filename}`
+          : `${targetFolder} / ${file.filename}`;
       await updateMutation.mutateAsync({ fileId: file.id, title: newTitle });
       toast.success(`Moved "${file.filename}" to ${targetFolder}`);
       refetch();
@@ -1198,61 +1226,137 @@ export default function SavedTechnicalFiles() {
                       })}
                       </div>
 
-                      {/* Expanded folder accordion */}
+                      {/* Expanded folder accordion — Project → Tab → Files hierarchy */}
                       {folderKeys.filter(name => expandedFolders.has(name)).map(name => {
                         const fn = tree.get(name)!;
-                        const folderFiles = Array.from(fn.tabs.values()).flatMap(t => t.files);
+                        const allFolderFiles = Array.from(fn.tabs.values()).flatMap(t => t.files);
+                        const tabEntries = Array.from(fn.tabs.entries()).sort(([a], [b]) => a.localeCompare(b));
                         return (
                           <div key={`accordion-${name}`} style={{ background: '#FFFFFF', borderRadius: 12, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', border: '1px solid #E5E7EB', overflow: 'hidden' }}>
+                            {/* Breadcrumb: Technical Files > ProjectName */}
                             <div
-                              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}
+                              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '12px 20px', borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}
                               onClick={() => setExpandedFolders(prev => { const next = new Set(prev); next.delete(name); return next; })}
                             >
-                              <FolderOpen size={18} style={{ color: '#3B82F6', flexShrink: 0 }} />
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setExpandedFolders(prev => { const next = new Set(prev); next.delete(name); return next; }); }}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3B82F6', fontSize: 13, fontWeight: 500, padding: 0 }}
+                              >
+                                Technical Files
+                              </button>
+                              <ChevronRight size={12} style={{ color: '#8fa3b8' }} />
+                              <FolderOpen size={16} style={{ color: '#3B82F6', flexShrink: 0 }} />
                               <span style={{ fontSize: 15, fontWeight: 700, color: '#111827', flex: 1 }}>{fn.name}</span>
-                              <span style={{ fontSize: 12, color: '#8fa3b8' }}>{folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}</span>
+                              <span style={{ fontSize: 12, color: '#8fa3b8' }}>{allFolderFiles.length} file{allFolderFiles.length !== 1 ? 's' : ''}</span>
                               <ChevronDown size={16} style={{ color: '#8fa3b8' }} />
                             </div>
-                            {/* Column headers */}
-                            <div style={{ display: 'flex', alignItems: 'center', padding: '8px 20px', borderBottom: '1px solid #e2e8f0', background: '#fafbfc' }}>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flex: 1 }}>File Name</span>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 70, textAlign: 'center', flexShrink: 0 }}>Type</span>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 200, textAlign: 'right', flexShrink: 0 }}>Date</span>
-                            </div>
-                            {folderFiles.map((file, idx) => {
-                              const format = extractFormat(file.content);
-                              const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#e2e8f0', color: '#475569' };
-                              const ext = FORMAT_EXT_MAP[format] ?? format;
+
+                            {/* Tab subfolders */}
+                            {tabEntries.map(([tabName, tabNode]) => {
+                              const isTabExpanded = expandedTabs.has(`${name}::${tabName}`);
                               return (
-                                <div
-                                  key={file.id}
-                                  onClick={() => setPreview(file)}
-                                  onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
-                                  style={{
-                                    display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px',
-                                    cursor: 'pointer', transition: 'all 0.15s', borderLeft: '3px solid transparent',
-                                    borderBottom: idx < folderFiles.length - 1 ? '1px solid #f3f4f6' : 'none',
-                                  }}
-                                  onMouseEnter={e => { e.currentTarget.style.borderLeftColor = '#3B82F6'; e.currentTarget.style.background = '#FAFBFC'; }}
-                                  onMouseLeave={e => { e.currentTarget.style.borderLeftColor = 'transparent'; e.currentTarget.style.background = 'transparent'; }}
-                                >
-                                  <div style={{ width: 32, height: 32, borderRadius: 8, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                    <TechFileIcon format={format} size={16} />
-                                  </div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <p style={{ fontSize: 14, fontWeight: 600, color: '#1a2332', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</p>
-                                    <p style={{ fontSize: 12, color: '#8fa3b8', margin: '1px 0 0' }}>{file.tabName || 'Analysis'}</p>
-                                  </div>
-                                  <div style={{ width: 70, textAlign: 'center', flexShrink: 0 }}>
-                                    <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>.{ext}</span>
-                                  </div>
-                                  <div style={{ width: 200, textAlign: 'right', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
-                                    <span style={{ fontSize: 12, color: '#6b7280' }}>{estimateSize(file.content)}</span>
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#8fa3b8' }}>
-                                      <Calendar size={12} />
-                                      {fmtDate(file.createdAt || file.generatedAt)}
+                                <div key={tabName}>
+                                  {/* Tab folder row */}
+                                  <div
+                                    style={{
+                                      display: 'flex', alignItems: 'center', gap: 10, padding: '10px 20px 10px 36px',
+                                      borderBottom: '1px solid #f3f4f6', cursor: 'pointer', transition: 'background 0.15s',
+                                    }}
+                                    onClick={() => setExpandedTabs(prev => {
+                                      const key = `${name}::${tabName}`;
+                                      const next = new Set(prev);
+                                      if (next.has(key)) next.delete(key); else next.add(key);
+                                      return next;
+                                    })}
+                                    onMouseEnter={e => { e.currentTarget.style.background = '#FAFBFC'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                                  >
+                                    {isTabExpanded
+                                      ? <ChevronDown size={14} style={{ color: '#8fa3b8', flexShrink: 0 }} />
+                                      : <ChevronRight size={14} style={{ color: '#8fa3b8', flexShrink: 0 }} />
+                                    }
+                                    <Folder size={15} style={{ color: '#6366f1', flexShrink: 0 }} />
+                                    <span style={{ fontSize: 14, fontWeight: 600, color: '#1F2937', flex: 1 }}>{tabName}</span>
+                                    <span style={{ fontSize: 11, color: '#8fa3b8' }}>
+                                      {tabNode.files.length} file{tabNode.files.length !== 1 ? 's' : ''}
                                     </span>
+                                    {/* Delete tab folder */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDeleteConfirm({
+                                          name: tabName,
+                                          fileCount: tabNode.files.length,
+                                          onConfirm: async () => {
+                                            try {
+                                              for (const f of tabNode.files) await deleteMutation.mutateAsync({ fileId: f.id });
+                                              toast.success(`Tab "${tabName}" and ${tabNode.files.length} file(s) deleted`);
+                                              refetch();
+                                            } catch { toast.error('Some files failed to delete'); }
+                                          },
+                                        });
+                                      }}
+                                      style={{ width: 24, height: 24, borderRadius: 4, border: 'none', background: 'transparent', cursor: 'pointer', color: '#d1d5db', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                                      onMouseEnter={e => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.background = '#fef2f2'; }}
+                                      onMouseLeave={e => { e.currentTarget.style.color = '#d1d5db'; e.currentTarget.style.background = 'transparent'; }}
+                                      title={`Delete "${tabName}" and all files`}
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
                                   </div>
+
+                                  {/* Files inside this tab */}
+                                  {isTabExpanded && (
+                                    <>
+                                      {/* Column headers */}
+                                      <div style={{ display: 'flex', alignItems: 'center', padding: '6px 20px 6px 56px', borderBottom: '1px solid #e2e8f0', background: '#fafbfc' }}>
+                                        <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flex: 1 }}>File Name</span>
+                                        <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 70, textAlign: 'center', flexShrink: 0 }}>Type</span>
+                                        <span style={{ fontSize: 11, fontWeight: 600, color: '#8fa3b8', textTransform: 'uppercase', letterSpacing: '0.5px', width: 200, textAlign: 'right', flexShrink: 0 }}>Date</span>
+                                      </div>
+                                      {tabNode.files.map((file, idx) => {
+                                        const format = extractFormat(file.content);
+                                        const fmtColor = FORMAT_COLOR_MAP[format] ?? { bg: '#e2e8f0', color: '#475569' };
+                                        const ext = FORMAT_EXT_MAP[format] ?? format;
+                                        return (
+                                          <div
+                                            key={file.id}
+                                            onClick={() => setPreview(file)}
+                                            onContextMenu={e => openCtxMenu(e, buildFileCtxItems(file))}
+                                            style={{
+                                              display: 'flex', alignItems: 'center', gap: 12, padding: '12px 20px 12px 56px',
+                                              cursor: 'pointer', transition: 'all 0.15s', borderLeft: '3px solid transparent',
+                                              borderBottom: idx < tabNode.files.length - 1 ? '1px solid #f3f4f6' : 'none',
+                                            }}
+                                            onMouseEnter={e => { e.currentTarget.style.borderLeftColor = '#3B82F6'; e.currentTarget.style.background = '#FAFBFC'; }}
+                                            onMouseLeave={e => { e.currentTarget.style.borderLeftColor = 'transparent'; e.currentTarget.style.background = 'transparent'; }}
+                                          >
+                                            <div style={{ width: 32, height: 32, borderRadius: 8, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                              <TechFileIcon format={format} size={16} />
+                                            </div>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                              <p style={{ fontSize: 14, fontWeight: 600, color: '#1a2332', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</p>
+                                            </div>
+                                            <div style={{ width: 70, textAlign: 'center', flexShrink: 0 }}>
+                                              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4, background: fmtColor.bg, color: fmtColor.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>.{ext}</span>
+                                            </div>
+                                            <div style={{ width: 200, textAlign: 'right', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+                                              <span style={{ fontSize: 12, color: '#6b7280' }}>{estimateSize(file.content)}</span>
+                                              <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#8fa3b8' }}>
+                                                <Calendar size={12} />
+                                                {fmtDate(file.createdAt || file.generatedAt)}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                      {tabNode.files.length === 0 && (
+                                        <p style={{ padding: '16px 56px', fontSize: 13, color: '#9ca3af', fontStyle: 'italic' }}>
+                                          No files in this tab yet.
+                                        </p>
+                                      )}
+                                    </>
+                                  )}
                                 </div>
                               );
                             })}
@@ -1799,14 +1903,49 @@ function PreviewModal({ file, onClose }: { file: RawFile; onClose: () => void })
   useEffect(() => { const container = contentRef.current; if (!container) return; const h = (e: WheelEvent) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); setZoom(z => Math.max(50, Math.min(200, z + (e.deltaY < 0 ? 25 : -25)))); }; container.addEventListener('wheel', h, { passive: false }); return () => container.removeEventListener('wheel', h); }, []);
 
   const downloadFile = useCallback((fmt: 'pdf' | 'csv' | 'html') => {
+    console.log('[Export] clicked, format:', fmt, 'filename:', file.filename);
     const safeTitle = file.filename.replace(/\s+/g, '_');
-    if (fmt === 'pdf') {
-      const exportData = extractExportData(file.content);
-      if (exportData) { const binary = atob(exportData); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); const blob = new Blob([bytes], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.pdf` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
-      else { const blob = new Blob([file.content], { type: 'text/html' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
-    } else if (fmt === 'csv') { const csv = extractCSVFromHTML(file.content); const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.csv` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
-    else { const blob = new Blob([file.content], { type: 'text/html' }); const url = URL.createObjectURL(blob); const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` }); document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
-    setExportOpen(false); toast.success(`Downloaded as .${fmt}`);
+    try {
+      if (fmt === 'pdf') {
+        let exportData = extractExportData(file.content);
+        if (exportData) {
+          // Strip data URI prefix if present (jsPDF datauristring format)
+          if (exportData.includes(',')) exportData = exportData.split(',').pop()!;
+          const binary = atob(exportData);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.pdf` });
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } else {
+          const blob = new Blob([file.content], { type: 'text/html' });
+          const url = URL.createObjectURL(blob);
+          const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` });
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+      } else if (fmt === 'csv') {
+        const csv = extractCSVFromHTML(file.content);
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.csv` });
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        const blob = new Blob([file.content], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'), { href: url, download: `${safeTitle}.html` });
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+      setExportOpen(false);
+      toast.success(`Downloaded as .${fmt}`);
+    } catch (err) {
+      console.error('[Export] Download failed:', err);
+      toast.error('Export failed — check console for details.');
+    }
   }, [file]);
 
   const copyLink = useCallback(() => { navigator.clipboard.writeText(`${window.location.origin}/saved-technical-files?file=${file.id}`); setCopied(true); setTimeout(() => setCopied(false), 2000); toast.success('Link copied'); }, [file.id]);
@@ -1983,7 +2122,11 @@ function EmptyState() {
 function FilteredEmpty({ viewFilter, search }: { viewFilter: ViewFilter; search: string }) {
   return (
     <div style={{ textAlign:'center', padding:'64px 40px', color:C.textMuted, fontSize:14 }}>
-      {search ? `No files match "${search}"` : viewFilter === 'projects' ? 'No project folders yet \u2014 save analyses with "Save all data in project" checked' : 'No files yet \u2014 save analyses to see them here'}
+      {search
+        ? `No files match "${search}"`
+        : viewFilter === 'projects'
+          ? 'No saved files yet. Save analysis results from the biostatistics platform and they\u2019ll appear here, organized by project and tab.'
+          : 'No files yet \u2014 save analyses to see them here'}
     </div>
   );
 }

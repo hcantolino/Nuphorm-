@@ -1355,11 +1355,9 @@ export default function SaveAnalysisModal({
   // ── handle save ────────────────────────────────────────────────────────────
   //
   // NEW FOLDER HIERARCHY:
-  //   [folder] / [projectName] / [tabName] / Full Results.pdf   (always)
-  //   [folder] / [projectName] / [tabName] / [individual files or subfolders]
+  //   [projectName] / [tabName] / [TabName] – Q[N] – [ShortTitle] – [date].pdf
   //
-  // Subfolders (Graphs/, Tables/, Queries/) only created when >2 items of that type.
-  // Otherwise individual files sit directly in the tab folder.
+  // One PDF per selected query row, bundling graph + table + interpretation.
   //
   const handleSave = useCallback(async () => {
     if (!saveFormat) {
@@ -1377,8 +1375,8 @@ export default function SaveAnalysisModal({
       const tagMeasurements = selectedTags.map((t) => `tag:${t}`);
       const projFolder = projectName || "Untitled Project";
 
-      // Build base path: [user-chosen folder] / [project] or just [project]
-      const basePath = folder ? `${folder} / ${projFolder}` : projFolder;
+      // Build base path: [projectName] — project IS the top-level folder
+      const basePath = projFolder;
 
       // ── Collect selected items per tab ──────────────────────────────────────
       type PerTabSelection = {
@@ -1573,9 +1571,10 @@ export default function SaveAnalysisModal({
         }
       }
 
-      console.log("[Save] Files to generate:", filesToGenerate.map((f) => f.filename));
+      console.log("[Save Debug] Total files to save:", filesToGenerate.length);
+      filesToGenerate.forEach((f, i) => console.log(`  [${i}] ${f.tabPath} / ${f.filename}`));
 
-      // Save all files
+      // Save all files — exactly ONE call per selected query
       for (const f of filesToGenerate) {
         saveFile(`${f.tabPath} / ${f.filename}`, f.content, f.measurements);
       }
@@ -1858,110 +1857,13 @@ export default function SaveAnalysisModal({
             )}
           </div>
 
-          {/* ── Where (folder) ──────────────────────────────────────────────── */}
-          <div ref={folderRef} className="relative">
-            <FieldLabel>Where</FieldLabel>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setFolderDropOpen((v) => !v)}
-                className="flex-1 flex items-center justify-between px-3 py-2 text-sm rounded-lg bg-white text-left transition-colors"
-                style={{ border: "1px solid #DEE2E6" }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#2563eb")}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#DEE2E6")}
-              >
-                <span className="flex items-center gap-1.5" style={{ color: "#0f172a" }}>
-                  <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#2563eb" }} />
-                  {folder || <span style={{ color: "#94a3b8" }}>Root (no folder)</span>}
-                </span>
-                <ChevronDown
-                  className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${folderDropOpen ? "rotate-180" : ""}`}
-                  style={{ color: "#94a3b8" }}
-                />
-              </button>
-              <button
-                type="button"
-                onClick={() => { setFolderDropOpen(true); setCreatingFolder(true); }}
-                title="Create new folder"
-                className="w-9 h-9 flex items-center justify-center rounded-lg transition-colors"
-                style={{
-                  border: "1px solid #0D6EFD",
-                  color: "#0D6EFD",
-                  background: "white",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "#0D6EFD";
-                  e.currentTarget.style.color = "white";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "white";
-                  e.currentTarget.style.color = "#0D6EFD";
-                }}
-                aria-label="Create new folder"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            </div>
-
-            {folderDropOpen && (
-              <div
-                className="absolute z-10 mt-1 w-full bg-white rounded-lg shadow-lg overflow-hidden"
-                style={{ border: "1px solid #e2e8f0" }}
-              >
-                {creatingFolder && (
-                  <div
-                    className="flex items-center gap-2 px-3 py-2"
-                    style={{ borderBottom: "1px solid #e2e8f0", background: "#EFF6FF" }}
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#2563eb" }} />
-                    <input
-                      autoFocus
-                      type="text"
-                      value={newFolderInput}
-                      onChange={(e) => setNewFolderInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && newFolderInput.trim()) {
-                          setFolder(newFolderInput.trim());
-                          setNewFolderInput("");
-                          setCreatingFolder(false);
-                          setFolderDropOpen(false);
-                        }
-                        if (e.key === "Escape") {
-                          setCreatingFolder(false);
-                          setNewFolderInput("");
-                        }
-                      }}
-                      placeholder="New folder name, press Enter…"
-                      className="flex-1 text-xs focus:outline-none bg-transparent"
-                      style={{ color: "#0f172a" }}
-                      aria-label="New folder name"
-                    />
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => { setFolder(""); setFolderDropOpen(false); }}
-                  className="w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-[#f8fafc] transition-colors"
-                >
-                  <span className="italic" style={{ color: "#64748b" }}>Root (no folder)</span>
-                  {folder === "" && <Check className="w-3.5 h-3.5" style={{ color: "#2563eb" }} />}
-                </button>
-                {existingFolders.map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => { setFolder(f); setFolderDropOpen(false); }}
-                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-blue-50 transition-colors"
-                  >
-                    <span className="flex items-center gap-2" style={{ color: "#0f172a" }}>
-                      <FolderOpen className="w-3.5 h-3.5" style={{ color: "#94a3b8" }} />
-                      {f}
-                    </span>
-                    {folder === f && <Check className="w-3.5 h-3.5" style={{ color: "#2563eb" }} />}
-                  </button>
-                ))}
-              </div>
-            )}
+          {/* Save location: auto-determined by project + tab */}
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm" style={{ background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+            <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#2563eb" }} />
+            <span style={{ color: "#64748b" }}>Saving to:</span>
+            <span className="font-medium truncate" style={{ color: "#0f172a" }}>
+              {projectName || "Untitled Project"} / {tabName || "Analysis"}
+            </span>
           </div>
 
           <Divider />
@@ -2251,7 +2153,7 @@ export default function SaveAnalysisModal({
 
           <button
             onClick={handleSave}
-            disabled={isBusy || !saveAs.trim()}
+            disabled={isBusy || !saveAs.trim() || selectedItems.size === 0}
             className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium rounded-lg text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-300 focus:ring-offset-2 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
               background: saveFormat ? "#0D6EFD" : "#94a3b8",
