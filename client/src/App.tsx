@@ -13,6 +13,7 @@ import SavedFiles from "./pages/SavedFiles";
 import SavedTechnicalFiles from "./pages/SavedTechnicalFiles";
 import Biostatistics from "./pages/Biostatistics";
 import DataUploaded from "./pages/DataUploaded";
+import ValidationDashboard from "./pages/admin/ValidationDashboard";
 import Regulatory from "./pages/Regulatory";
 import Login from "./pages/Login";
 import SignUp from "./pages/SignUp";
@@ -91,6 +92,7 @@ function Router() {
                     <Route path={"/data-uploaded"} component={DataUploaded} />
                     <Route path={"/profile"} component={ProfileSettings} />
                     <Route path={"/admin-feedback"} component={AdminFeedback} />
+                    <Route path={"/admin/validation"} component={ValidationDashboard} />
                     <Route path={"/404"} component={NotFound} />
                     <Route component={NotFound} />
                   </Switch>

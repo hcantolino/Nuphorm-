@@ -3311,16 +3311,25 @@ export async function analyzeBiostatistics(
       const validation = validateDataForAnalysis(analysisType, fullData, dataColumns, classifications);
       if (!validation.valid) {
         console.warn(`[analyzeBiostatistics] Data validation FAILED for ${analysisType}:`, validation.errors);
+        const ref = validation.refusal;
+        const analysisText = ref
+          ? `### ${ref.title}\n\n${ref.reason}\n\n` +
+            `**What I see in your data:**\n${ref.detectedData.map(d => `- **${d.name}** (${d.type}${d.notes ? ': ' + d.notes : ''})`).join('\n')}\n\n` +
+            `**What this analysis needs:**\n${ref.requiredData.map(r => `- ${r}`).join('\n')}\n\n` +
+            `**What you can try:**\n${ref.suggestedActions.map(a => `- ${a}`).join('\n')}`
+          : `**Data validation failed for ${analysisType} analysis:**\n\n${validation.errors.map(e => `- ${e}`).join('\n')}${validation.suggestion ? `\n\n**Suggestion:** ${validation.suggestion}` : ''}`;
+
         return {
-          analysis: `**Data validation failed for ${analysisType} analysis:**\n\n${validation.errors.map(e => `- ${e}`).join('\n')}${validation.suggestion ? `\n\n**Suggestion:** ${validation.suggestion}` : ''}`,
-          suggestions: ["Upload a dataset with the required columns", "Try a different analysis type"],
+          analysis: analysisText,
+          suggestions: ref?.suggestedQueries ?? ["Upload a dataset with the required columns", "Try a different analysis type"],
           measurements: [],
           chartSuggestions: [],
           analysisResults: {
-            analysis_type: analysisType,
-            results_table: validation.errors.map(e => ({ metric: "Validation Error", value: e })),
+            analysis_type: "validation_refusal",
+            results_table: validation.errors.map(e => ({ metric: "Validation", value: e })),
+            _refusal: ref ?? null,
           },
-          graphTitle: `Data Validation — ${analysisType}`,
+          graphTitle: ref?.title ?? `Data Validation — ${analysisType}`,
           llmUsed: false,
         };
       }

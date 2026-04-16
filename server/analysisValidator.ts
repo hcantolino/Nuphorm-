@@ -6,6 +6,12 @@
  * requested analysis type. Returns actionable error messages.
  */
 
+export interface DetectedColumn {
+  name: string;
+  type: "numeric" | "categorical" | "date" | "id" | "empty";
+  notes?: string;
+}
+
 export interface ValidationResult {
   valid: boolean;
   analysisType: string;
@@ -18,6 +24,15 @@ export interface ValidationResult {
     id: string[];
   };
   suggestion?: string;
+  /** Rich refusal info for the interpretation panel */
+  refusal?: {
+    title: string;
+    reason: string;
+    detectedData: DetectedColumn[];
+    requiredData: string[];
+    suggestedActions: string[];
+    suggestedQueries?: string[];
+  };
 }
 
 const ID_PATTERNS = /^(subj|patient|id|ptno|randno|screen|enrol)/i;
@@ -53,6 +68,47 @@ function classifyColumns(
   }
 
   return { numeric, categorical, date, id };
+}
+
+function classifyColumnsDetailed(
+  data: Record<string, any>[],
+  columns: string[]
+): DetectedColumn[] {
+  const result: DetectedColumn[] = [];
+  for (const col of columns) {
+    if (ID_PATTERNS.test(col)) { result.push({ name: col, type: "id" }); continue; }
+    if (DATE_PATTERNS.test(col)) { result.push({ name: col, type: "date" }); continue; }
+
+    const values = data.slice(0, 50).map(r => r[col]).filter(v => v !== null && v !== undefined && v !== "");
+    if (values.length === 0) { result.push({ name: col, type: "empty", notes: "all values empty" }); continue; }
+
+    const numericCount = values.filter(v => !isNaN(Number(v))).length;
+    const uniqueCount = new Set(values.map(v => String(v))).size;
+
+    if (numericCount / values.length > 0.8) {
+      const isSummaryCount = uniqueCount <= 5 && values.every(v => Number(v) === Math.floor(Number(v)));
+      result.push({
+        name: col,
+        type: "numeric",
+        notes: isSummaryCount ? "looks like summary counts" : `${uniqueCount} unique values`,
+      });
+    } else {
+      const sample = values.slice(0, 3).map(v => String(v)).join(", ");
+      result.push({
+        name: col,
+        type: "categorical",
+        notes: `${uniqueCount} categories (e.g. ${sample})`,
+      });
+    }
+  }
+  return result;
+}
+
+function isSummaryTable(data: Record<string, any>[], columns: string[]): boolean {
+  if (data.length > 20) return false;
+  const detailed = classifyColumnsDetailed(data, columns);
+  const summaryCount = detailed.filter(d => d.notes?.includes("summary counts")).length;
+  return summaryCount >= 2;
 }
 
 function findColumnByPattern(columns: string[], pattern: RegExp): string | null {
@@ -99,12 +155,60 @@ export function validateDataForAnalysis(
     }
 
     case "ttest": {
+      const detailedCols = classifyColumnsDetailed(data, columns);
+      const summaryData = isSummaryTable(data, columns);
+
+      if (summaryData) {
+        result.valid = false;
+        result.errors.push("Data appears to be a summary/pivot table rather than row-per-observation data.");
+        result.refusal = {
+          title: "Cannot run this t-test",
+          reason: "Your data appears to be a summary or pivot table with aggregated counts rather than individual-level measurements. A t-test needs one row per subject with raw measured values.",
+          detectedData: detailedCols,
+          requiredData: [
+            "One numeric column with individual measurements (e.g., 'lab_value', 'score', 'weight')",
+            "One grouping column with exactly 2 levels (e.g., 'Treatment': 'Drug' vs 'Placebo')",
+            "One row per subject/observation",
+          ],
+          suggestedActions: [
+            "If you have row-level data, upload that file instead",
+            "If you only have summary counts, try a chi-square test on the proportions",
+            "If these are aggregated means, provide the raw individual measurements",
+          ],
+          suggestedQueries: [
+            "Run a chi-square test on these counts",
+            "Compare proportions between groups",
+            "Show descriptive statistics for this data",
+          ],
+        };
+        break;
+      }
+
       if (detected.numeric.length === 0) {
         result.valid = false;
         result.errors.push("T-test requires at least one numeric outcome column.");
+        result.refusal = {
+          title: "No numeric data found",
+          reason: `All ${columns.length} columns appear to be categorical (text). A t-test compares numeric measurements between two groups.`,
+          detectedData: detailedCols,
+          requiredData: [
+            "At least one numeric column (e.g., 'score', 'concentration', 'weight')",
+            "One grouping column with 2 levels",
+          ],
+          suggestedActions: [
+            "Check if numeric columns contain text characters (like '<LOQ', 'N/A', or '%')",
+            "Upload a file with raw numeric measurements",
+          ],
+          suggestedQueries: [
+            "Describe my data — show column types",
+            "Show summary statistics for all columns",
+          ],
+        };
+        break;
       }
+
       if (detected.categorical.length === 0) {
-        result.warnings.push("No grouping column detected. A t-test compares two groups — ensure your data has a column identifying groups (e.g., 'Treatment', 'Group', 'Arm').");
+        result.warnings.push("No grouping column detected. A t-test compares two groups — ensure your data has a column identifying groups.");
       } else {
         const groupCol = findColumnByPattern(columns, GROUP_PATTERNS) ?? detected.categorical[0];
         const uniqueGroups = new Set(data.map(r => r[groupCol]).filter(v => v !== null && v !== ""));
@@ -112,11 +216,11 @@ export function validateDataForAnalysis(
           result.valid = false;
           result.errors.push(`Column "${groupCol}" has only ${uniqueGroups.size} unique group(s). A t-test requires exactly 2 groups.`);
         } else if (uniqueGroups.size > 2) {
-          result.warnings.push(`Column "${groupCol}" has ${uniqueGroups.size} groups. A t-test compares exactly 2 groups. Consider ANOVA for 3+ groups, or specify which 2 groups to compare.`);
+          result.warnings.push(`Column "${groupCol}" has ${uniqueGroups.size} groups. Consider ANOVA for 3+ groups.`);
         }
       }
       if (data.length < 6) {
-        result.warnings.push(`Only ${data.length} rows. T-tests typically need ≥30 observations per group for reliable results. With small samples, consider a non-parametric alternative (Mann-Whitney U).`);
+        result.warnings.push(`Only ${data.length} rows. Consider Mann-Whitney U for small samples.`);
       }
       break;
     }

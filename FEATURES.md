@@ -711,6 +711,10 @@
 - [ ] Bioequivalence: checks for PK parameter columns + period/sequence
 - [ ] NCA: requires time + concentration columns
 - [ ] Returns actionable errors with suggestions when validation fails
+- [ ] Rich refusal messages: title, reason, detected data table, required data, suggested actions, clickable query suggestions
+- [ ] Summary/pivot table detection: rejects t-test on aggregated counts and suggests chi-square instead
+- [ ] Refusal includes `detectedData` with per-column type + notes (e.g., "looks like summary counts")
+- [ ] `suggestedQueries` array for auto-fill chips in chat (e.g., "Run a chi-square test on these counts")
 - [ ] Blocks analysis with clear error card instead of hallucinated results
 
 ### Stage 3: Autonomous Test Selection (`testSelector.ts`, `server/src/llm/router.ts`)
@@ -848,6 +852,40 @@
 - [ ] Tab content (`biostat/TabContent.tsx`)
 - [ ] AI biostatistics chat (non-integrated) (`biostat/AIBiostatisticsChat.tsx`)
 - [ ] Biostatistics chat (non-integrated) (`biostat/BiostatisticsChat.tsx`)
+
+---
+
+## Statistical Validation Framework
+
+### Simulation Engine (`server/validation/`)
+- [ ] `base.py` — simulation framework: Scenario, ScenarioResult, MethodResult dataclasses
+- [ ] `run_scenario()` — runs N replications, computes Type I error, coverage, bias, MSE, power
+- [ ] `validate_method()` — runs all scenarios for a method, hashes compute file
+- [ ] `save_results()` — writes to `results/latest.json` + `results/history/`
+- [ ] `cache.py` — skips re-running if compute file hash unchanged and last run passed
+- [ ] `run_all.py` — orchestrator, runs changed methods only (or `--force` for all)
+- [ ] Pass criteria: Type I within 3 SE of nominal alpha; coverage within 3 SE of 95%
+
+### Simulation Modules
+- [ ] `descriptive.py` — mean CI coverage for normal (n=30, n=100), skewed data, power for shifted mean
+- [ ] `t_tests.py` — Welch t-test (null equal/unequal variance, power d=0.5/0.8, coverage), paired t-test (null, power), Mann-Whitney (null, power)
+- [ ] `anova.py` — one-way ANOVA (null 3/5 groups, power with shifted group), Kruskal-Wallis
+- [ ] `chi_square.py` — chi-squared (null 2x2/3x3, power with dependence), Fisher's exact
+
+### CI / GitHub Actions
+- [ ] `.github/workflows/validation.yml` — runs on push to main/develop when stats code changes
+- [ ] Commits results back to repo on success
+- [ ] Uploads `latest.json` as artifact on every run
+- [ ] Fails build if any validation check fails
+
+### Admin Dashboard (`/admin/validation`)
+- [ ] Route: `/admin/validation` (`pages/admin/ValidationDashboard.tsx`)
+- [ ] tRPC endpoint: `admin.validationResults` reads `latest.json`
+- [ ] Overview: pass/fail summary with method count and scenario count
+- [ ] Per-method cards: expandable with scenario table (Type I, Coverage, Bias, MSE, Power, Status)
+- [ ] Status icons: green=pass, red=fail, amber=warning
+- [ ] Timestamp + git SHA display
+- [ ] Empty state when no results exist
 
 ---
 

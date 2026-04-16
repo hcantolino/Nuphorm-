@@ -1725,8 +1725,13 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             setAttachedFiles((prev) => [...prev, newFile]);
           }
 
-          // ── Auto-select the newly uploaded file ──
-          setSourceSelection((prev) => ({ ...prev, [tempId]: true }));
+          // ── Auto-select ONLY the newly uploaded file; deselect previous tab files ──
+          setSourceSelection((prev) => {
+            const next = { ...prev };
+            attachedFiles.forEach(f => { next[f.id] = false; });
+            next[tempId] = true;
+            return next;
+          });
 
           // ── Auto-parse by file type ──
           if (["csv", "tsv", "txt"].includes(ext)) {
@@ -2103,11 +2108,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         }
       }
 
-      // ── Last-resort fallback: fetch content from attached tab files ──────────
-      // If effectiveData is STILL empty but the user has CSV/XLSX files attached,
+      // ── Last-resort fallback: fetch content from SELECTED tab files ──────────
+      // If effectiveData is STILL empty but the user has files selected,
       // try to fetch and parse their content so the AI gets actual data.
-      if (effectiveData.length === 0 && attachedFiles.length > 0) {
-        const csvAttachment = attachedFiles.find((f) =>
+      if (effectiveData.length === 0 && activeTabFiles.length > 0) {
+        const csvAttachment = activeTabFiles.find((f) =>
           ["CSV", "XLSX", "XLS", "TSV", "TXT"].includes(f.type)
         );
         if (csvAttachment) {
@@ -2139,7 +2144,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
 
         // ── PDF fallback: if no CSV found, check for PDF attachments with preview text ──
         if (effectiveData.length === 0) {
-          const pdfAttachment = attachedFiles.find(
+          const pdfAttachment = activeTabFiles.find(
             (f) => f.type === "PDF" && f.preview && f.preview.length > 0
           );
           if (pdfAttachment?.preview) {
@@ -2165,7 +2170,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
 
           // Also try fetching PDF content from server if no preview is stored locally
           if (effectiveData.length === 0 && !projectSourcePreviewText) {
-            const pdfServerAttachment = attachedFiles.find(
+            const pdfServerAttachment = activeTabFiles.find(
               (f) => f.type === "PDF"
             );
             if (pdfServerAttachment) {
@@ -2203,7 +2208,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
 
       // Log effective data state for debugging
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[AIChat] effectiveData: ${effectiveData.length} rows, fullData: ${fullData.length} rows, cdStore: ${cdStore?.rows?.length ?? 0} rows, attachedFiles: ${attachedFiles.length}`);
+        console.log(`[AIChat] effectiveData: ${effectiveData.length} rows, fullData: ${fullData.length} rows, cdStore: ${cdStore?.rows?.length ?? 0} rows, activeTabFiles: ${activeTabFiles.length}/${attachedFiles.length}`);
       }
 
       const effectiveClassifications =
@@ -2923,22 +2928,7 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
         className
       )}
     >
-      {/* ── TEMPORARY DEBUG BANNER — data state visibility ─────────────── */}
-      {process.env.NODE_ENV === 'development' && (
-        <div style={{
-          background: '#fef3c7',
-          border: '1px solid #f59e0b',
-          padding: '4px 12px',
-          fontSize: '11px',
-          fontFamily: 'monospace',
-          flexShrink: 0,
-          zIndex: 50,
-        }}>
-          DATA: {fullData?.length || 0} rows |{' '}
-          COLS: {fullData?.[0] ? Object.keys(fullData[0]).slice(0, 6).join(', ') : 'none'}{fullData?.[0] && Object.keys(fullData[0]).length > 6 ? '...' : ''} |{' '}
-          STORE: {useCurrentDatasetStore.getState().currentDataset?.rows?.length || 0} rows
-        </div>
-      )}
+
 
       {/* ── Header strip (hidden in compact/embedded mode) ─────────────── */}
       {!compact && (
@@ -3439,6 +3429,42 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
               </Button>
             </div>
           </div>
+
+          {/* ── Attachment chips: show active + available files ──────── */}
+          {(activeTabFiles.length > 0 || attachedFiles.length > activeTabFiles.length) && (
+            <div className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5">
+              {activeTabFiles.length > 0 && (
+                <span className="text-[10px] text-[#64748b] font-medium mr-0.5">Using:</span>
+              )}
+              {activeTabFiles.map((f) => (
+                <span
+                  key={f.id}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#eff6ff] border border-[#bfdbfe] text-[11px] font-medium text-[#1d4ed8]"
+                >
+                  {f.name}
+                  <button
+                    type="button"
+                    onClick={() => setSourceSelection(prev => ({ ...prev, [f.id]: false }))}
+                    className="hover:text-[#ef4444] transition-colors leading-none"
+                    title="Remove from this query"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {attachedFiles.filter(f => sourceSelection[f.id] === false).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setSourceSelection(prev => ({ ...prev, [f.id]: true }))}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#f1f5f9] border border-[#e2e8f0] text-[10px] text-[#94a3b8] hover:bg-[#e2e8f0] hover:text-[#64748b] transition-colors"
+                  title="Click to attach to this query"
+                >
+                  + {f.name}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* "Enter to send" hint — fades in when textarea is focused (non-compact only) */}
           {!compact && inputFocused && (
