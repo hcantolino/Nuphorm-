@@ -109,6 +109,10 @@ interface PlotlyInteractiveChartProps {
   onEditAction?: (action: string, context?: any) => void;
   /** Callback when user edits a label inline (title, subtitle, xLabel, yLabel) */
   onLabelEdit?: (field: 'chartTitle' | 'subtitle' | 'xLabel' | 'yLabel', value: string) => void;
+  /** Per-bar/point customizations from click-to-edit popup (keyed by "traceIdx:pointIdx") */
+  barCustomizations?: Record<string, { color?: string; value?: number; significance?: string | null; hidden?: boolean }>;
+  /** Callback to persist bar customizations to the store */
+  onBarCustomizationsChange?: (customizations: Record<string, { color?: string; value?: number; significance?: string | null; hidden?: boolean }>) => void;
   /** Raw dataset rows for local error bar computation — from currentDatasetStore */
   rawDataset?: { rows: Record<string, unknown>[]; columns: string[] } | null;
   /** Callback when validation detects a mismatch (e.g. error bars requested but missing) */
@@ -1185,7 +1189,7 @@ function buildScatterTraces(
           opacity: 0.75,
           line: { color: 'white', width: 0.5 },
         },
-        error_y: s.error_y ? { type: 'data' as const, array: Array.isArray(s.error_y) ? s.error_y : s.error_y.array, visible: true, color: '#64748b' } : undefined,
+        error_y: s.error_y ? { type: 'data' as const, array: Array.isArray(s.error_y) ? s.error_y : s.error_y.array, visible: true, color: '#9ca3af', thickness: 1.5, width: 4 } : undefined,
       };
     });
   } else if (dataArr.length > 0 && typeof dataArr[0] === 'object') {
@@ -1348,9 +1352,9 @@ function resolveErrorBars(ds: any, chartData: any, seriesName: string): any {
     const mkResult = (arr: number[], opts: any = {}) => ({
       type: 'data' as const,
       visible: true,
-      color: ds?.color ?? '#64748b',
-      thickness: 2,
-      width: 6,
+      color: '#9ca3af',    // gray-400: subtle, not competing with bar fill
+      thickness: 1.5,      // thin line for publication quality
+      width: 4,            // narrow whisker caps
       ...opts,
       array: arr,
     });
@@ -1999,32 +2003,6 @@ function resolvePharmaType(chartData: any): string | null {
   return null;
 }
 
-// ── Edit Action Buttons ────────────────────────────────────────────────────
-
-interface ActionButtonProps {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  onClick: () => void;
-}
-
-function ActionButton({ icon: Icon, label, onClick, variant }: ActionButtonProps & { variant?: "primary" }) {
-  const isPrimary = variant === "primary";
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border transition-colors ${
-        isPrimary
-          ? "bg-[#194CFF] border-[#194CFF] text-white hover:bg-[#3B82F6] hover:border-[#3B82F6]"
-          : "bg-[#F1F5F9] border-[#E2E8F0] text-[#64748b] hover:bg-[#E2E8F0] hover:text-[#0f172a]"
-      }`}
-      style={{ borderRadius: "0.5rem" }}
-    >
-      <Icon className="w-3.5 h-3.5" />
-      {label}
-    </button>
-  );
-}
-
 // ── Main Component ─────────────────────────────────────────────────────────
 
 export default function PlotlyInteractiveChart({
@@ -2033,6 +2011,8 @@ export default function PlotlyInteractiveChart({
   onPointClick,
   onEditAction,
   onLabelEdit,
+  barCustomizations: externalBarCustomizations,
+  onBarCustomizationsChange,
   rawDataset,
   onValidationWarning,
   onPlotRef,
@@ -2626,7 +2606,7 @@ export default function PlotlyInteractiveChart({
               type: 'data' as const,
               array: computed.array,
               visible: true,
-              color: trace.marker?.color ?? '#64748b',
+              color: '#9ca3af',    // gray-400: subtle, not competing with bar fill
               thickness: 1.5,
               width: 4,
             };
@@ -2870,9 +2850,84 @@ export default function PlotlyInteractiveChart({
       }
     }
 
+    // ── Apply per-bar/point customizations from the click-to-edit popup ──
+    // These sit on top of everything else and never mutate original chart_data.
+    if (externalBarCustomizations && Object.keys(externalBarCustomizations).length > 0) {
+      const barAnnotations: any[] = [];
+      pd.forEach((trace: any, traceIdx: number) => {
+        if (!trace.y || !Array.isArray(trace.y)) return;
+        const newY = [...trace.y];
+        const colors = Array.isArray(trace.marker?.color)
+          ? [...trace.marker.color]
+          : Array(trace.y.length).fill(trace.marker?.color ?? '#3b82f6');
+        const hiddenIndices: number[] = [];
+
+        for (let pointIdx = 0; pointIdx < trace.y.length; pointIdx++) {
+          const key = `${traceIdx}:${pointIdx}`;
+          const cust = externalBarCustomizations[key];
+          if (!cust) continue;
+          if (cust.hidden) { hiddenIndices.push(pointIdx); continue; }
+          if (cust.value !== undefined) newY[pointIdx] = cust.value;
+          if (cust.color) colors[pointIdx] = cust.color;
+          if (cust.significance) {
+            barAnnotations.push({
+              x: trace.x?.[pointIdx] ?? pointIdx,
+              y: cust.value ?? trace.y[pointIdx],
+              text: `<b>${cust.significance}</b>`,
+              showarrow: false,
+              font: { size: cust.significance === 'ns' ? 10 : 14, color: '#1a2332' },
+              yshift: 15,
+              xref: 'x',
+              yref: 'y',
+            });
+          }
+        }
+
+        // Filter out hidden points
+        if (hiddenIndices.length > 0) {
+          trace.x = (trace.x ?? []).filter((_: any, i: number) => !hiddenIndices.includes(i));
+          trace.y = newY.filter((_: any, i: number) => !hiddenIndices.includes(i));
+          trace.marker = {
+            ...trace.marker,
+            color: colors.filter((_: any, i: number) => !hiddenIndices.includes(i)),
+          };
+        } else {
+          trace.y = newY;
+          trace.marker = { ...trace.marker, color: colors };
+        }
+      });
+
+      // Merge significance annotations into layout
+      if (barAnnotations.length > 0) {
+        lo.annotations = [...(lo.annotations ?? []), ...barAnnotations];
+      }
+    }
+
+    // ── Y-axis headroom: 20% above tallest value + error bar tip ──────────
+    // Only when user hasn't manually set yAxisMax and there are bar traces.
+    if (custOverrides?.yAxisMax == null && pd.length > 0) {
+      let globalMax = 0;
+      pd.forEach((trace: any) => {
+        if (!Array.isArray(trace.y)) return;
+        trace.y.forEach((yVal: number, i: number) => {
+          let tip = typeof yVal === 'number' ? yVal : 0;
+          // Add error bar height if present
+          const ey = trace.error_y;
+          if (ey?.visible && Array.isArray(ey.array) && typeof ey.array[i] === 'number') {
+            tip += ey.array[i];
+          }
+          if (tip > globalMax) globalMax = tip;
+        });
+      });
+      if (globalMax > 0 && lo.yaxis?.autorange !== false) {
+        const headroom = globalMax * 1.2;
+        lo.yaxis = { ...lo.yaxis, range: [0, headroom], autorange: false };
+      }
+    }
+
     return { plotData: pd, layout: lo };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [basePlotData, baseLayout, custOverrides, rawDataset, config.chartData?.show_error_bars, config.chartData?.error_type, onValidationWarning]);
+  }, [basePlotData, baseLayout, custOverrides, externalBarCustomizations, rawDataset, config.chartData?.show_error_bars, config.chartData?.error_type, onValidationWarning]);
 
   // Debug: log final traces and layout being rendered + error bar validation
   useEffect(() => {
@@ -2969,14 +3024,29 @@ export default function PlotlyInteractiveChart({
     screenY: number;
     chartType: string;
   } | null>(null);
-  const [editValues, setEditValues] = useState<{ y: string; color: string; label: string }>({ y: '', color: '', label: '' });
+  const [editValues, setEditValues] = useState<{ y: string; color: string; label: string; significance: string | null }>({ y: '', color: '', label: '', significance: null });
   const editPopoverRef = useRef<HTMLDivElement>(null);
 
+  // Apply draft edits from the popup into the persistent bar customizations layer
+  const applyPopoverEdits = useCallback(() => {
+    if (!editPopover || !onBarCustomizationsChange) return;
+    const key = `${editPopover.traceIdx}:${editPopover.pointIdx}`;
+    const prev = externalBarCustomizations ?? {};
+    const existing = prev[key] ?? {};
+    const updates: Record<string, any> = { ...existing };
+    const numVal = parseFloat(editValues.y);
+    if (!isNaN(numVal) && numVal !== editPopover.y) updates.value = numVal;
+    if (editValues.color && editValues.color !== editPopover.color) updates.color = editValues.color;
+    if (editValues.significance !== null) updates.significance = editValues.significance;
+    onBarCustomizationsChange({ ...prev, [key]: updates });
+  }, [editPopover, editValues, externalBarCustomizations, onBarCustomizationsChange]);
+
   const closeEditPopover = useCallback(() => {
+    applyPopoverEdits();
     setEditPopover(null);
     setSelectedPoint(null);
     resetHighlight();
-  }, [resetHighlight]);
+  }, [applyPopoverEdits, resetHighlight]);
 
   // Close popover on outside click or Escape
   useEffect(() => {
@@ -3026,16 +3096,19 @@ export default function PlotlyInteractiveChart({
         color: pointColor,
         screenX, screenY, chartType,
       });
+      // Load existing customizations for this point into draft state
+      const existingCust = externalBarCustomizations?.[`${traceIdx}:${pointIdx}`];
       setEditValues({
-        y: String(clicked.y),
-        color: pointColor,
+        y: String(existingCust?.value ?? clicked.y),
+        color: existingCust?.color ?? pointColor,
         label: String(clicked.x),
+        significance: existingCust?.significance ?? null,
       });
 
       // Highlight the clicked trace
       highlightTrace(traceIdx);
     },
-    [onPointClick, highlightTrace]
+    [onPointClick, highlightTrace, externalBarCustomizations]
   );
 
   // ── Context menu state ──────────────────────────────────────────────────
@@ -3074,7 +3147,23 @@ export default function PlotlyInteractiveChart({
     // Hide Plotly title — we render it as HTML above the chart
     lo.title = { ...(typeof lo.title === 'object' ? lo.title : {}), text: '' };
     // Reduce top margin since our HTML title is outside
-    lo.margin = { ...lo.margin, t: Math.max((lo.margin?.t ?? 60) - 30, 35) };
+    lo.margin = { ...lo.margin, t: Math.max((lo.margin?.t ?? 60) - 30, 20) };
+    // Remove floating significance star annotations — p-values belong in the caption, not on the chart
+    if (Array.isArray(lo.annotations)) {
+      lo.annotations = lo.annotations.filter((a: any) => {
+        const txt = String(a?.text ?? '');
+        return !/^<?\/?b?>?\s*\*{1,3}\s*<?\/?b?>?$/.test(txt.trim()) && txt.trim() !== 'ns';
+      });
+    }
+    // Ensure chart fills its container
+    lo.autosize = true;
+    // Default bar gap if not set
+    if (!lo.bargap && lo.bargap !== 0) lo.bargap = 0.3;
+    // Ensure reasonable margins for axis labels
+    if (!lo.margin) lo.margin = {};
+    lo.margin.l = Math.max(lo.margin.l ?? 0, 60);
+    lo.margin.b = Math.max(lo.margin.b ?? 0, 50);
+    lo.margin.r = Math.max(lo.margin.r ?? 0, 20);
     return lo;
   }, [layout]);
 
@@ -3116,11 +3205,11 @@ export default function PlotlyInteractiveChart({
     <div className="flex flex-col">
       {/* Editable chart title — HTML overlay above the Plotly SVG */}
       {resolvedTitle && (
-        <div style={{ padding: '10px 16px 2px', textAlign: 'center' }}>
+        <div style={{ padding: '10px 16px 2px', textAlign: 'center', width: '100%' }}>
           <InlineEditableText
             value={resolvedTitle}
             onCommit={(v) => onLabelEdit?.('chartTitle', v)}
-            style={{ fontSize: 14, fontWeight: 700, color: '#1a2332', fontFamily: 'Arial, sans-serif', display: 'inline-block', maxWidth: '90%' }}
+            style={{ fontSize: 14, fontWeight: 700, color: '#1a2332', fontFamily: 'Arial, sans-serif', display: 'inline-block', maxWidth: '100%', textAlign: 'center' }}
             placeholder="Chart title"
           />
           {resolvedSubtitle && (
@@ -3143,7 +3232,8 @@ export default function PlotlyInteractiveChart({
         style={{
           background: '#ffffff',
           border: '1px solid #e2e8f0',
-          minHeight: 400,
+          minHeight: 300,
+          maxHeight: 500,
           overflowX: (plotData[0] as any)?.x?.length > 30 ? 'auto' : 'hidden',
           overflowY: 'hidden',
         }}
@@ -3185,7 +3275,7 @@ export default function PlotlyInteractiveChart({
           />
         </Suspense>
 
-        {/* Click-to-edit popover */}
+        {/* Click-to-edit popover — all edits go to draft state, persisted on Apply/close */}
         {editPopover && (
           <div
             ref={editPopoverRef}
@@ -3213,17 +3303,8 @@ export default function PlotlyInteractiveChart({
                   type="number"
                   step="any"
                   value={editValues.y}
-                  onChange={(e) => {
-                    setEditValues(v => ({ ...v, y: e.target.value }));
-                    const num = parseFloat(e.target.value);
-                    if (!isNaN(num)) {
-                      const el = plotRef.current?.el;
-                      if (!el) return;
-                      const currentY = [...(el.data?.[editPopover.traceIdx]?.y ?? [])];
-                      currentY[editPopover.pointIdx] = num;
-                      applyRestyle({ y: [currentY] }, editPopover.traceIdx);
-                    }
-                  }}
+                  onChange={(e) => setEditValues(v => ({ ...v, y: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') closeEditPopover(); }}
                   className="w-full px-2 py-1.5 text-xs border border-[#e2e8f0] rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-[#0f172a]"
                 />
               </div>
@@ -3234,71 +3315,53 @@ export default function PlotlyInteractiveChart({
                   <input
                     type="color"
                     value={editValues.color}
-                    onChange={(e) => {
-                      setEditValues(v => ({ ...v, color: e.target.value }));
-                      const el = plotRef.current?.el;
-                      if (!el) return;
-                      const traceData = el.data?.[editPopover.traceIdx];
-                      if (!traceData) return;
-                      // For bar charts: set per-bar color array
-                      if (editPopover.chartType === 'bar') {
-                        const colors = Array.isArray(traceData.marker?.color)
-                          ? [...traceData.marker.color]
-                          : Array(traceData.y?.length ?? 1).fill(traceData.marker?.color ?? '#3b82f6');
-                        colors[editPopover.pointIdx] = e.target.value;
-                        applyRestyle({ 'marker.color': [colors] }, editPopover.traceIdx);
-                      } else {
-                        // For line/scatter: set series color
-                        applyRestyle({ 'marker.color': e.target.value, 'line.color': e.target.value }, editPopover.traceIdx);
-                      }
-                    }}
+                    onChange={(e) => setEditValues(v => ({ ...v, color: e.target.value }))}
                     className="w-7 h-7 rounded border border-[#e2e8f0] cursor-pointer p-0"
                   />
                   <span className="text-[10px] text-[#64748b] font-mono">{editValues.color}</span>
                 </div>
               </div>
-              {/* Asterisk annotations */}
+              {/* Significance annotations */}
               <div>
-                <label className="text-[10px] font-medium text-[#64748b] block mb-1">Add Significance</label>
+                <label className="text-[10px] font-medium text-[#64748b] block mb-1">Significance</label>
                 <div className="flex gap-1">
                   {['*', '**', '***', 'ns'].map(sig => (
                     <button
                       key={sig}
                       onClick={() => {
-                        const el = plotRef.current?.el;
-                        if (!el) return;
-                        const existing = [...(el.layout?.annotations ?? [])];
-                        existing.push({
-                          x: editPopover.x,
-                          y: editPopover.y,
-                          text: `<b>${sig}</b>`,
-                          showarrow: false,
-                          font: { size: sig === 'ns' ? 10 : 14, color: '#1a2332' },
-                          yshift: 15,
-                          xref: 'x',
-                          yref: 'y',
-                        });
-                        applyRelayout({ annotations: existing });
-                        toast.success(`Added ${sig} annotation`);
+                        setEditValues(v => ({ ...v, significance: v.significance === sig ? null : sig }));
                       }}
-                      className="flex-1 px-1.5 py-1 text-[11px] font-semibold border border-[#e2e8f0] rounded hover:bg-[#f1f5f9] text-[#374151] transition-colors"
+                      className={`flex-1 px-1.5 py-1 text-[11px] font-semibold border rounded transition-colors ${
+                        editValues.significance === sig
+                          ? 'border-blue-400 bg-blue-50 text-blue-700'
+                          : 'border-[#e2e8f0] hover:bg-[#f1f5f9] text-[#374151]'
+                      }`}
                     >
                       {sig}
                     </button>
                   ))}
                 </div>
               </div>
+              {/* Apply button */}
+              <button
+                onClick={() => {
+                  closeEditPopover();
+                  toast.success('Changes applied');
+                }}
+                className="w-full px-3 py-1.5 text-[11px] font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Apply Changes
+              </button>
               {/* Delete point */}
               <button
                 onClick={() => {
-                  const el = plotRef.current?.el;
-                  if (!el) return;
-                  const traceData = el.data?.[editPopover.traceIdx];
-                  if (!traceData) return;
-                  const newX = (traceData.x ?? []).filter((_: any, i: number) => i !== editPopover.pointIdx);
-                  const newY = (traceData.y ?? []).filter((_: any, i: number) => i !== editPopover.pointIdx);
-                  applyRestyle({ x: [newX], y: [newY] }, editPopover.traceIdx);
-                  closeEditPopover();
+                  if (!onBarCustomizationsChange) return;
+                  const key = `${editPopover.traceIdx}:${editPopover.pointIdx}`;
+                  const prev = externalBarCustomizations ?? {};
+                  onBarCustomizationsChange({ ...prev, [key]: { ...prev[key], hidden: true } });
+                  setEditPopover(null);
+                  setSelectedPoint(null);
+                  resetHighlight();
                   toast.success('Data point removed');
                 }}
                 className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
@@ -3370,65 +3433,7 @@ export default function PlotlyInteractiveChart({
         )}
       </div>
 
-      {onEditAction && (
-        <div className="flex flex-wrap items-center gap-2 mt-3 px-1">
-          <ActionButton
-            icon={Tag}
-            label="Add Labels"
-            onClick={() => onEditAction('add_labels', selectedPoint)}
-          />
-          <ActionButton
-            icon={BarChart2}
-            label="Bar at Month 12"
-            onClick={() => onEditAction('bar_at_month_12', selectedPoint)}
-          />
-          <ActionButton
-            icon={Table2}
-            label="Pairwise Table"
-            onClick={() => onEditAction('pairwise_table', selectedPoint)}
-          />
-          <ActionButton
-            icon={Percent}
-            label="Percent Improvement"
-            onClick={() => onEditAction('percent_improvement', selectedPoint)}
-          />
-          <ActionButton
-            icon={TrendingDown}
-            label="Add Trendline"
-            onClick={() => onEditAction('add_trendline', selectedPoint)}
-          />
-        </div>
-      )}
-
-      {/* Editable axis labels below chart */}
-      {onLabelEdit && (resolvedXLabel || resolvedYLabel) && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 16px 0', gap: 16 }}>
-          {resolvedYLabel && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>Y:</span>
-              <InlineEditableText
-                value={resolvedYLabel}
-                onCommit={(v) => onLabelEdit('yLabel', v)}
-                style={{ fontSize: 11, color: '#64748b', fontFamily: 'Arial, sans-serif' }}
-                placeholder="Y-axis label"
-              />
-            </div>
-          )}
-          {resolvedXLabel && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', flexShrink: 0 }}>X:</span>
-              <InlineEditableText
-                value={resolvedXLabel}
-                onCommit={(v) => onLabelEdit('xLabel', v)}
-                style={{ fontSize: 11, color: '#64748b', fontFamily: 'Arial, sans-serif' }}
-                placeholder="X-axis label"
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Reference / citation below chart — editable */}
+      {/* Reference / citation below chart */}
       {config.chartData?.reference && (
         <div
           style={{

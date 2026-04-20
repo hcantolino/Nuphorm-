@@ -61,6 +61,20 @@ export interface ChartAnnotation {
   height?: number;
 }
 
+/** Per-bar (per-point) customization from the click-to-edit popup */
+export interface BarPointCustomization {
+  color?: string;
+  value?: number;
+  significance?: string | null; // '*' | '**' | '***' | 'ns' | null
+  hidden?: boolean;
+}
+
+/**
+ * Bar customizations keyed by "traceIdx:pointIdx".
+ * Layered on top of original chart_data at render time — never mutates AI output.
+ */
+export type BarCustomizations = Record<string, BarPointCustomization>;
+
 /** Undo stack entry */
 export interface UndoEntry {
   description: string;
@@ -154,6 +168,8 @@ export interface TabCustomizations {
   valueFontSize: number;
   /** Chart annotations (text boxes, asterisks, arrows, etc.) */
   annotations: ChartAnnotation[];
+  /** Per-bar/point customizations from the click-to-edit popup (keyed by "traceIdx:pointIdx") */
+  barCustomizations: BarCustomizations;
   /** Undo stack */
   undoStack: UndoEntry[];
   /** Redo stack */
@@ -220,6 +236,7 @@ export const DEFAULT_CUSTOMIZATIONS: TabCustomizations = {
   valuePosition: 'above',
   valueFontSize: 10,
   annotations: [],
+  barCustomizations: {},
   undoStack: [],
   redoStack: [],
 };

@@ -1310,9 +1310,16 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
     0,
   ];
 
+  // Publication-quality bar sizing: wider bars for fewer categories
+  const barCount = data.length * datasetKeys.length;
+  const barSize = barCount <= 4 ? 80 : barCount <= 8 ? 60 : undefined;
+
+  // Extra top margin when data labels are shown to avoid clipping
+  const barMargin = { ...sharedMargin, top: customizations.showDataLabels ? 24 : 8 };
+
   return (
     <ResponsiveContainer width="100%" height={320} minHeight={280}>
-      <BarChart data={data} margin={sharedMargin} barGap={customizations.barGap} style={{ backgroundColor: bgColor }}>
+      <BarChart data={data} margin={barMargin} barGap={customizations.barGap} barCategoryGap="30%" style={{ backgroundColor: bgColor }}>
         <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
         <XAxis dataKey="name" tick={xTickProps} label={xAxisLabel} />
         <YAxis
@@ -1324,13 +1331,14 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
           allowDataOverflow
         />
         <Tooltip />
-        {legendProps && <Legend {...legendProps} />}
+        {legendProps && datasetKeys.length > 1 && <Legend {...legendProps} />}
         {datasetKeys.map((key, i) => (
           <Bar
             key={key}
             dataKey={key}
             fill={colors[i % colors.length]}
             radius={barRadius}
+            barSize={barSize}
             isAnimationActive={false}
           >
             {customizations.showDataLabels && (
@@ -2049,37 +2057,10 @@ export const GraphTablePanel: React.FC = () => {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Result heading — informational, not editable (title editing is in Customize panel) */}
-        {(customizations.chartTitle || displayTitle) && (
-          <h3
-            style={{ fontSize: 18, fontWeight: 700, color: '#1a2332', margin: 0, lineHeight: 1.3, wordBreak: 'break-word' }}
-          >
-            {customizations.chartTitle || displayTitle}
-          </h3>
-        )}
+        {/* Title and subtitle are rendered INSIDE the chart component (PlotlyInteractiveChart
+           or ChartRenderer). No outer title here to avoid duplicates. */}
 
-        {/* Subtitle — shown for dataset_generation and any result with a subtitle */}
-        {activeResult?.analysisResults?.subtitle && (
-          <p className="text-sm text-[#64748b] leading-relaxed -mt-2">
-            {activeResult.analysisResults.subtitle}
-          </p>
-        )}
-
-        {/* Query caption */}
-        {activeResult?.query && (
-          <p className="text-xs text-[#64748b]">
-            <span className="font-medium text-[#0f172a]/70">Query: </span>
-            <em>{activeResult.query}</em>
-            {analysisType && (
-              <Badge
-                variant="outline"
-                className="ml-2 text-xs capitalize border-[#e2e8f0] text-[#64748b]"
-              >
-                {analysisType.replace(/_/g, " ")}
-              </Badge>
-            )}
-          </p>
-        )}
+        {/* Query caption removed — redundant with chat history */}
 
         {/* ── NEW: chart-requested-but-table-returned warning ──────────────── */}
         {/* RESTORED: previously there was no user-facing signal when chart gen failed —  */}
@@ -2093,13 +2074,12 @@ export const GraphTablePanel: React.FC = () => {
           >
             <TriangleAlert className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-500" aria-hidden="true" />
             <div className="min-w-0">
-              <p className="font-semibold">Chart generation failed — showing table instead</p>
+              <p className="font-semibold">Chart could not be generated</p>
               <p className="text-amber-600 text-xs mt-0.5 leading-relaxed">
-                The AI did not return chart data for this request. Try rephrasing:{" "}
-                <em>"Generate an area chart of…"</em> or{" "}
-                <em>"Show a bar chart comparing…"</em>. Check the browser console for{" "}
-                <code className="font-mono text-[11px] bg-amber-100 px-1 rounded">[ChartDetect]</code>{" "}
-                logs to diagnose why chart detection fired or was skipped.
+                This may be because multiple datasets were attached — try removing unrelated files
+                and re-sending your query. You can also rephrase with a specific chart type:{" "}
+                <em>"Generate a bar chart of…"</em> or{" "}
+                <em>"Show a line chart comparing…"</em>
               </p>
             </div>
           </div>
@@ -2262,6 +2242,11 @@ export const GraphTablePanel: React.FC = () => {
                           title: activeResult?.graphTitle ?? undefined,
                         }}
                         customizations={customizations}
+                        barCustomizations={customizations.barCustomizations}
+                        onBarCustomizationsChange={(bc) => {
+                          if (!customizationKey) return;
+                          setCustomization(customizationKey, 'barCustomizations', bc);
+                        }}
                         rawDataset={currentDataset ? { rows: currentDataset.rows as Record<string, unknown>[], columns: currentDataset.columns } : null}
                         onValidationWarning={(msg) => {
                           toast.warning(msg, {
@@ -2304,11 +2289,40 @@ export const GraphTablePanel: React.FC = () => {
                   </ChartErrorBoundary>
                 )}
               </CardContent>
-              {/* NEW: show the "Note" row as a small italic caption beneath the chart */}
-              {isNoteOnlyTable && (
-                <p className="flex-shrink-0 text-xs italic text-[#94a3b8] px-4 pb-2.5 border-t border-[#e2e8f0] pt-2">
+              {/* Note caption — only show if chart_data.reference is NOT present (avoids duplicating the figure legend) */}
+              {isNoteOnlyTable && !chartData?.reference && (
+                <p
+                  className="flex-shrink-0"
+                  style={{
+                    fontSize: 11,
+                    color: '#6b7280',
+                    fontStyle: 'italic',
+                    padding: '8px 16px',
+                    lineHeight: 1.4,
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    maxWidth: '100%',
+                    borderTop: '1px solid #e2e8f0',
+                    whiteSpace: 'normal',
+                  }}
+                >
                   {String(activeResult?.analysisResults?.results_table?.[0]?.value ?? "")}
                 </p>
+              )}
+              {/* Reset bar edits — visible when user has made per-bar customizations */}
+              {customizations.barCustomizations && Object.keys(customizations.barCustomizations).length > 0 && (
+                <div className="flex-shrink-0 px-4 py-1.5 border-t border-[#f1f5f9] flex justify-end">
+                  <button
+                    onClick={() => {
+                      if (!customizationKey) return;
+                      setCustomization(customizationKey, 'barCustomizations', {});
+                      toast.success('Chart edits reset to original');
+                    }}
+                    className="text-[10px] text-[#94a3b8] hover:text-[#64748b] underline transition-colors"
+                  >
+                    Reset chart edits
+                  </button>
+                </div>
               )}
               {/* Graph-edit hint — visible when this chart is selected */}
               {isGraphSelected && (
@@ -2684,41 +2698,10 @@ export const GraphTablePanel: React.FC = () => {
           </Card>
         )}
 
-        {/* ── Data Points Table — editable, updates chart in real-time ─── */}
-        {chartData && chartData.labels && chartData.datasets && !isNoteOnlyTable && (
-          <div
-            className={`rounded-xl cursor-pointer transition-all duration-200 ${
-              selectedTableType === 'data-points'
-                ? 'ring-2 ring-[#60a5fa]/40'
-                : 'hover:ring-1 hover:ring-slate-300'
-            }`}
-            style={selectedTableType === 'data-points' ? { border: '2px solid #2b7de9', background: 'rgba(43,125,233,0.02)' } : undefined}
-            onClick={(e) => {
-              if ((e.target as HTMLElement).closest('input, button, [contenteditable]')) return;
-              setSelectedTable(selectedTableType === 'data-points' ? null : 'data-points');
-            }}
-          >
-            <DataPointsTable
-              chartData={syncedChartData ?? chartData}
-              onDataChange={handleDataPointsChange}
-              xAxisLabel={customizations.xLabel || undefined}
-              tableTitle={(() => {
-                // Generate publication-style table title from chart metadata
-                const yVar = customizations.yLabel || (syncedChartData ?? chartData)?.datasets?.[0]?.label || 'Values';
-                const xVar = customizations.xLabel || (syncedChartData ?? chartData)?.x_axis || 'Group';
-                return `Table. ${yVar} by ${xVar}`;
-              })()}
-            />
-            {/* Data-table edit hint — visible when selected */}
-            {selectedTableType === 'data-points' && (
-              <div className="px-4 py-2 border-t border-[#d0e3f7] bg-[#eef6ff] rounded-b-xl">
-                <p className="text-xs text-[#2b7de9] font-medium">
-                  Data table selected — type your edit in the chat below (e.g. "add a row" or "sort ascending")
-                </p>
-              </div>
-            )}
-          </div>
-        )}
+        {/* ── Data Points Table — HIDDEN ─────────────────────────────────── */}
+        {/* Redundant with the AI statistics table above. Per-bar editing   */}
+        {/* is handled by the click-to-edit popup (barCustomizations).      */}
+        {/* The AI's results_table is the authoritative data display.       */}
 
         {/* Legacy inline data points table removed — replaced by DataPointsTable component above */}
 

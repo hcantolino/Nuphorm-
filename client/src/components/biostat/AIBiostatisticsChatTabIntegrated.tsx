@@ -1242,6 +1242,53 @@ function DatasetToolsPanel() {
   );
 }
 
+// ── Guard: never display raw JSON to user ─────────────────────────────────────
+// Detects if a string looks like raw JSON / object dump and returns true.
+function looksLikeJson(s: string): boolean {
+  const t = s.trim();
+  if (t.startsWith('{') || t.startsWith('[')) return true;
+  // Catch stringified objects like {"metric":"...","value":"..."}
+  if (/"(?:metric|value|chat_response|analysisResults|analysis|results_table)"/.test(t)) return true;
+  return false;
+}
+
+// Extracts a human-readable message from any response shape — string, JSON string,
+// or parsed object.  Falls back to a generic message if nothing usable is found.
+const FALLBACK_MSG = "Analysis complete — results are in the **Results panel** on the right.";
+
+function extractMessageFromParsed(obj: any): string {
+  if (obj?.chat_response?.message) return obj.chat_response.message;
+  if (obj?.chatResponse?.message) return obj.chatResponse.message;
+  if (typeof obj?.analysis === 'string' && !looksLikeJson(obj.analysis)) return obj.analysis;
+  if (typeof obj?.message === 'string' && !looksLikeJson(obj.message)) return obj.message;
+  if (typeof obj?.interpretation === 'string') return obj.interpretation;
+  if (typeof obj?.text === 'string') return obj.text;
+  return FALLBACK_MSG;
+}
+
+function extractMessage(response: any): string {
+  if (typeof response === 'string') {
+    const trimmed = response.trim();
+    // Plain text that doesn't look like JSON — safe to display
+    if (!looksLikeJson(trimmed)) return response;
+    // Try full JSON parse
+    try {
+      const parsed = JSON.parse(trimmed);
+      return extractMessageFromParsed(parsed);
+    } catch { /* not valid JSON */ }
+    // Regex fallback: try to extract "message":"..." from malformed JSON
+    const msgMatch = trimmed.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (msgMatch) {
+      return msgMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    }
+    return FALLBACK_MSG;
+  }
+  if (typeof response === 'object' && response !== null) {
+    return extractMessageFromParsed(response);
+  }
+  return String(response ?? FALLBACK_MSG);
+}
+
 // ── Main chat component ────────────────────────────────────────────────────────
 
 export const AIBiostatisticsChatTabIntegrated: React.FC<
@@ -1507,7 +1554,11 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         if (typeof parsed === 'object' && parsed !== null) setSourceSelection(parsed);
       } catch { /* corrupt — ignore */ }
     } else {
-      setSourceSelection({});
+      // New tab: project sources start deselected; only the most recent
+      // tab file (if any) is pre-selected.  User must explicitly attach others.
+      const initial: Record<string, boolean> = {};
+      projectSettings.sources.forEach(s => { initial[s.id] = false; });
+      setSourceSelection(initial);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabIdMemo]);
@@ -1725,10 +1776,14 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             setAttachedFiles((prev) => [...prev, newFile]);
           }
 
-          // ── Auto-select ONLY the newly uploaded file; deselect previous tab files ──
+          // ── Auto-select ONLY the newly uploaded file; deselect everything else ──
           setSourceSelection((prev) => {
             const next = { ...prev };
+            // Deselect all project sources
+            projectSettings.sources.forEach(s => { next[s.id] = false; });
+            // Deselect all existing tab files
             attachedFiles.forEach(f => { next[f.id] = false; });
+            // Select only the new upload
             next[tempId] = true;
             return next;
           });
@@ -2462,17 +2517,12 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
       // the analysis field before storing or displaying it.
       let rawContent: string;
       if (typeof response === "string") {
-        rawContent = response;
+        rawContent = extractMessage(response);
       } else {
-        // Prefer the analysis text; if it looks like JSON, try extracting the actual text
+        // Prefer the analysis text; if it looks like JSON, extract the message
         const analysis = responseObj.analysis;
         if (typeof analysis === "string" && analysis.trimStart().startsWith("{")) {
-          try {
-            const inner = JSON.parse(analysis);
-            rawContent = inner?.analysis ?? inner?.chat_response?.message ?? analysis;
-          } catch {
-            rawContent = analysis;
-          }
+          rawContent = extractMessage(analysis);
         } else {
           rawContent = analysis ?? "No analysis result";
         }
@@ -2540,35 +2590,18 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
       // Use chat_response.message from the LLM if available, otherwise fall back.
       // Guard: never render raw JSON in the chat bubble — detect JSON blobs and extract
       // the human-readable message from them.
+      // Build chat bubble text — NEVER show raw JSON to the user.
       const chatResp = responseObj.chatResponse as { message?: string; suggestions?: string[] } | undefined;
       let chatBubbleContent: string;
       if (chatResp?.message) {
-        chatBubbleContent = chatResp.message;
+        // Guard: even chatResponse.message could contain JSON if the LLM nested it
+        const msg = chatResp.message.trim();
+        chatBubbleContent = msg.startsWith('{') ? extractMessage(msg) : msg;
       } else if (routeToPanel && !isLLMUnavailable) {
         chatBubbleContent = "Analysis complete — results are in the **Results panel** on the right.";
       } else {
-        // Check if content looks like raw JSON (starts with { or contains JSON structure)
-        const trimmed = content.trimStart();
-        const looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[") ||
-          (trimmed.includes('"chat_response"') && trimmed.includes('"analysisResults"')) ||
-          (trimmed.includes('"analysis"') && trimmed.includes('"results_table"'));
-
-        if (looksLikeJson) {
-          // Raw JSON leaked into content — try to extract chat_response.message
-          try {
-            const parsed = JSON.parse(trimmed);
-            chatBubbleContent = parsed?.chat_response?.message
-              || parsed?.analysis
-              || "Analysis complete — results are in the **Results panel** on the right.";
-          } catch {
-            // Not valid JSON but looks like it — use fallback
-            chatBubbleContent = hasStructuredData
-              ? "Analysis complete — results are in the **Results panel** on the right."
-              : content;
-          }
-        } else {
-          chatBubbleContent = content;
-        }
+        // Use extractMessage as a single robust guard for any remaining JSON leaks
+        chatBubbleContent = extractMessage(content);
       }
 
       addChatMessage({
@@ -2810,6 +2843,20 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
       });
     } finally {
       setIsLoading(false);
+
+      // ── Per-message attachment scoping ──────────────────────────────────
+      // After each send, reset source selection so the next message starts
+      // with ONLY the most recently uploaded tab file pre-selected.
+      // Project-level sources are deselected — user must explicitly pick them.
+      const next: Record<string, boolean> = {};
+      projectSettings.sources.forEach(s => { next[s.id] = false; });
+      if (attachedFiles.length > 0) {
+        // Deselect all tab files except the most recent (last in the array)
+        attachedFiles.forEach((f, i) => {
+          next[f.id] = i === attachedFiles.length - 1;
+        });
+      }
+      setSourceSelection(next);
     }
   }, [
     inputValue,
@@ -3028,7 +3075,7 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
                   </p>
                 ) : (
                   <div className={cn("prose dark:prose-invert max-w-none break-words leading-relaxed", compact ? "prose-xs text-xs" : "prose-sm")}>
-                    <Streamdown>{msg.content}</Streamdown>
+                    <Streamdown>{looksLikeJson(msg.content ?? '') ? extractMessage(msg.content) : msg.content}</Streamdown>
                   </div>
                 )}
                 {msg.timestamp && (

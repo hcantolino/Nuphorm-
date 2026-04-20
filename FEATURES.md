@@ -147,6 +147,10 @@
 - [ ] Column classification auto-detection (`deriveColumnTypes`)
 - [ ] Last-resort CSV fetch from server for attached files (~line 1916)
 - [ ] Last-resort PDF fetch from server for attached files (~line 1959)
+- [x] Per-message attachment scoping: after sending, only most recent tab file stays selected (`handleSendMessage → finally` block)
+- [x] New upload auto-selects ONLY that file, deselects all project sources + previous tab files (`handleComputerUpload → setSourceSelection`)
+- [x] Project sources deselected by default on new tabs (`sourceSelection` restore effect)
+- [x] Raw JSON never shown in chat — `extractMessage()` guard on all response paths (`AIBiostatisticsChatTabIntegrated.tsx`)
 
 ### Project Context
 - [ ] Project instructions text area (`biostat/ProjectContextPanel.tsx → handleInstructionsBlur`)
@@ -189,7 +193,7 @@
 ## Results Panel (GraphTablePanel)
 
 ### Layout & Navigation
-- [ ] Single-panel design — title, query, stats table, chart, interpretation in one scroll
+- [ ] Single-panel design — title, stats table, chart, interpretation in one scroll (query caption removed — redundant with chat history)
 - [ ] "Results — N/M" header with inline prev/next when >1 result
 - [ ] Navigate between multiple results (prev/next arrows)
 - [ ] Blank state with BarChart2 icon when no results
@@ -200,8 +204,8 @@
 - [ ] Multi-column dataset table rendering (headers + rows)
 - [ ] Object cell value formatting: `typeof cellValue === 'object'` → "mean (lower, upper)" display (`DataPointsTable.tsx`)
 - [ ] Publication-style Statistics Summary title: "Table. [variable] by [group]" — auto-generated from chart metadata (`GraphTablePanel.tsx`)
-- [ ] Publication-style Data Points table title via `tableTitle` prop (`DataPointsTable.tsx`)
-- [ ] "Source data" label for auto-generated chart data tables (replaces "Chart Source Data")
+- [x] DataPointsTable (editable chart data mini table) HIDDEN — redundant with AI statistics table; per-bar editing via click popup (`GraphTablePanel.tsx`)
+- [ ] "Source data" label for auto-generated chart data tables — fallback only when `isNoteOnlyTable` (replaces "Chart Source Data")
 - [ ] Table zebra striping toggle
 - [ ] Table filter input
 - [ ] Table sort: Default / A→Z / Z→A / 0→9 / 9→0
@@ -214,6 +218,11 @@
 - [ ] Pie chart
 - [ ] Custom colors from palette/overrides
 - [ ] Axis labels, legend position, grid lines, data labels (LabelList)
+- [x] Single-dataset bar chart legend hidden — redundant when X-axis labels show groups (`GraphTablePanel.tsx → ChartRenderer`, `datasetKeys.length > 1`)
+- [x] Chart title centered: `text-align: center`, `font-size: 14px`, `font-weight: 600` (`GraphTablePanel.tsx → h3 style`)
+- [x] Note caption restyled: 11px, gray-500, italic, 8px/16px padding, word-wrap (`GraphTablePanel.tsx → isNoteOnlyTable`)
+- [x] Publication-quality bar sizing: `barSize` 80px for ≤4 bars, 60px for ≤8, `barCategoryGap="30%"` (`GraphTablePanel.tsx → ChartRenderer`)
+- [x] Extra top margin (24px) when data labels shown to prevent clipping (`GraphTablePanel.tsx → ChartRenderer → barMargin`)
 - [ ] Scatter incompatibility toast warning + bar fallback
 
 ### Chart Rendering — Plotly (PlotlyInteractiveChart)
@@ -253,16 +262,22 @@
 ### Chart Interactions
 - [x] Bar click popover — clicking any bar opens inline editor with: Y value input, color picker with hex, significance buttons (*, **, ***, ns), delete point, trace name and x-axis category display (`PlotlyInteractiveChart.tsx → handlePlotlyClick + editPopover`)
 - [x] Click data point to highlight trace (`PlotlyInteractiveChart.tsx → handlePlotlyClick`)
-- [x] Click-to-edit popover — edit Y value via inline input
-- [x] Click-to-edit popover — per-bar color picker with live update via `applyRestyle()`
-- [x] Click-to-edit popover — significance annotations (*, **, ***, ns) via `applyRelayout()`
-- [x] Click-to-edit popover — delete individual data point from trace
+- [x] Click-to-edit popover — edit Y value via draft state (persisted on Apply/close)
+- [x] Click-to-edit popover — per-bar color picker (persisted via barCustomizations layer)
+- [x] Click-to-edit popover — significance toggle (*, **, ***, ns) stored in barCustomizations, rendered as Plotly annotations
+- [x] Click-to-edit popover — delete individual data point (sets `hidden: true` in barCustomizations)
+- [x] Click-to-edit popover — "Apply Changes" button persists draft edits to store (`PlotlyInteractiveChart.tsx → applyPopoverEdits`)
+- [x] Bar customizations persistence — `barCustomizations` layer in `aiPanelStore.ts → TabCustomizations` merged at render time in `plotData` useMemo, never mutates original AI chart_data (`PlotlyInteractiveChart.tsx ~line 2853`)
+- [x] Bar customizations survive re-renders — stored in Zustand per-result customization key (`GraphTablePanel.tsx → onBarCustomizationsChange`)
+- [x] "Reset chart edits" link — clears barCustomizations to restore original AI output (`GraphTablePanel.tsx`)
+- [x] Popover loads existing customizations on open — pre-fills value/color/significance from stored barCustomizations
+- [x] Enter key in value input applies and closes popover
 - [x] Trace highlight: other series fade to 0.35 opacity; reset on close
 - [x] Right-click context menu on chart (`handleContextMenu`)
-- [x] Escape key closes edit popover and resets highlight
-- [x] Outside click closes edit popover
+- [x] Escape key closes edit popover (applies pending edits) and resets highlight
+- [x] Outside click closes edit popover (applies pending edits)
 - [x] Data labels on hover — hovering a bar shows value and trace name (`PlotlyInteractiveChart.tsx → hovertemplate`)
-- [x] Bottom action buttons: Add Labels, Pairwise Table, Percent Improvement, Add Trendline
+- [x] Bottom action buttons removed — chart edit via chat input only (green "Graph selected" bar). Dead `ActionButton` component cleaned up.
 
 ### Inline Editable Labels (`PlotlyInteractiveChart.tsx → InlineEditableText`)
 - [ ] Double-click chart title to edit inline — HTML overlay above Plotly SVG
@@ -309,6 +324,9 @@
 - [x] Auto-enable `showErrorBars` when AI sets `show_error_bars: true` or returns error data (`GraphTablePanel.tsx` seeding effect)
 - [x] Auto-seed `errorBarType` from AI's `error_type` field (ci/confidence → ci95, se → se, else sd)
 - [x] AI system prompt updated: "Do NOT compute or return error_y arrays" (`biostatisticsAI.ts`)
+- [x] Publication-quality error bar styling: gray-400 (#9ca3af), 1.5px thickness, 4px whisker caps (`resolveErrorBars → mkResult`)
+- [x] Y-axis 20% headroom above tallest error bar tip — auto-computed in `plotData/layout` useMemo (`PlotlyInteractiveChart.tsx`)
+- [x] AI prompt: error bar proportion guidance — CI crossing zero note, max 50% of bar height warning (`biostatisticsAI.ts`)
 - [x] 10% approximation REMOVED — replaced by local computation from raw data
 - [x] Customization toggle forces error bars on/off
 - [x] Fallback: if local computation fails, keep AI-provided error bars if present
@@ -371,12 +389,22 @@
 - [ ] `data-export-btn` exclusion filter during capture
 - [ ] Chart error boundary with fallback UI + "Retry" / "View as table" buttons (`ChartErrorBoundary`)
 - [ ] Auto-chart from table: when no LLM chart_data but ≥2 numeric rows, synthesize bar chart with "Live" badge
-- [ ] Chart fallback warning: amber alert when viz requested but only table returned
+- [x] Chart fallback warning: amber alert with actionable message — suggests removing unrelated files or rephrasing (`GraphTablePanel.tsx`)
 - [ ] Blocked analysis alert: red warning when subject mismatch detected (no fabricated data)
 
 ### Plotly Toolbar
 - [ ] `displayModeBar: false` — entire Plotly toolbar hidden (custom export/controls used instead)
 - [ ] `displaylogo: false` — Plotly logo hidden
+- [x] Significance star annotations (*, **, ***) stripped from chart — p-values in caption only (`plotLayout` useMemo)
+- [x] Chart title centered via HTML overlay, Plotly internal title suppressed (`plotLayout` sets `title.text = ''`)
+- [x] Single title: outer `<h3>` title in GraphTablePanel removed — only chart-internal title renders
+- [x] Single caption: Note row suppressed when `chart_data.reference` exists (avoids duplicate captions)
+- [x] Caption word-wrap enforced: `word-wrap`, `overflow-wrap`, `white-space: normal`
+- [x] Chart fills panel: `autosize: true`, min 300px / max 500px height, default `bargap: 0.3`
+- [x] Redundant axis labels (X: / Y:) below chart removed — axis labels are already on the chart
+- [x] Action buttons below chart removed — chart edit via chat input only
+- [x] Reference/caption renders directly below chart, no floating buttons between
+- [x] AI system prompt: CHART RENDERING RULES — single title, single caption, no stars, legend rules, proportional sizing, caption format
 
 ---
 
@@ -698,6 +726,7 @@
 - [ ] Figure legend instructions: returned in `chart_data.reference` field with error bar type, statistical test, significance definitions, sample sizes
 - [ ] Biostatistics Handbook knowledge base — statistical test decision tree, graph type selection rules, publication-quality graph guidelines (McDonald 2014)
 - [ ] X-axis label abbreviation instructions for long category names
+- [x] Table decision framework: Table A (derived statistics, always) + Table B (source data verification, when traceability demands it) — AI reasons about when to produce one vs two tables (`biostatisticsAI.ts → Table Generation`)
 
 ### Stage 2: Analysis-Specific Data Validation (`analysisValidator.ts`)
 - [ ] `validateDataForAnalysis()` — checks data suitability before analysis runs
@@ -767,6 +796,8 @@
 - [ ] `removeTab` — cleanup results + customizations
 - [ ] `selectedGraphId` / `setSelectedGraph` / `clearSelectedGraph` — graph edit selection
 - [ ] `queueGraphEdit` / `consumePendingEdit` — deferred graph edit actions
+- [ ] `BarPointCustomization` / `BarCustomizations` types — per-bar color, value, significance, hidden overrides
+- [ ] `barCustomizations` field in `TabCustomizations` — persists click-to-edit popup changes per result
 
 ### tabStore.ts
 - [ ] Tab CRUD: `addTab`, `closeTab`, `setActiveTab`, `renameTab`
