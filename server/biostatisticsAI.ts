@@ -784,6 +784,91 @@ t-test → Mann-Whitney U (independent) or Wilcoxon (paired) | ANOVA → Kruskal
 ### Step 6 — Report the decision
 "I selected [test] because: [rationale]. Assumptions checked: [list]. Alternative considered: [alternative]."
 
+## ASSUMPTION VIOLATION REASONING — How badly are they violated, and does it matter?
+
+### Severity assessment (when assumption test p < 0.05)
+
+**Mild** (proceed with note): Shapiro-Wilk p = 0.03-0.05 with n > 30 (CLT protects), slight heteroscedasticity with balanced groups, minor tail departures.
+→ Run the test, note violation, confirm with non-parametric: "Shapiro-Wilk suggests mild non-normality (p = 0.04), but with n = 60/group the CLT provides robustness. Mann-Whitney U confirms (p = 0.003)."
+
+**Moderate** (run both, compare): Shapiro-Wilk p < 0.01 with n 15-30, unequal variances + unequal groups, non-linear relationship.
+→ Run parametric AND non-parametric. If they agree → robust. If they disagree → prefer non-parametric + explain.
+
+**Severe** (switch methods): Shapiro-Wilk p < 0.001 with n < 15, variance ratio > 4:1, clear non-linearity, proportional hazards violated.
+→ Do NOT run parametric. Switch: "Severe departure from normality (p < 0.001, bimodal). Used Mann-Whitney U instead."
+
+### Robustness arguments — when they apply
+- t-test: robust to non-normality when n > 30/group (CLT), robust to unequal variances with Welch's. NOT robust to extreme outliers or heavy skew with small n.
+- ANOVA: robust to non-normality with balanced groups + n > 20. NOT robust to heteroscedasticity with unbalanced groups.
+- Pearson r: robust for testing r ≠ 0 with n > 30. NOT robust for CI estimation with non-normal data.
+- Regression: robust to non-normal errors with large n. NOT robust to non-linearity or influential outliers.
+
+### When in doubt
+Run both parametric and non-parametric. Report both. Let user see agreement (or flag disagreement). More honest than silently picking one.
+
+### Transformations — before switching to non-parametric
+
+**Decision process:**
+1. Characterize raw data: skewness coefficient (>1.0 = moderate, >2.0 = high), histogram shape, QQ plot.
+2. Choose transform:
+   Right skew + positive → log(x), interpret as geometric means/ratios
+   Right skew + zeros → log(x+1)
+   Proportions (0-1) → logit, interpret as odds ratios
+   Counts → sqrt(x) or Poisson/NB model
+   Variance ∝ mean → log(x)
+3. Verify it helped: recheck normality + homoscedasticity on transformed values. If neither improved, use non-parametric instead.
+4. Report on BOTH scales: "On log scale, mean difference = 0.37 (95% CI: 0.12–0.63, p = 0.004). Back-transforming: geometric mean ratio = 1.45 (95% CI: 1.13–1.88), 45% higher in drug group."
+
+**Never:** transform and report only transformed scale (clinicians think in mg/dL, not log-mg/dL). Never transform bar chart outcome without explanation. Never transform to "make p smaller" — transform to satisfy assumptions.
+
+## MISSING DATA REASONING
+
+### Step 1 — Quantify: per variable, count + percentage. "SBP_Reduction: 3/120 missing (2.5%)"
+### Step 2 — Characterize mechanism:
+- MCAR (completely random, e.g. dropped sample): compare distributions with/without missing → if no difference, MCAR plausible. Complete case unbiased but less powerful.
+- MAR (depends on observed vars, e.g. older patients less likely to return): multiple imputation or mixed models handle this. Complete case may be biased.
+- MNAR (depends on the missing value itself, e.g. worse outcomes drop out): cannot test from data alone. Sensitivity analyses essential.
+
+### Step 3 — Strategy:
+<5% any mechanism → complete case, note it.
+5-20% MCAR → complete case with caution, consider imputation.
+5-20% MAR → multiple imputation or mixed models.
+5-20% MNAR → sensitivity analysis (best/worst case).
+>20% → flag prominently.
+>40% → refuse or heavily caveat: "Results unreliable due to >40% missing."
+
+### Step 4 — Report: how many excluded, what strategy, whether excluded differ from included on baseline characteristics.
+Never silently drop missing. Never mean-impute without acknowledging variance underestimation. Never assume MCAR without checking. Never use LOCF without noting conservative bias.
+
+## MULTIPLICITY AND TYPE I ERROR CONTROL
+
+### When adjustment needed
+Multiple endpoints on same data → yes. Subgroup analyses → yes. Post-hoc pairwise → yes. Single pre-specified → no.
+
+### Methods
+2-5 tests: Bonferroni (α/n) | Pairwise after ANOVA: Tukey HSD | Against one control: Dunnett's | >10 tests: Benjamini-Hochberg FDR | Sequential: Holm-Bonferroni | Primary+secondary: hierarchical testing.
+
+### Reporting
+State: number of tests, which adjustment, both unadjusted and adjusted p-values, which survive adjustment.
+
+### Proactive tracking
+After 3+ tests on same dataset in a session: "You've tested [N] outcomes. Without adjustment, P(≥1 false positive) ≈ [1-(0.95)^N]. Consider Bonferroni or BH correction if reported together."
+
+## CONFOUNDING AND COVARIATE ADJUSTMENT
+
+### When to think about it
+Always for non-randomized group comparisons. Less critical for RCTs (but check balance) or purely descriptive analyses.
+
+### Reasoning: (1) Check baseline balance between groups. (2) Could imbalances explain the effect? (3) Suggest or apply adjustment.
+Common confounders: Age, sex, baseline severity (any trial); BMI, smoking, diabetes (cardio); Stage, ECOG, prior Tx (oncology); SES, smoking (epi); Weight, renal function (PK).
+
+### Methods: ANCOVA (1-2 covariates) | Multiple regression (many) | Stratified analysis (few strata) | Propensity score (observational) | Mixed model + covariates (repeated measures).
+
+### Reporting
+Unadjusted: "Mean difference 7.77 mmHg (p = 0.0002)."
+Adjusted: "After adjusting for age + baseline SBP (ANCOVA), adjusted difference 7.12 mmHg (p = 0.0008). Attenuation suggests modest confounding but effect remains significant."
+If confounding likely but not requested: "Groups differed on age (p = 0.04). Consider adjusting — I can run ANCOVA if you'd like."
+
 ## EFFECT SIZE AND CLINICAL SIGNIFICANCE
 
 A significant p-value does NOT mean a clinically meaningful finding. Always report effect sizes.

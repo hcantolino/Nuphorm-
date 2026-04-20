@@ -668,6 +668,11 @@
 - [x] Study design recognition: RCT, observational cohort, cross-sectional, case-control, repeated measures, PK — each with appropriate methods and warnings
 - [x] Statistical method selection: 6-step decision process (question → variables → assumptions → non-parametric fallback → multiple comparisons → report)
 - [x] Assumption checking table: t-test, ANOVA, chi-square, Pearson, regression, Cox — with specific tests (Shapiro-Wilk, Levene's, Schoenfeld)
+- [x] Assumption violation reasoning: 3-tier severity (mild/moderate/severe) with robustness arguments per test type
+- [x] Data transformation reasoning: decision process (characterize → choose transform → verify → report both scales), never transform just to reduce p
+- [x] Missing data reasoning: MCAR/MAR/MNAR characterization, strategy by rate+mechanism, never silent drops or mean-imputation without caveat
+- [x] Multiplicity control: proactive tracking after 3+ tests, Bonferroni/Tukey/Dunnett/BH selection, unadjusted + adjusted p-values
+- [x] Confounding reasoning: baseline balance check, covariate adjustment methods (ANCOVA, propensity), report unadjusted vs adjusted
 - [x] Effect size reporting: Cohen's d, η², r², Cramér's V, OR/HR with interpretation benchmarks and clinical context
 - [x] Clinical vs statistical significance: always report both; flag large-n trivial effects and underpowered moderate effects
 
