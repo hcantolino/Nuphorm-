@@ -1033,7 +1033,50 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
     );
   }
 
-  // ── Scatter ──────────────────────────────────────────────────────────────
+  // ── Scatter — normalize data formats before rendering ─────────────────
+  // The AI sends scatter data in multiple formats:
+  //   A) chartData.points = [{x, y}]                         (ideal)
+  //   B) chartData.datasets[0].data = [{x, y}]               (server scatter/correlation)
+  //   C) chartData.labels + chartData.datasets[0].data = [n]  (LLM flat arrays)
+  // Normalize all into chartData.points so the scatter branch works.
+  if (type === "scatter" && !chartData.points) {
+    const ds0 = chartData.datasets?.[0];
+    if (ds0?.data?.length > 0 && typeof ds0.data[0] === 'object' && 'x' in ds0.data[0]) {
+      // Format B: datasets[0].data contains {x, y} objects
+      chartData.points = ds0.data.map((p: any) => ({ x: p.x, y: p.y, label: p.label }));
+    } else if (chartData.labels?.length && ds0?.data?.length) {
+      // Format C: labels + flat numeric datasets
+      const labelsAreNumeric = chartData.labels.every((l: any) => !isNaN(parseFloat(String(l))));
+      if (labelsAreNumeric) {
+        chartData.points = chartData.labels.map((label: any, i: number) => ({
+          x: parseFloat(String(label)),
+          y: ds0.data[i],
+        }));
+      } else if (chartData.datasets.length >= 2) {
+        // Two datasets might represent X and Y columns
+        const ds1 = chartData.datasets[1];
+        if (ds1?.data?.length === ds0.data.length) {
+          chartData.points = ds0.data.map((xVal: number, i: number) => ({
+            x: xVal,
+            y: ds1.data[i],
+            label: chartData.labels?.[i],
+          }));
+        }
+      }
+      // If labels are categorical strings with a single dataset, create indexed scatter
+      if (!chartData.points) {
+        chartData.points = chartData.labels.map((label: any, i: number) => ({
+          x: i,
+          y: ds0.data[i],
+          label: String(label),
+        }));
+      }
+    }
+    if (chartData.points) {
+      console.log('[Scatter] Normalized to points:', chartData.points.length, 'points');
+    }
+  }
+
   if (type === "scatter" && chartData.points) {
     const scatterData = chartData.points.map((p: any) => ({ x: p.x, y: p.y }));
     const r = customizations.markerSize;
@@ -1691,8 +1734,8 @@ export const GraphTablePanel: React.FC = () => {
 
     const cd = activeResult.analysisResults?.chart_data;
     const seedTitle = activeResult.graphTitle || cd?.title || cd?.graphTitle || '';
-    const seedX = cd?.x_axis || cd?.xLabel || cd?.x_label || '';
-    const seedY = cd?.y_axis || cd?.yLabel || cd?.y_label || '';
+    const seedX = cd?.x_axis || cd?.xLabel || cd?.xAxisLabel || cd?.x_label || '';
+    const seedY = cd?.y_axis || cd?.yLabel || cd?.yAxisLabel || cd?.y_label || '';
 
     if (seedTitle) setCustomization(customizationKey, "chartTitle", seedTitle);
     if (seedX) setCustomization(customizationKey, "xLabel", seedX);

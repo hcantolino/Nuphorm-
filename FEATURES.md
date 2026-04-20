@@ -188,6 +188,14 @@
 - [ ] Table edit requests update existing result in-place
 - [ ] Table edit success toast
 
+### Follow-up Query Merging (`AIBiostatisticsChatTabIntegrated.tsx`)
+- [x] Two-layer detection: AI null-signals (chart_data/results_table = null) + client keyword regex
+- [x] Table-only edits preserve existing chart_data via `updatePanelResult` merge (`AIBiostatisticsChatTabIntegrated.tsx`)
+- [x] Chart-only edits preserve existing results_table via `updatePanelResult` merge
+- [x] Mixed or new-analysis queries create fresh result via `setPanelResult`
+- [x] AI follow-up reasoning framework: 4-step process (identify artifact → set null for preserved → announce) (`biostatisticsAI.ts → buildSystemPrompt`)
+- [x] Signal keywords in prompt: table-edit, chart-edit, re-analysis categories
+
 ---
 
 ## Results Panel (GraphTablePanel)
@@ -214,7 +222,7 @@
 - [ ] Bar chart (`GraphTablePanel.tsx → ChartRenderer`)
 - [ ] Line chart
 - [ ] Area chart
-- [ ] Scatter chart (requires `{points:[{x,y}]}` format)
+- [x] Scatter chart — auto-normalizes all AI formats (points, datasets[{x,y}], labels+datasets) to `{points:[{x,y}]}` (`GraphTablePanel.tsx → ChartRenderer`)
 - [ ] Pie chart
 - [ ] Custom colors from palette/overrides
 - [ ] Axis labels, legend position, grid lines, data labels (LabelList)
@@ -371,7 +379,7 @@
 - [x] Figure numbering: "Figure 1." auto-incremented in conversation (`biostatisticsAI.ts → GRAPHTITLE RULES`)
 - [x] Figure title in sentence case, no chart type in title
 - [x] Figure legend auto-generated below chart with error bar type, sample sizes, and statistical notes (`chart_data.reference`)
-- [x] Proper axis labels with units auto-populated from AI response
+- [x] Proper axis labels with units auto-populated from AI response (x_axis, xLabel, xAxisLabel, x_label all supported in seeding)
 
 ### Chart Export
 - [x] Export PNG via Plotly.toImage for Plotly charts (`GraphTablePanel.tsx → handleImageExport`)
@@ -644,6 +652,36 @@
 ---
 
 ## AI Analysis Backend (biostatisticsAI.ts)
+
+### Visualization Intelligence Framework (`biostatisticsAI.ts → buildSystemPrompt`)
+- [x] 3-layer reasoning: PURPOSE (why this chart?) → STRUCTURE (how to encode?) → QUALITY (pre-output checklist)
+- [x] Purpose → chart type mapping (groups→bar, time→line, correlation→scatter, distribution→box, survival→KM)
+- [x] Legend rules: hide for single-series when X-axis identifies groups; label = group name, never metric name
+- [x] Caption in "reference" field only — never as annotation inside chart area
+- [x] Scatter MUST use points format: `{ type: "scatter", points: [{x, y}] }` — one point per observation, never aggregated
+- [x] Quality checklist: data visibility, Y-axis headroom, label space, error bar proportions, no fabricated values
+- [x] Explicit prohibitions: no pie charts, no significance stars on chart, no truncated bar Y-axes, no zero-point charts
+
+### Pre-Analysis Reasoning Pipeline (`biostatisticsAI.ts → buildSystemPrompt`)
+- [x] Data quality assessment: completeness (>20% missing → warn), type validation, range plausibility, sample size adequacy, outlier screening, duplicate detection
+- [x] Multi-file reasoning: inventory → relevance → conflict resolution → single-file focus; merge only when explicitly requested with shared key
+- [x] Study design recognition: RCT, observational cohort, cross-sectional, case-control, repeated measures, PK — each with appropriate methods and warnings
+- [x] Statistical method selection: 6-step decision process (question → variables → assumptions → non-parametric fallback → multiple comparisons → report)
+- [x] Assumption checking table: t-test, ANOVA, chi-square, Pearson, regression, Cox — with specific tests (Shapiro-Wilk, Levene's, Schoenfeld)
+- [x] Effect size reporting: Cohen's d, η², r², Cramér's V, OR/HR with interpretation benchmarks and clinical context
+- [x] Clinical vs statistical significance: always report both; flag large-n trivial effects and underpowered moderate effects
+
+### Output Quality Frameworks (`biostatisticsAI.ts → buildSystemPrompt`)
+- [x] Result interpretation standards: 6-part structure (what was tested → key finding → statistical evidence → assumptions → clinical interpretation → limitations)
+- [x] Table generation: traceability principle — Table A (derived statistics, always) + Table B (source data verification, when needed)
+- [x] Uncertainty communication: 3 confidence levels (high/moderate/low) with refuse vs proceed-with-caveats decision rules
+- [x] Reproducibility documentation: data reference, filtering, variables, method, software in every result
+- [x] Adaptive response complexity: simple/intermediate/advanced signals adjust detail level automatically
+- [x] Regulatory awareness: detection of FDA/EMA/ICH signals → precision, multiplicity, missing-data handling, regulatory language
+- [x] Subgroup and sensitivity analysis: interaction testing, forest plots, robustness checks with conclusion comparison
+- [x] Error recovery: 6-level hierarchy with actionable alternatives, never raw errors, always a next step
+- [x] Domain-specific knowledge: clinical endpoints by therapeutic area, PK parameters, BE criteria, common pitfalls (Simpson's, regression to mean, immortal time bias)
+- [x] Follow-up query reasoning: 4-step process (identify artifact → set null for preserved → merge → announce) with keyword signals
 
 ### Supported Analysis Types
 - [ ] Descriptive statistics (mean, SD, SEM, CI, quartiles)

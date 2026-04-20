@@ -2752,14 +2752,56 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
           });
         }
         // Keep table selected so user can make multiple edits
-      } else if (routeToPanel) {
-        setPanelResult(activeTabIdMemo, {
-          query: userMessage,
-          analysis: content,
-          analysisResults: responseObj.analysisResults ?? undefined,
-          graphTitle: responseObj.graphTitle ?? undefined,
-          tableData:  responseObj.tableData  ?? undefined,
-        });
+      } else if (routeToPanel && activeTabIdMemo) {
+        // ── Follow-up merge: detect table-only or chart-only edits ──────
+        // Two detection layers:
+        //   1. AI signals: chart_data or results_table explicitly null → preserve the other
+        //   2. Client keywords: detect table-edit vs chart-edit from the user's query
+        // If either layer detects a partial edit, merge instead of replacing.
+        const store = useAIPanelStore.getState();
+        const existingResults = store.resultsByTab[activeTabIdMemo] ?? [];
+        const activeResId = store.activeResultIdByTab[activeTabIdMemo];
+        const existingResult = activeResId
+          ? existingResults.find((r) => r.id === activeResId)
+          : existingResults[existingResults.length - 1];
+
+        const newAR = responseObj.analysisResults;
+        // AI explicitly set chart_data or results_table to null → it wants the client to preserve
+        const aiPreserveChart = newAR && newAR.chart_data === null && existingResult?.analysisResults?.chart_data;
+        const aiPreserveTable = newAR && newAR.results_table === null && existingResult?.analysisResults?.results_table;
+
+        // Client-side keyword detection as fallback
+        const qLower = userMessage.toLowerCase();
+        const isTableEditQuery = /\b(column|row|equation|formula|table|statistic|metric|derived|add.*to.*table|show.*in.*table)\b/i.test(qLower);
+        const isChartEditQuery = /\b(chart|graph|plot|scatter|bar|line|axis|legend|color|title|trendline|error.bar)\b/i.test(qLower);
+
+        const shouldPreserveChart = aiPreserveChart || (existingResult && isTableEditQuery && !isChartEditQuery);
+        const shouldPreserveTable = aiPreserveTable || (existingResult && isChartEditQuery && !isTableEditQuery);
+
+        if (existingResult && (shouldPreserveChart || shouldPreserveTable)) {
+          const mergedAnalysisResults = { ...(newAR ?? {}) };
+          if (shouldPreserveChart) {
+            mergedAnalysisResults.chart_data = existingResult.analysisResults?.chart_data;
+          }
+          if (shouldPreserveTable) {
+            mergedAnalysisResults.results_table = existingResult.analysisResults?.results_table;
+          }
+          updatePanelResult(activeTabIdMemo, existingResult.id, {
+            analysis: content,
+            analysisResults: mergedAnalysisResults,
+            graphTitle: responseObj.graphTitle ?? existingResult.graphTitle,
+          });
+          console.log('[FollowUp] Partial edit — preserved:', shouldPreserveChart ? 'chart_data' : '', shouldPreserveTable ? 'results_table' : '');
+        } else {
+          // New analysis or mixed edit — create fresh result
+          setPanelResult(activeTabIdMemo, {
+            query: userMessage,
+            analysis: content,
+            analysisResults: responseObj.analysisResults ?? undefined,
+            graphTitle: responseObj.graphTitle ?? undefined,
+            tableData:  responseObj.tableData  ?? undefined,
+          });
+        }
       }
 
       // Auto-rename tab using AI's figure title (never the raw user query).
