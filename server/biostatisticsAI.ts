@@ -620,13 +620,31 @@ function synthesizeVizChartData(
  * Build system prompt for biostatistics analysis
  */
 function buildSystemPrompt(): string {
-  return `## CORE IDENTITY & RULES
+  return `## THE CARDINAL RULE — Read this FIRST, before all other instructions
+
+You are a biostatistician who helps researchers. You have two absolute boundaries:
+
+BOUNDARY 1 — NEVER FABRICATE: You must NEVER invent data values, column names, statistical results, p-values, effect sizes, sample sizes, or any numeric output not directly from the uploaded data or the compute layer. If the data doesn't contain a variable, you cannot produce results for it.
+
+When asked for analysis the data cannot support: "Your data contains [what it has] but does not contain [what's missing]. I cannot produce [requested]. However, I CAN provide: [what IS possible]."
+
+BOUNDARY 2 — ALWAYS BE HELPFUL: You must NEVER respond with just "Unable to proceed" or "Cannot analyze" or "Column classifications are empty." Even when you cannot see the data, you CAN always:
+1. Acknowledge what happened: "I received your file but couldn't read the column structure."
+2. Infer from context: use the filename, the user's question, and your biostatistics knowledge to discuss what analysis WOULD be appropriate.
+3. Offer domain guidance: "For age group stratification in clinical trials, common approaches include: FDA standard (18-44, 45-64, 65+), clinical thirds, or median split."
+4. Ask targeted questions: "Which outcome variable would you like to stratify — blood pressure, HbA1c, or adverse events?"
+5. Provide a path forward: "Try re-uploading the file, paste the first 5 rows, or save as CSV."
+6. Give actionable suggestion chips.
+
+THE BALANCE: Data missing + analysis requested = DO NOT produce fake numbers, DO offer specific guidance and ask good questions. Data available + unsupported analysis = produce results for parts the data CAN support, explain what's missing for the rest.
+
+## CORE IDENTITY & RULES
 You are an expert pharmaceutical biostatistician with 15+ years of experience in clinical laboratory data analysis, longitudinal biomarker studies, and regulatory-grade reporting. You are highly proficient in R (tidyverse, ggplot2, lubridate, gt, flextable) and Python (pandas, scipy, statsmodels) for reproducible analysis.
 
 CRITICAL RULES:
 - Use ONLY the exact data the user provides. NEVER hallucinate, fabricate, or use placeholder values.
 - NEVER invent subject IDs, measurements, or statistical results not derivable from the provided data.
-- If data is insufficient, say so explicitly — do not fill gaps with made-up numbers.
+- If data is insufficient, say so explicitly — do not fill gaps with made-up numbers. But ALWAYS offer what you CAN do with the available data.
 - For scanned PDFs: if text extraction is unreliable, instruct the user to paste the pre-extracted data as a tidy table or CSV.
 - Apply the Finbox color theme to all visualizations: deep blues #0A2540 / #194CFF, teal accents #00D4FF / #14B8A6, neutral grays.
 - Produce clean, well-commented, production-ready code and high-resolution (300 dpi) output.
@@ -5096,6 +5114,37 @@ export async function analyzeBiostatistics(
         }
       }
 
+      // ── Column-existence validation — catch fabricated analyses ──────────
+      // If the AI references columns/analyses that don't exist in the data,
+      // strip those fabricated results and warn.
+      if (fullData && fullData.length > 0 && dataColumns.length > 0 && parsed.analysisResults?.results_table) {
+        const responseText = JSON.stringify(parsed.analysisResults);
+        const pkTerms = ['AUC', 'Cmax', 'Tmax', 'half_life', 't½', 'clearance', 'CL/F', 'Vd', 'bioavailability', 'concentration'];
+        const mentionsPk = pkTerms.some(t => responseText.includes(t));
+        const dataHasPk = dataColumns.some(c =>
+          /auc|cmax|tmax|half.life|clearance|concentration|dose.*time|time.*post.*dose/i.test(c)
+        );
+        if (mentionsPk && !dataHasPk) {
+          console.error(`[analyzeBiostatistics] ✗ FABRICATION GUARD: AI references PK parameters but data has no PK columns. Columns: ${dataColumns.slice(0, 10).join(', ')}`);
+          // Strip fabricated PK results from the table but keep any real results
+          const pkRowPattern = /auc|cmax|tmax|half.life|clearance|bioavail|dose|concentration/i;
+          const cleanedTable = parsed.analysisResults.results_table.filter(
+            (row: any) => !pkRowPattern.test(String(row.metric ?? '')) && !pkRowPattern.test(String(row.value ?? ''))
+          );
+          if (cleanedTable.length < parsed.analysisResults.results_table.length) {
+            const removed = parsed.analysisResults.results_table.length - cleanedTable.length;
+            console.log(`[analyzeBiostatistics] Removed ${removed} fabricated PK rows from results_table`);
+            cleanedTable.push({ metric: "Note", value: "PK parameters (AUC, Cmax, etc.) were requested but your data does not contain pharmacokinetic columns. Only analyses supported by your actual data are shown." });
+            parsed.analysisResults.results_table = cleanedTable;
+          }
+          // Also clear any PK chart data
+          if (parsed.analysisResults.chart_data?.type === 'line' &&
+              /concentration|pk|pharmacokinetic/i.test(JSON.stringify(parsed.analysisResults.chart_data))) {
+            parsed.analysisResults.chart_data = null;
+          }
+        }
+      }
+
       // ── Subject-ID validation ─────────────────────────────────────────────
       // Compare the subjects_found list returned by the LLM against the actual
       // unique subject IDs extracted from the uploaded CSV.  If they diverge the
@@ -5805,6 +5854,39 @@ export async function analyzeBiostatistics(
           }
         } catch (citeErr) {
           console.warn("[analyzeBiostatistics] Citation check failed (non-blocking):", citeErr);
+        }
+      }
+
+      // ── Unhelpful-response guard: catch bare refusals ────────────────────
+      // If the AI returned a flat refusal without actionable guidance, enhance it.
+      const chatMsg = parsed.chatResponse?.message ?? parsed.analysis ?? '';
+      const isBarRefusal = /^(Unable to proceed|Cannot proceed|Cannot analyze|I cannot|I'm unable)/i.test(chatMsg.trim()) &&
+        chatMsg.length < 200 && // short response = likely just a refusal
+        !(parsed.analysisResults?.results_table?.length > 1); // no real results attached
+
+      if (isBarRefusal) {
+        console.warn('[analyzeBiostatistics] ⚠ Bare refusal detected — enhancing with guidance');
+        const q = userQuery.toLowerCase();
+        let guidance = 'Based on your question, I can help plan the appropriate analysis once the data is available.';
+        if (q.includes('stratif') || q.includes('age') || q.includes('subgroup')) {
+          guidance = 'For age group stratification in clinical trials, common approaches include: FDA standard (18-44, 45-64, ≥65), clinical thirds, or median split. Which approach would you prefer?';
+        } else if (q.includes('compar') || q.includes('vs') || q.includes('between')) {
+          guidance = 'For group comparisons, I would use a Welch\'s t-test for continuous outcomes or chi-square for categorical. Once data is available, I\'ll select the best test.';
+        } else if (q.includes('descri') || q.includes('summary') || q.includes('overview')) {
+          guidance = 'For a descriptive summary, I\'ll compute mean, SD, IQR, min/max for numeric variables and frequency tables for categorical variables, stratified by treatment group.';
+        } else if (q.includes('pk') || q.includes('pharmacokinetic') || q.includes('auc')) {
+          guidance = 'For PK analysis, I need concentration-time data. If your data is a clinical trial dataset, I can analyze blood pressure, lab values, adverse events, and demographics instead.';
+        }
+        const enhanced = `${chatMsg}\n\n${guidance}\n\nTo get started, try: (1) re-uploading your file, (2) pasting the first 10 rows into the chat, or (3) saving as CSV from Excel.`;
+        if (parsed.chatResponse) parsed.chatResponse.message = enhanced;
+        parsed.analysis = enhanced;
+        if (!parsed.chatResponse?.suggestions?.length) {
+          if (!parsed.chatResponse) parsed.chatResponse = { message: enhanced, suggestions: [] };
+          parsed.chatResponse.suggestions = [
+            'Re-upload my file',
+            'What analyses can I run with clinical trial data?',
+            'Paste my data into the chat',
+          ];
         }
       }
 
