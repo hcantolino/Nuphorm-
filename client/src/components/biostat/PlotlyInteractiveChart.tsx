@@ -275,7 +275,8 @@ const LAYOUT_BASE: Partial<Plotly.Layout> = {
   paper_bgcolor: '#ffffff',
   plot_bgcolor: '#ffffff',
   font: { family: 'Arial, sans-serif', size: 12, color: '#1a2332' },
-  margin: { l: 80, r: 30, t: 80, b: 140 },
+  // Framework 10 defaults — generous margins to prevent label truncation
+  margin: { l: 80, r: 40, t: 60, b: 70 },
   modebar: { orientation: 'h', bgcolor: 'transparent', color: '#8fa3b8', activecolor: '#2b7de9' } as any,
   showlegend: true,
   legend: {
@@ -306,6 +307,7 @@ const GRID_STYLE: Record<string, any> = {
   gridwidth: 0.5,
   zeroline: false,
   showline: true,
+  automargin: true, // Framework 10: prevent label/tick truncation
   title: { font: { size: 13, color: '#1a2332' }, standoff: 15 },
 };
 
@@ -2381,6 +2383,31 @@ export default function PlotlyInteractiveChart({
   const { plotData, layout } = useMemo(() => {
     const lo: any = { ...baseLayout };
     const pd = basePlotData.map((t: any) => ({ ...t }));
+
+    // ── Framework 10: Auto-detect integer-ish data and set clean tick format ──
+    // Scans all Y values across traces. If ≥90% are near-integers, use '.0f'
+    // to prevent ugly decimals like 1.70, 3.00. Same for X if numeric.
+    const detectIntegerTicks = (values: number[]): string | undefined => {
+      if (values.length === 0) return undefined;
+      const nearInt = values.filter(v => Math.abs(v - Math.round(v)) < 0.05);
+      return nearInt.length / values.length >= 0.9 ? '.0f' : undefined;
+    };
+    const allY: number[] = [];
+    const allX: number[] = [];
+    for (const trace of pd) {
+      if (Array.isArray(trace.y)) for (const v of trace.y) { if (typeof v === 'number' && isFinite(v)) allY.push(v); }
+      if (Array.isArray(trace.x)) for (const v of trace.x) { if (typeof v === 'number' && isFinite(v)) allX.push(v); }
+    }
+    const yTickFmt = detectIntegerTicks(allY);
+    const xTickFmt = detectIntegerTicks(allX);
+    if (yTickFmt && !lo.yaxis?.tickformat) {
+      lo.yaxis = { ...lo.yaxis, tickformat: yTickFmt };
+    }
+    if (xTickFmt && !lo.xaxis?.tickformat && !lo.xaxis?.type) {
+      // Only apply to numeric axes — skip categorical (type: 'category')
+      lo.xaxis = { ...lo.xaxis, tickformat: xTickFmt };
+    }
+
     if (!custOverrides) return { plotData: pd, layout: lo };
 
     // Axis labels

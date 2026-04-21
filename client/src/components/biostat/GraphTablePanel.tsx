@@ -105,6 +105,53 @@ function resolveKMColors(customizations: TabCustomizations, seriesCount: number)
   );
 }
 
+// ─── Plotly routing helper ───────────────────────────────────────────────────
+
+/** Determine whether a chart should use PlotlyInteractiveChart instead of Recharts */
+function shouldUsePlotly(chartData: any): boolean {
+  if (!chartData) return false;
+  // Explicit library preference from AI
+  if (chartData.libraryPreference === 'plotly') return true;
+  // Scatter plots always use Plotly for superior layout
+  if (chartData.type === 'scatter' || chartData.chartType === 'scatter') return true;
+  // Analytical/pharma chart types
+  if (chartData.isAnalytical === true) return true;
+  // Existing pharma_type detection still works via isPlotlyChartData()
+  return false;
+}
+
+/** Merge a follow-up AI result with the previous result, preserving untouched sections */
+function mergeFollowUpResult(existing: any, incoming: any): any {
+  if (!existing) return incoming;
+  return {
+    ...existing,
+    // Only replace chart_data if incoming actually has chart data
+    ...(incoming.chart_data && Object.keys(incoming.chart_data).length > 0
+      ? { chart_data: incoming.chart_data }
+      : {}),
+    // Only replace results_table if incoming has rows
+    ...(incoming.results_table?.length > 0
+      ? { results_table: incoming.results_table }
+      : {}),
+    // Always update interpretation/analysis if provided
+    ...(incoming.interpretation ? { interpretation: incoming.interpretation } : {}),
+    ...(incoming.analysis ? { analysis: incoming.analysis } : {}),
+    // Preserve chat_response
+    chat_response: incoming.chat_response || existing.chat_response,
+  };
+}
+
+/** Guard: suppress misleading charts where labels are summary stat names */
+function sanitizeChartLabels(chartData: any): any {
+  if (!chartData?.labels) return chartData;
+  const badLabels = /^(Data Points|X Min|Y Min|X Max|Y Max|Mean|Median|SD|^N$|^Count$)/i;
+  if (chartData.labels.some((l: string) => badLabels.test(String(l)))) {
+    console.warn('[ChartGuard] Suppressing misleading chart with summary-stat labels:', chartData.labels);
+    return null;
+  }
+  return chartData;
+}
+
 // ─── CSV download helpers ────────────────────────────────────────────────────
 
 /** Convert a 2-column metric/value table to CSV and trigger browser download */
@@ -924,6 +971,11 @@ const VALID_CHART_TYPES = new Set<ControlChartType>(["bar", "line", "area", "sca
 const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors, preferredType }) => {
   if (!chartData || typeof chartData !== 'object') return null;
 
+  // ── Scatter chart guardrail — force sensible defaults if AI forgot ──
+  if (chartData.type === 'scatter' || preferredType === 'scatter') {
+    if (!chartData.margin) chartData.margin = { top: 30, right: 30, bottom: 60, left: 80 };
+  }
+
   let data: any[] = [];
   let datasetKeys: string[] = [];
   // NEW: prefer LLM-requested type; fall back to user customization
@@ -966,6 +1018,8 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
   const bottomMargin = customizations.xLabel ? 36 + (xRotation > 0 ? xRotation * 0.5 : 0) : 20 + (xRotation > 0 ? xRotation * 0.5 : 0);
   const leftMargin   = customizations.yLabel ? 20 : 0;
   const sharedMargin = { top: 8, right: 16, bottom: bottomMargin, left: leftMargin };
+  // Scatter charts need more room: numeric Y-ticks are wider, and axis labels need offset space
+  const scatterMargin = { top: 20, right: 24, bottom: Math.max(bottomMargin, 50), left: Math.max(leftMargin, 60) };
 
   const xAxisLabel = customizations.xLabel
     ? { value: customizations.xLabel, position: "insideBottom" as const, offset: -12, fontSize: 11, fill: isDark ? "#94a3b8" : "#64748b" }
@@ -1130,21 +1184,25 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
 
       return (
         <ResponsiveContainer width="100%" height={320} minHeight={280}>
-          <ComposedChart margin={sharedMargin} style={{ backgroundColor: bgColor }}>
+          <ComposedChart margin={scatterMargin} style={{ backgroundColor: bgColor }}>
             <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
             <XAxis
               dataKey="tx"
               type="number"
-              tick={xTickProps}
+              tick={{ fontSize: 11, fill: textColor }}
+              tickMargin={8}
               label={xAxisLabel}
               domain={xDomain}
+              padding={{ left: 10, right: 10 }}
               name="x"
               allowDataOverflow
             />
             <YAxis
               type="number"
+              width={65}
               tick={{ fontSize: 11, fill: textColor }}
-              label={yAxisLabel}
+              tickFormatter={(v: number) => Number.isInteger(v) || Math.abs(v % 1) < 0.01 ? v.toFixed(0) : v.toFixed(2)}
+              label={yAxisLabel ? { ...yAxisLabel, offset: -15 } : undefined}
               domain={yDomain}
               scale={yScale}
               reversed={customizations.yAxisReverse}
@@ -1219,21 +1277,25 @@ const ChartRenderer: React.FC<ChartProps> = ({ chartData, customizations, colors
     // Regular scatter (no trendline)
     return (
       <ResponsiveContainer width="100%" height={320} minHeight={280}>
-        <ScatterChart margin={sharedMargin} style={{ backgroundColor: bgColor }}>
+        <ScatterChart margin={scatterMargin} style={{ backgroundColor: bgColor }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
           <XAxis
             dataKey="x"
             type="number"
-            tick={xTickProps}
+            tick={{ fontSize: 11, fill: textColor }}
+            tickMargin={8}
             label={xAxisLabel}
             domain={xDomain}
+            padding={{ left: 10, right: 10 }}
             allowDataOverflow
           />
           <YAxis
             dataKey="y"
             type="number"
+            width={65}
             tick={{ fontSize: 11, fill: textColor }}
-            label={yAxisLabel}
+            tickFormatter={(v: number) => Number.isInteger(v) || Math.abs(v % 1) < 0.01 ? v.toFixed(0) : v.toFixed(2)}
+            label={yAxisLabel ? { ...yAxisLabel, offset: -15 } : undefined}
             domain={yDomain}
             scale={yScale}
             reversed={customizations.yAxisReverse}
@@ -1675,7 +1737,7 @@ export const GraphTablePanel: React.FC = () => {
   }, [addToChat]);
 
   // Chart data
-  const chartData = activeResult?.analysisResults?.chart_data;
+  const chartData = sanitizeChartLabels(activeResult?.analysisResults?.chart_data);
   const analysisType = activeResult?.analysisResults?.analysis_type;
 
   // Debug: log raw chart_data from AI
@@ -2275,9 +2337,9 @@ export const GraphTablePanel: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  // Conditionally render Plotly for survival/pharma data, Recharts for standard
+                  // Conditionally render Plotly for scatter/analytical/pharma data, Recharts for simple charts
                   <ChartErrorBoundary onError={() => setChartError(true)}>
-                    {isPlotlyChartData(syncedChartData ?? chartData, customizations) ? (
+                    {(isPlotlyChartData(syncedChartData ?? chartData, customizations) || shouldUsePlotly(syncedChartData ?? chartData)) ? (
                       <PlotlyInteractiveChart
                         config={{
                           mode: (syncedChartData ?? chartData)?.pharma_type ?? 'auto',

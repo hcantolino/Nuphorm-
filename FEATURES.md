@@ -223,6 +223,8 @@
 - [ ] Line chart
 - [ ] Area chart
 - [x] Scatter chart — auto-normalizes all AI formats (points, datasets[{x,y}], labels+datasets) to `{points:[{x,y}]}` (`GraphTablePanel.tsx → ChartRenderer`)
+- [x] Scatter chart — wider margins (left: 60+, bottom: 50+), YAxis width: 65px, clean tick formatting (integers vs 2dp), padding on XAxis (`GraphTablePanel.tsx → scatterMargin`)
+- [x] Scatter chart guardrail — forces sensible margin defaults if AI omits them (`GraphTablePanel.tsx → ChartRenderer`)
 - [ ] Pie chart
 - [ ] Custom colors from palette/overrides
 - [ ] Axis labels, legend position, grid lines, data labels (LabelList)
@@ -255,7 +257,12 @@
 - [ ] Pareto chart
 - [ ] Swimmer plot
 - [ ] Funnel chart
-- [ ] Auto-detection of Plotly vs Recharts (`isPlotlyChartData()`)
+- [ ] Auto-detection of Plotly vs Recharts (`isPlotlyChartData()` + `shouldUsePlotly()`)
+- [x] Scatter plots always routed to Plotly via `shouldUsePlotly()` (`GraphTablePanel.tsx`)
+- [x] `libraryPreference: "plotly"` field in chart_data forces Plotly routing
+- [x] `mergeFollowUpResult()` preserves existing chart/table when follow-up only modifies one section (`GraphTablePanel.tsx`)
+- [x] `sanitizeChartLabels()` suppresses misleading charts with summary-stat labels (Mean, SD, etc.) (`GraphTablePanel.tsx`)
+- [x] Framework 10 system prompt strengthened: Plotly default for scatter/analytical, automargin, clean tickformat, self-check mandatory
 - [ ] `pharma_type` field routing to correct chart builder
 - [ ] Adaptive legend/margin sizing (`calculateChartSizing`)
 - [ ] Smart X-axis label sizing: auto-angle + auto-font-size based on label count/length (`calculateXAxisLabelConfig`)
@@ -673,6 +680,12 @@
 - [x] Missing data reasoning: MCAR/MAR/MNAR characterization, strategy by rate+mechanism, never silent drops or mean-imputation without caveat
 - [x] Multiplicity control: proactive tracking after 3+ tests, Bonferroni/Tukey/Dunnett/BH selection, unadjusted + adjusted p-values
 - [x] Confounding reasoning: baseline balance check, covariate adjustment methods (ANCOVA, propensity), report unadjusted vs adjusted
+- [x] Longitudinal/repeated measures: detection (duplicate IDs, time columns), method selection (MMRM, GEE, RM-ANOVA), correlation structures, why standard methods fail
+- [x] Categorical data reasoning: binary (RD, RR, OR, NNT), ordinal (when to treat as continuous), sparse data (Fisher's exact, separation), multiple categories
+- [x] Survival analysis reasoning: censoring assessment, KM (median + CI), Cox (PH check, HR), competing risks (CIF, Fine-Gray), landmark analysis (immortal time bias)
+- [x] Regression diagnostics: linear (residuals, QQ, Cook's D, VIF, Breusch-Pagan) + logistic (AUC, Hosmer-Lemeshow, separation, EPV)
+- [x] Power/sample size reasoning: required inputs (never guess), calculation methods per design, sensitivity tables, post-hoc power avoidance
+- [x] Graphical data assessment: pre-analysis visualization checklist, auto-diagnostic plots, chart-vs-test contradiction resolution
 - [x] Effect size reporting: Cohen's d, η², r², Cramér's V, OR/HR with interpretation benchmarks and clinical context
 - [x] Clinical vs statistical significance: always report both; flag large-n trivial effects and underpowered moderate effects
 

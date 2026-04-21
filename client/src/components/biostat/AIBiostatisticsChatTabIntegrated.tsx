@@ -2766,9 +2766,13 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
           : existingResults[existingResults.length - 1];
 
         const newAR = responseObj.analysisResults;
-        // AI explicitly set chart_data or results_table to null → it wants the client to preserve
-        const aiPreserveChart = newAR && newAR.chart_data === null && existingResult?.analysisResults?.chart_data;
-        const aiPreserveTable = newAR && newAR.results_table === null && existingResult?.analysisResults?.results_table;
+        // AI signals: chart_data or results_table explicitly null → preserve the other.
+        // Also detect when AI returned a new chart_data that's clearly wrong for a table-edit
+        // (e.g., AI returned a bar chart of summary stats when user asked to add a table column).
+        const existingHasChart = !!existingResult?.analysisResults?.chart_data;
+        const existingHasTable = !!existingResult?.analysisResults?.results_table;
+        const aiPreserveChart = existingHasChart && newAR && newAR.chart_data === null;
+        const aiPreserveTable = existingHasTable && newAR && newAR.results_table === null;
 
         // Client-side keyword detection as fallback
         const qLower = userMessage.toLowerCase();
@@ -2781,7 +2785,11 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
         if (existingResult && (shouldPreserveChart || shouldPreserveTable)) {
           const mergedAnalysisResults = { ...(newAR ?? {}) };
           if (shouldPreserveChart) {
+            // Preserve the existing chart AND its analysis_type so isVizResult stays true
             mergedAnalysisResults.chart_data = existingResult.analysisResults?.chart_data;
+            if (existingResult.analysisResults?.analysis_type === 'llm_chart') {
+              mergedAnalysisResults.analysis_type = 'llm_chart';
+            }
           }
           if (shouldPreserveTable) {
             mergedAnalysisResults.results_table = existingResult.analysisResults?.results_table;
