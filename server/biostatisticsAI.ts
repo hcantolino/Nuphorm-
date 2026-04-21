@@ -3950,6 +3950,26 @@ export async function analyzeBiostatistics(
 
   console.log(`[analyzeBiostatistics] Data received — fullData: ${fullData?.length ?? 0} rows, dataColumns: ${dataColumns?.length ?? 0} cols${dataColumns?.length > 0 ? ` [${dataColumns.slice(0, 5).join(', ')}${dataColumns.length > 5 ? '...' : ''}]` : ''}, classifications: ${Object.keys(classifications ?? {}).length} keys`);
 
+  // ── Binary column name guard: detect if column names are xlsx/ZIP artifacts ──
+  if (dataColumns.length > 0) {
+    const binaryPatterns = /^PK$|\[Content_Types\]|docProps|\.xml$|\.rels$|^xl\/|worksheets|sharedStrings|__EMPTY/i;
+    const garbageCount = dataColumns.filter(c => binaryPatterns.test(c) || c.length > 200).length;
+    if (garbageCount > dataColumns.length * 0.3) {
+      console.error(`[analyzeBiostatistics] ✗ BINARY GUARD: ${garbageCount}/${dataColumns.length} columns look like xlsx/ZIP artifacts. Refusing analysis.`);
+      return {
+        analysis: "The uploaded file could not be parsed correctly — I'm seeing internal file structure instead of your data columns. This happens when an Excel file isn't processed by our specialized parser.\n\nPlease try:\n1. **Re-upload the file** (sometimes a retry works)\n2. **Save as CSV** from Excel (File → Save As → CSV) and upload the CSV\n3. **Paste the first 10 rows** of data directly into the chat",
+        suggestions: ["Re-upload the file", "Save as CSV from Excel and re-upload", "Paste the first 10 rows into the chat"],
+        measurements: [],
+        chartSuggestions: [],
+        analysisResults: {
+          analysis_type: "error",
+          results_table: [{ metric: "Error", value: "File parsing failed — Excel binary data detected instead of structured columns. Re-upload as CSV." }],
+        },
+        llmUsed: false,
+      };
+    }
+  }
+
   if (fullData && fullData.length > 0 && dataColumns.length > 0) {
     try {
       const csvText = reconstructCSV(dataColumns, fullData);
@@ -3988,11 +4008,27 @@ export async function analyzeBiostatistics(
     console.warn(`[analyzeBiostatistics] NO DATA BLOCK — fullData: ${fullData?.length ?? 0}, dataColumns: ${dataColumns?.length ?? 0}. AI will receive no structured data.`);
   }
 
+  // ── Binary content guard: never inject garbled xlsx/ZIP data into AI prompt ──
+  function isBinaryGarbage(text: string): boolean {
+    if (!text || text.length < 10) return false;
+    if (text.startsWith('PK')) return true; // ZIP/xlsx signature
+    if (/\[Content_Types\]|docProps|xl\/|worksheets|sharedStrings|\.xml|\.rels/.test(text.slice(0, 500))) return true;
+    const sample = text.slice(0, 500);
+    const nonPrintable = sample.split('').filter(c => { const code = c.charCodeAt(0); return code < 32 && code !== 9 && code !== 10 && code !== 13; }).length;
+    return nonPrintable / sample.length > 0.1; // >10% non-printable = binary
+  }
+
   // When dataPreview contains text but we have no fullData/csvDataBlock, include it
   // so the AI can see PDF-extracted content or partial previews.
-  const dataPreviewBlock = !csvDataBlock && dataPreview && dataPreview.length > 0
-    ? `\nDATA PREVIEW (extracted content from attached file — analyze this data):\n${dataPreview}\n\n`
-    : "";
+  let dataPreviewBlock = "";
+  if (!csvDataBlock && dataPreview && dataPreview.length > 0) {
+    if (isBinaryGarbage(dataPreview)) {
+      console.error('[analyzeBiostatistics] ✗ BINARY GUARD: dataPreview contains xlsx/ZIP garbage — NOT injecting into prompt');
+      dataPreviewBlock = "\nDATA PREVIEW: [File could not be parsed — the uploaded file appears to be in binary format (Excel/ZIP). Please re-upload as CSV.]\n\n";
+    } else {
+      dataPreviewBlock = `\nDATA PREVIEW (extracted content from attached file — analyze this data):\n${dataPreview}\n\n`;
+    }
+  }
 
   const userMessage = isCleaningConversation
     ? `${userQuery}${scanInjection}`

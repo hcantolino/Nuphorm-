@@ -58,13 +58,11 @@ import type { Tab } from "@/stores/tabStore";
  * Capture a chart from the live DOM by result ID.
  * Returns a base64 PNG data URL, or null if no chart element is found.
  */
-async function captureChartImage(resultId: string, plotElement?: HTMLElement | null): Promise<string | null> {
-  console.log('[captureChartImage] Starting capture for result:', resultId);
+/** Sentinel returned when capture fails after all retries — PDF renderer shows a placeholder note. */
+const CHART_CAPTURE_FAILED = '__CAPTURE_FAILED__';
 
+async function captureChartImageOnce(resultId: string, plotElement?: HTMLElement | null): Promise<string | null> {
   // ── Check if this is a Plotly chart ──
-  // Scoped selectors ONLY — no global fallback. If this resultId's chart
-  // is not in the DOM (because it's not the active result), return null
-  // so the caller can navigate to it first and retry.
   const plotlyDiv = plotElement
     ?? document.querySelector<HTMLElement>(`[data-chart-export="${resultId}"] .js-plotly-plot`)
     ?? document.querySelector<HTMLElement>(`[data-chart-capture="${resultId}"] .js-plotly-plot`);
@@ -83,8 +81,12 @@ async function captureChartImage(resultId: string, plotElement?: HTMLElement | n
         height: 500,
         scale: 2,
       });
-      console.log('[captureChartImage] Plotly.toImage SUCCESS, base64 length:', dataUrl?.length ?? 0);
-      return dataUrl;
+      if (dataUrl && dataUrl.length > 100) {
+        console.log('[captureChartImage] Plotly.toImage SUCCESS, base64 length:', dataUrl.length);
+        return dataUrl;
+      }
+      console.warn('[captureChartImage] Plotly.toImage returned empty/short result');
+      return null;
     } catch (plotlyErr) {
       console.error('[captureChartImage] Plotly.toImage FAILED:', plotlyErr);
       return null;
@@ -124,12 +126,38 @@ async function captureChartImage(resultId: string, plotElement?: HTMLElement | n
         return true;
       },
     });
-    console.log('[captureChartImage] toPng SUCCESS, base64 length:', dataUrl?.length ?? 0);
-    return dataUrl;
+    if (dataUrl && dataUrl.length > 100) {
+      console.log('[captureChartImage] toPng SUCCESS, base64 length:', dataUrl.length);
+      return dataUrl;
+    }
+    console.warn('[captureChartImage] toPng returned empty/short result');
+    return null;
   } catch (err) {
     console.warn('[captureChartImage] toPng FAILED:', err);
     return null;
   }
+}
+
+/**
+ * Capture with retry: if the first attempt returns null (DOM not ready),
+ * wait 500ms and try again. After max retries, return CHART_CAPTURE_FAILED
+ * so the PDF renderer can show a placeholder note.
+ */
+async function captureChartImage(resultId: string, plotElement?: HTMLElement | null): Promise<string | null> {
+  console.log('[captureChartImage] Starting capture for result:', resultId);
+  console.log('[captureChartImage] DOM element:', document.querySelector(`[data-chart-capture="${resultId}"]`));
+
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const result = await captureChartImageOnce(resultId, plotElement);
+    if (result) return result;
+    if (attempt < maxRetries) {
+      console.log(`[captureChartImage] Attempt ${attempt}/${maxRetries} failed for ${resultId}, retrying in 500ms...`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  console.error(`[captureChartImage] All ${maxRetries} attempts failed for result: ${resultId}`);
+  return CHART_CAPTURE_FAILED;
 }
 
 /**
@@ -154,14 +182,18 @@ async function captureChartImages(
     // Navigate to this result so its chart renders in the DOM
     console.log('[loop] switching to result:', r.id);
     store.getState().setActiveResult(tabId, r.id);
-    // Wait for Plotly to mount and render (lazy-loaded + requestAnimationFrame)
-    await new Promise((res) => setTimeout(res, 800));
+    // Wait for Plotly to mount and render (lazy-loaded via Suspense + requestAnimationFrame).
+    // 1200ms gives Plotly's dynamic import + first paint enough time on most machines.
+    await new Promise((res) => setTimeout(res, 1200));
 
     console.log('[loop] capturing result:', r.id);
     const img = await captureChartImage(r.id);
-    console.log('[loop] captured:', r.id, '→', img ? img.length : 'NULL');
-    if (img) {
+    console.log('[loop] captured:', r.id, '→', img ? (img === CHART_CAPTURE_FAILED ? 'FAILED' : img.length) : 'NULL');
+    if (img && img !== CHART_CAPTURE_FAILED) {
       map[r.id] = img;
+    } else if (img === CHART_CAPTURE_FAILED) {
+      // Store sentinel so PDF builder can show a placeholder note
+      map[r.id] = CHART_CAPTURE_FAILED;
     }
   }
 
@@ -434,8 +466,9 @@ function buildPDFExport(
 
     // ── Chart image (above the stats table)
     const chartImg = r.id ? chartImages[r.id] : undefined;
-    console.log('[buildPDFExport] chartImg present:', !!chartImg, 'for result:', r.id);
-    if (chartImg) {
+    const chartCaptureOk = chartImg && chartImg !== CHART_CAPTURE_FAILED;
+    console.log('[buildPDFExport] chartImg present:', !!chartImg, 'ok:', chartCaptureOk, 'for result:', r.id);
+    if (chartCaptureOk) {
       const imgW = contentW;
       const imgH = imgW * 0.55; // ~16:9 aspect ratio
       checkPage(imgH + 4);
@@ -452,8 +485,8 @@ function buildPDFExport(
         y += imgH + 10; // keep layout intact
       }
     } else if (r.analysisResults?.chart_data) {
-      // Chart data exists but capture failed — show placeholder
-      console.warn('[buildPDFExport] PDF chart capture returned null for result:', r.id);
+      // Chart data exists but capture failed — show visible placeholder
+      console.warn('[buildPDFExport] Chart capture failed for result:', r.id, chartImg === CHART_CAPTURE_FAILED ? '(all retries exhausted)' : '(no image)');
       const boxH = 30;
       checkPage(boxH + 4);
       (doc as any).setDrawColor(203, 213, 225);
@@ -463,7 +496,7 @@ function buildPDFExport(
       doc.setFontSize(9);
       doc.setFont("helvetica", "italic");
       (doc as any).setTextColor(148, 163, 184);
-      doc.text("Chart capture failed — please view results in the app", margin + contentW / 2, y + boxH / 2, { align: "center" });
+      doc.text("[Chart could not be captured — use the Export button on the chart panel to save it separately]", margin + contentW / 2, y + boxH / 2, { align: "center" });
       y += boxH + 4;
     }
 
@@ -578,7 +611,8 @@ function buildQueryBundlePDF(
   // ── Chart image ──
   if (include.graph) {
     const chartImg = r.id ? chartImages[r.id] : undefined;
-    if (chartImg) {
+    const chartOk = chartImg && chartImg !== CHART_CAPTURE_FAILED;
+    if (chartOk) {
       const imgW = contentW;
       const imgH = imgW * 0.55;
       checkPage(imgH + 4);
@@ -589,6 +623,14 @@ function buildQueryBundlePDF(
       } catch (imgErr) {
         console.error("[buildQueryBundlePDF] addImage FAILED:", imgErr);
       }
+    } else if (r.analysisResults?.chart_data) {
+      const boxH = 20;
+      checkPage(boxH + 4);
+      doc.setFontSize(8);
+      doc.setFont("helvetica", "italic");
+      (doc as any).setTextColor(148, 163, 184);
+      doc.text("[Chart could not be captured — use Export on chart panel]", margin + contentW / 2, y + boxH / 2, { align: "center" });
+      y += boxH + 4;
     }
   }
 
@@ -692,7 +734,8 @@ function buildSingleResultPDF(
 
   // ── Chart image (above the stats table)
   const chartImg = r.id ? chartImages[r.id] : undefined;
-  if (chartImg && (itemType === "Graph" || itemType === "Table")) {
+  const chartOk = chartImg && chartImg !== CHART_CAPTURE_FAILED;
+  if (chartOk && (itemType === "Graph" || itemType === "Table")) {
     const imgW = contentW;
     const imgH = imgW * 0.55;
     checkPage(imgH + 4);
@@ -703,6 +746,14 @@ function buildSingleResultPDF(
     } catch (imgErr) {
       console.error("[buildSingleResultPDF] addImage FAILED:", imgErr);
     }
+  } else if (r.analysisResults?.chart_data && (itemType === "Graph" || itemType === "Table")) {
+    const boxH = 20;
+    checkPage(boxH + 4);
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "italic");
+    (doc as any).setTextColor(148, 163, 184);
+    doc.text("[Chart could not be captured — use Export on chart panel]", margin + contentW / 2, y + boxH / 2, { align: "center" });
+    y += boxH + 4;
   }
 
   const tbl = r.editedTable ?? r.analysisResults?.results_table ?? [];
@@ -1531,11 +1582,12 @@ export default function SaveAnalysisModal({
 
           // Build HTML preview with chart image embedded
           const chartImg = r.id ? chartImages[r.id] : undefined;
+          const validChartImg = chartImg && chartImg !== CHART_CAPTURE_FAILED ? chartImg : undefined;
           const html = buildHTML(
             rTitle,
             includeTable ? (r.editedTable ?? r.analysisResults?.results_table ?? []) : [],
             includeQuery ? r.analysis : "",
-            includeGraph ? chartImg : undefined
+            includeGraph ? validChartImg : undefined
           );
 
           const content = buildStorageContent("pdf", pdf, true, html);

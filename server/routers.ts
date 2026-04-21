@@ -616,6 +616,48 @@ export const appRouter = router({
           }
         }
 
+        // ── XLSX/XLS: parse via Python pandas, return CSV text (never raw binary) ──
+        const isExcel = /\.xlsx?$/i.test(file.fileName);
+        if (isExcel) {
+          try {
+            const normalizedKey = file.fileKey.replace(/^\/+/, '');
+            const fullPath = path.join(UPLOADS_DIR, normalizedKey);
+            const buffer = await fs.promises.readFile(fullPath);
+            const { execFile } = await import("child_process");
+            const { promisify } = await import("util");
+            const execFileAsync = promisify(execFile);
+            const scriptPath = path.join(__dirname, "..", "scripts", "parse_excel.py");
+            const tmpFile = path.join(UPLOADS_DIR, ".tmp", `gc-${Date.now()}-${file.fileName}`);
+            await fs.promises.mkdir(path.join(UPLOADS_DIR, ".tmp"), { recursive: true });
+            await fs.promises.writeFile(tmpFile, buffer);
+            const { stdout } = await execFileAsync("python3", [scriptPath, tmpFile], { timeout: 30000, maxBuffer: 50 * 1024 * 1024 });
+            fs.promises.unlink(tmpFile).catch(() => {});
+            const result = JSON.parse(stdout);
+            const csvText = result.csvText ?? "";
+            console.log('[Get File Content] Excel parsed:', { fileId: input.fileId, rows: result.metadata?.total_rows, cols: result.metadata?.total_columns });
+            return {
+              success: true,
+              content: csvText || null,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              contentType,
+              hasGraphs: false,
+              fileUrl: file.fileUrl,
+            };
+          } catch (xlsxErr) {
+            console.error('[Get File Content] Excel parse failed:', xlsxErr);
+            return {
+              success: true,
+              content: null,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              contentType,
+              hasGraphs: false,
+              fileUrl: file.fileUrl,
+            };
+          }
+        }
+
         // Text-based files: read content
         let content: string;
         try {

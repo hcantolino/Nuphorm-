@@ -1850,9 +1850,10 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                   rows: parsed as Record<string, unknown>[],
                   cleaned: false,
                 });
-                // Update preview with parsed CSV text so AI context gets real column names
+                // Store CSV text preview on the file object so data can be recovered
+                // after tab switches (when fullData state is lost).
+                const csvPreview = (result as any).csvText ?? cols.join(',') + '\n' + parsed.slice(0, 50).map(r => cols.map(c => r[c] ?? '').join(',')).join('\n');
                 if (attachScope === 'project' && activeProjectId) {
-                  const csvPreview = (result as any).csvText ?? cols.join(',') + '\n' + parsed.slice(0, 20).map(r => cols.map(c => r[c] ?? '').join(',')).join('\n');
                   removeProjectSource(activeProjectId, tempId);
                   addProjectSource(activeProjectId, {
                     id: tempId,
@@ -1862,6 +1863,13 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     uploadedAt: Date.now(),
                     preview: csvPreview.slice(0, 2 * 1024 * 1024),
                   });
+                } else {
+                  // Tab-level: update the attachedFiles entry with CSV preview text
+                  setAttachedFiles((prev) =>
+                    prev.map((f) =>
+                      f.id === tempId ? { ...f, preview: csvPreview.slice(0, 2 * 1024 * 1024) } : f
+                    )
+                  );
                 }
                 addChatMessage({
                   id: `msg-${Date.now()}`,
@@ -2167,14 +2175,72 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       // If effectiveData is STILL empty but the user has files selected,
       // try to fetch and parse their content so the AI gets actual data.
       if (effectiveData.length === 0 && activeTabFiles.length > 0) {
-        const csvAttachment = activeTabFiles.find((f) =>
-          ["CSV", "XLSX", "XLS", "TSV", "TXT"].includes(f.type)
+        // Split: XLSX/XLS must go through the pandas parser, NOT getFileContent (which reads binary as UTF-8 garbage)
+        const xlsxAttachment = activeTabFiles.find((f) =>
+          ["XLSX", "XLS"].includes(f.type)
         );
-        if (csvAttachment) {
+        const csvAttachment = activeTabFiles.find((f) =>
+          ["CSV", "TSV", "TXT"].includes(f.type)
+        );
+
+        // ── XLSX/XLS: recover parsed data ──
+        // Strategy 1: if the file object has a CSV preview (stored during upload), parse that.
+        // Strategy 2: if the file has a server ID, call getFileContent (which now returns parsed CSV for xlsx).
+        // NEVER read xlsx as raw text — it's a binary ZIP format.
+        if (xlsxAttachment && effectiveData.length === 0) {
+          // Strategy 1: CSV preview on the file object (set during upload)
+          if (xlsxAttachment.preview && xlsxAttachment.preview.length > 20) {
+            console.log("[AIChat] Last-resort XLSX: using stored CSV preview for:", xlsxAttachment.name);
+            const parsed = parseCSVData(xlsxAttachment.preview);
+            if (parsed.length > 0) {
+              effectiveData = parsed;
+              setFullData(parsed);
+              useCurrentDatasetStore.getState().setCurrentDataset({
+                filename: xlsxAttachment.name,
+                rowCount: parsed.length,
+                columns: Object.keys(parsed[0] ?? {}),
+                rows: parsed as Record<string, unknown>[],
+                cleaned: false,
+              });
+              console.log(`[AIChat] Last-resort XLSX (preview) succeeded: ${parsed.length} rows`);
+            }
+          }
+
+          // Strategy 2: server-side re-parse via getFileContent (which now handles xlsx via Python)
+          if (effectiveData.length === 0) {
+            const fileId = parseInt(xlsxAttachment.id);
+            if (!isNaN(fileId)) {
+              try {
+                console.log("[AIChat] Last-resort XLSX: fetching from server for:", xlsxAttachment.name);
+                const result = await trpcUtils.files.getFileContent.fetch({ fileId });
+                if (result?.content && result.content.length > 20) {
+                  const parsed = parseCSVData(result.content);
+                  if (parsed.length > 0) {
+                    effectiveData = parsed;
+                    setFullData(parsed);
+                    useCurrentDatasetStore.getState().setCurrentDataset({
+                      filename: xlsxAttachment.name,
+                      rowCount: parsed.length,
+                      columns: Object.keys(parsed[0] ?? {}),
+                      rows: parsed as Record<string, unknown>[],
+                      cleaned: false,
+                    });
+                    console.log(`[AIChat] Last-resort XLSX (server) succeeded: ${parsed.length} rows`);
+                  }
+                }
+              } catch (err) {
+                console.warn("[AIChat] Last-resort XLSX server fetch failed:", err);
+              }
+            }
+          }
+        }
+
+        // ── CSV/TSV/TXT: fetch text content and parse ──
+        if (csvAttachment && effectiveData.length === 0) {
           try {
             const fileId = parseInt(csvAttachment.id);
             if (!isNaN(fileId)) {
-              console.log("[AIChat] Last-resort: fetching content for attached file:", csvAttachment.name);
+              console.log("[AIChat] Last-resort CSV: fetching content for attached file:", csvAttachment.name);
               const result = await trpcUtils.files.getFileContent.fetch({ fileId });
               if (result?.content) {
                 const parsed = parseCSVData(result.content);
@@ -2188,12 +2254,12 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
                     rows: parsed as Record<string, unknown>[],
                     cleaned: false,
                   });
-                  console.log(`[AIChat] Last-resort succeeded: ${parsed.length} rows from ${csvAttachment.name}`);
+                  console.log(`[AIChat] Last-resort CSV succeeded: ${parsed.length} rows from ${csvAttachment.name}`);
                 }
               }
             }
           } catch (err) {
-            console.warn("[AIChat] Last-resort file fetch failed:", err);
+            console.warn("[AIChat] Last-resort CSV fetch failed:", err);
           }
         }
 
