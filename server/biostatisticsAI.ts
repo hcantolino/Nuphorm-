@@ -3576,6 +3576,15 @@ export async function analyzeBiostatistics(
   graphTitle?: string;
   chatResponse?: { message: string; suggestions: string[] };
 }> {
+  // ── Entry-point diagnostics ──
+  console.log('[analyzeBiostatistics] ENTRY:', {
+    fullDataRows: fullData?.length ?? 0,
+    dataColumnsCount: dataColumns?.length ?? 0,
+    dataColumns: dataColumns?.slice(0, 8),
+    dataPreviewLen: dataPreview?.length ?? 0,
+    queryPreview: userQuery?.slice(0, 80),
+  });
+
   // ── Dataset generation — short-circuit LLM, return locally generated data ──
   if (isDatasetGenerationQuery(userQuery)) {
     console.log("[analyzeBiostatistics] Dataset generation query detected — generating locally");
@@ -5117,34 +5126,105 @@ export async function analyzeBiostatistics(
         }
       }
 
-      // ── Column-existence validation — catch fabricated analyses ──────────
-      // If the AI references columns/analyses that don't exist in the data,
-      // strip those fabricated results and warn.
-      if (fullData && fullData.length > 0 && dataColumns.length > 0 && parsed.analysisResults?.results_table) {
-        const responseText = JSON.stringify(parsed.analysisResults);
-        const pkTerms = ['AUC', 'Cmax', 'Tmax', 'half_life', 't½', 'clearance', 'CL/F', 'Vd', 'bioavailability', 'concentration'];
-        const mentionsPk = pkTerms.some(t => responseText.includes(t));
-        const dataHasPk = dataColumns.some(c =>
-          /auc|cmax|tmax|half.life|clearance|concentration|dose.*time|time.*post.*dose/i.test(c)
+      // ── Fabrication guard — validate AI output against actual data ──────
+      console.log('[FABRICATION GUARD] Pre-check:', {
+        hasFullData: !!(fullData && fullData.length > 0),
+        fullDataLen: fullData?.length ?? 0,
+        dataColumnsLen: dataColumns?.length ?? 0,
+        hasAnalysisResults: !!parsed.analysisResults,
+      });
+      // Catches: PK analyses on non-PK data, sample size fabrication,
+      // fabricated metrics in results_table, phantom column references.
+      if (fullData && fullData.length > 0 && dataColumns.length > 0) {
+        const responseStr = JSON.stringify(parsed).toLowerCase();
+        const rowCount = fullData.length;
+        const issues: string[] = [];
+
+        // CHECK 1: PK terms without PK columns
+        const pkTerms = ['auc', 'cmax', 'tmax', 'bioequivalence', 'pharmacokinetic',
+          'concentration-time', 'half-life', 'clearance', 'bioavail', 'gmr ',
+          'geometric mean ratio', 'cl/f', 'vd', 'vd/f'];
+        const pkColumns = ['auc', 'cmax', 'tmax', 'concentration', 'conc', 'pk_',
+          'drug_conc', 'plasma', 'dose_time', 'time_post_dose'];
+        const hasPkTerms = pkTerms.some(t => responseStr.includes(t));
+        const hasPkColumns = dataColumns.some(c =>
+          pkColumns.some(pk => c.toLowerCase().includes(pk))
         );
-        if (mentionsPk && !dataHasPk) {
-          console.error(`[analyzeBiostatistics] ✗ FABRICATION GUARD: AI references PK parameters but data has no PK columns. Columns: ${dataColumns.slice(0, 10).join(', ')}`);
-          // Strip fabricated PK results from the table but keep any real results
-          const pkRowPattern = /auc|cmax|tmax|half.life|clearance|bioavail|dose|concentration/i;
-          const cleanedTable = parsed.analysisResults.results_table.filter(
-            (row: any) => !pkRowPattern.test(String(row.metric ?? '')) && !pkRowPattern.test(String(row.value ?? ''))
+        if (hasPkTerms && !hasPkColumns) {
+          issues.push(
+            `Response references pharmacokinetic analysis but no PK columns exist in the data. ` +
+            `Available columns: ${dataColumns.join(', ')}`
           );
-          if (cleanedTable.length < parsed.analysisResults.results_table.length) {
-            const removed = parsed.analysisResults.results_table.length - cleanedTable.length;
-            console.log(`[analyzeBiostatistics] Removed ${removed} fabricated PK rows from results_table`);
-            cleanedTable.push({ metric: "Note", value: "PK parameters (AUC, Cmax, etc.) were requested but your data does not contain pharmacokinetic columns. Only analyses supported by your actual data are shown." });
-            parsed.analysisResults.results_table = cleanedTable;
+        }
+
+        // CHECK 2: Sample size mismatch
+        const nPattern = /\bn\s*[=:]\s*(\d+)/gi;
+        const nMatches = [...responseStr.matchAll(nPattern)];
+        for (const match of nMatches) {
+          const claimedN = parseInt(match[1]);
+          if (claimedN > 0 && claimedN > rowCount * 1.5 && claimedN > rowCount + 10) {
+            issues.push(`Claims n=${claimedN} but data has only ${rowCount} rows`);
+            break; // one match is enough
           }
-          // Also clear any PK chart data
-          if (parsed.analysisResults.chart_data?.type === 'line' &&
-              /concentration|pk|pharmacokinetic/i.test(JSON.stringify(parsed.analysisResults.chart_data))) {
-            parsed.analysisResults.chart_data = null;
+        }
+
+        // CHECK 3: Fabricated metrics in results_table
+        if (parsed.analysisResults?.results_table && Array.isArray(parsed.analysisResults.results_table)) {
+          const pkMetricPattern = /\bauc\b|cmax|tmax|\bdose\b|clearance|bioavail|half.life|vd\/f|cl\/f/i;
+          for (const row of parsed.analysisResults.results_table) {
+            const metric = String(row.metric ?? '').toLowerCase();
+            if (pkMetricPattern.test(metric) && !hasPkColumns) {
+              issues.push(`Table contains "${row.metric}" = ${row.value} but no PK data exists in the uploaded file`);
+            }
           }
+        }
+
+        // CHECK 4: Chart axis references to nonexistent data
+        if (parsed.analysisResults?.chart_data) {
+          const chartStr = JSON.stringify(parsed.analysisResults.chart_data).toLowerCase();
+          if ((chartStr.includes('auc') || chartStr.includes('cmax') || chartStr.includes('concentration')) && !hasPkColumns) {
+            issues.push('Chart references PK parameters but no PK column in data');
+          }
+        }
+
+        // ── BLOCK if issues found ──
+        if (issues.length > 0) {
+          console.error(`[HALLUCINATION DETECTED] ${issues.length} issue(s):`, issues);
+
+          parsed.analysisResults = {
+            analysis_type: "llm_table",
+            results_table: [
+              { metric: 'Validation Warning', value: 'The AI produced results that reference data not present in your uploaded file.' },
+              ...issues.map((issue, i) => ({ metric: `Issue ${i + 1}`, value: issue })),
+              { metric: 'Available columns', value: dataColumns.join(', ') },
+              { metric: 'Total rows', value: String(rowCount) },
+            ],
+            chart_data: null,
+          };
+
+          parsed.analysis =
+            `**Analysis blocked — potential data fabrication detected.**\n\n` +
+            `The AI's response referenced data that does not exist in your uploaded file:\n` +
+            issues.map(i => `- ${i}`).join('\n') +
+            `\n\nYour file contains ${rowCount} rows with columns: ${dataColumns.slice(0, 10).join(', ')}` +
+            (dataColumns.length > 10 ? ` (and ${dataColumns.length - 10} more)` : '') +
+            `.\n\nPlease rephrase your query using the actual column names from your data.`;
+
+          parsed.graphTitle = undefined;
+
+          parsed.chatResponse = {
+            message:
+              `I noticed my analysis referenced data that doesn't exist in your file ` +
+              `(${issues[0]}). I've blocked those results to prevent inaccurate output. ` +
+              `Your data has ${rowCount} rows with columns including: ` +
+              `${dataColumns.slice(0, 8).join(', ')}. ` +
+              `Would you like me to analyze what's actually in your data?`,
+            suggestions: [
+              'Show descriptive statistics for all numeric columns',
+              `What analyses can I run with columns: ${dataColumns.slice(0, 5).join(', ')}?`,
+              'Compare groups using the treatment arm column',
+            ],
+          };
         }
       }
 
