@@ -566,6 +566,13 @@ export default function SavedTechnicalFiles() {
     for (let i = 0; i < acceptedFiles.length; i++) {
       const file = acceptedFiles[i];
       try {
+        const ext = file.name.split('.').pop()?.toLowerCase() || '';
+        const binaryFormats = ['xlsx', 'xls', 'pdf', 'docx', 'doc', 'pptx', 'zip'];
+        if (binaryFormats.includes(ext)) {
+          toast.error(`${file.name}: Binary files cannot be saved as text. Please upload a CSV or TXT file.`);
+          setUploadingFiles(prev => prev.map((u, idx) => idx === i ? { ...u, status: 'error' } : u));
+          continue;
+        }
         const text = await file.text();
         await saveMutation.mutateAsync({
           title: `${openFolder} / ${file.name}`,

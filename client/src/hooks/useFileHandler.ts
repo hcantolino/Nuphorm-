@@ -8,10 +8,31 @@
  *   3. Server-side parsing is used for binary formats
  *   4. Errors are handled consistently
  *
+ * DO NOT:
+ * - Call file.text() directly on user uploads
+ * - Use new FileReader() for parsing user uploads
+ * - Use Papa.parse() directly on user uploads
+ * - Use XLSX.read() directly on user uploads
+ *
+ * This hook handles:
+ * - CSV/TSV/TXT: client-side Papa.parse (with binary guard)
+ * - XLSX/XLS: server-side Python pandas parser
+ * - PDF: server-side text extraction
+ * - JSON: client-side JSON.parse (with binary guard)
+ * - Magic byte validation (catches mislabeled files)
+ * - File size limits (50MB max)
+ * - Error handling and toast notifications
+ *
  * Usage:
  *   const { handleFile, handleFiles } = useFileHandler();
  *   const result = await handleFile(file);
  *   if (result.success) { setFullData(result.rows); }
+ *
+ * Last audit: 2026-04-23
+ * Components verified: AIBiostatisticsChatTabIntegrated,
+ *   ProjectContextPanel, DataUploadAI, BiostatisticsChat,
+ *   BiostatisticsCompute, UploadSection, DataManagementPanel,
+ *   AIBiostatisticsChat, useDataUpload
  */
 
 import { useCallback } from 'react';

@@ -537,6 +537,11 @@ export default function RegulatorySidebar({
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
     // CSV and text files: read as text directly
     if (['csv', 'txt', 'tsv', 'json'].includes(ext)) {
+      // Binary guard: catch mislabeled files (e.g. xlsx saved as .csv)
+      const probe = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+      if ((probe[0] === 0x50 && probe[1] === 0x4B) || (probe[0] === 0xD0 && probe[1] === 0xCF)) {
+        return '[Binary file detected — cannot read as text. Please re-save as CSV.]';
+      }
       const text = await file.text();
       // Truncate to ~2000 chars for LLM context
       return text.length > 2000 ? text.slice(0, 2000) + '\n... [truncated]' : text;
