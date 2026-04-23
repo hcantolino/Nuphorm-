@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Upload, AlertCircle, CheckCircle2, BarChart3, Send } from "lucide-react";
-import Papa from "papaparse";
+import { routeFileUpload } from "@/utils/fileUploadRouter";
 import AIChatInput from "@/components/AIChatInput";
 
 interface UploadedData {
@@ -53,26 +53,19 @@ export default function Dashboard() {
     }
 
     try {
-      const content = await file.text();
-      Papa.parse(content, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results: any) => {
-          if (results.data && results.data.length > 0) {
-            const columns = Object.keys(results.data[0] as Record<string, any>);
-            setUploadedFile({
-              name: file.name,
-              data: results.data as Record<string, any>[],
-              columns,
-            });
-          }
-          setLoading(false);
-        },
-        error: (error: any) => {
-          setError(`CSV parsing error: ${error.message}`);
-          setLoading(false);
-        },
+      const result = await routeFileUpload(file, {
+        parseXlsx: async () => { throw new Error('XLSX not supported on Dashboard'); },
       });
+      if (result.success && result.rows.length > 0) {
+        setUploadedFile({
+          name: file.name,
+          data: result.rows,
+          columns: result.columns,
+        });
+      } else {
+        setError(result.error || 'No data rows found in CSV file.');
+      }
+      setLoading(false);
     } catch (err) {
       setError(`Error reading file: ${err instanceof Error ? err.message : "Unknown error"}`);
       setLoading(false);

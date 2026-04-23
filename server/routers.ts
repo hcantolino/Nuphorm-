@@ -32,8 +32,33 @@ import { TRPCError } from "@trpc/server";
 import { storagePut, storageGet, UPLOADS_DIR } from "./storage";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { PDFParse } from "pdf-parse";
 import { logUploadedFile } from "./db";
+
+// ── Robust __dirname for ESM + parse_excel.py path resolution ──────────────
+const __filename_esm = fileURLToPath(import.meta.url);
+const __dirname_esm = path.dirname(__filename_esm);
+
+/** Resolve parse_excel.py — tries multiple locations since __dirname varies between
+ *  tsx watch, esbuild bundle, and different entry points. */
+function resolveParseExcelScript(): string {
+  const candidates = [
+    path.join(__dirname_esm, "scripts", "parse_excel.py"),         // server/scripts/ (routers.ts is in server/)
+    path.join(__dirname_esm, "..", "scripts", "parse_excel.py"),    // if __dirname is server/_core/
+    path.join(__dirname_esm, "..", "server", "scripts", "parse_excel.py"), // if __dirname is project root
+    path.resolve("server", "scripts", "parse_excel.py"),            // absolute from cwd
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      console.log("[XLSX] Resolved parse_excel.py at:", p);
+      return p;
+    }
+  }
+  console.error("[XLSX] parse_excel.py NOT FOUND. Tried:", candidates);
+  return candidates[0]; // fallback — will fail with a clear error
+}
+const PARSE_EXCEL_SCRIPT = resolveParseExcelScript();
 
 // pdf-parse v2 wrapper — returns a v1-compatible result shape
 async function parsePdfBuffer(buffer: Buffer) {
@@ -622,11 +647,21 @@ export const appRouter = router({
           try {
             const normalizedKey = file.fileKey.replace(/^\/+/, '');
             const fullPath = path.join(UPLOADS_DIR, normalizedKey);
-            const buffer = await fs.promises.readFile(fullPath);
+            let buffer: Buffer;
+            try {
+              buffer = await fs.promises.readFile(fullPath);
+            } catch {
+              // Local file not found — fetch from R2/S3
+              console.log('[Get File Content] Excel file not on disk, fetching from storage:', normalizedKey);
+              const { url } = await storageGet(file.fileKey);
+              const response = await fetch(url);
+              if (!response.ok) throw new Error(`Storage fetch failed: HTTP ${response.status}`);
+              buffer = Buffer.from(await response.arrayBuffer());
+            }
             const { execFile } = await import("child_process");
             const { promisify } = await import("util");
             const execFileAsync = promisify(execFile);
-            const scriptPath = path.join(__dirname, "..", "scripts", "parse_excel.py");
+            const scriptPath = PARSE_EXCEL_SCRIPT;
             const tmpFile = path.join(UPLOADS_DIR, ".tmp", `gc-${Date.now()}-${file.fileName}`);
             await fs.promises.mkdir(path.join(UPLOADS_DIR, ".tmp"), { recursive: true });
             await fs.promises.writeFile(tmpFile, buffer);
@@ -725,7 +760,7 @@ export const appRouter = router({
           const tmpFile = path.join(tmpDir, `parse-${Date.now()}-${input.fileName}`);
           await fs.promises.writeFile(tmpFile, buffer);
 
-          const scriptPath = path.join(__dirname, "..", "scripts", "parse_excel.py");
+          const scriptPath = PARSE_EXCEL_SCRIPT;
           console.log("[XLSX-Python] Parsing:", input.fileName, "via", scriptPath);
 
           const { stdout, stderr } = await execFileAsync("python3", [scriptPath, tmpFile], {

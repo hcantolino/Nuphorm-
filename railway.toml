@@ -1,8 +1,4 @@
-[build]
-buildCommand = "pnpm install --frozen-lockfile && pnpm run build"
-
 [deploy]
-startCommand = "pnpm run start"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

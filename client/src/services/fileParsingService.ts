@@ -1,4 +1,4 @@
-import Papa from 'papaparse';
+import { routeFileUpload } from '@/utils/fileUploadRouter';
 import * as XLSX from 'xlsx';
 
 export interface ParsedFileData {
@@ -9,116 +9,47 @@ export interface ParsedFileData {
   format: 'CSV' | 'XLSX' | 'JSON';
 }
 
+const FORMAT_MAP: Record<string, 'CSV' | 'XLSX' | 'JSON'> = {
+  csv: 'CSV', tsv: 'CSV', txt: 'CSV', json: 'JSON', xlsx: 'XLSX', xls: 'XLSX',
+};
+
 /**
- * Parse CSV file content
+ * Client-side XLSX fallback for contexts without tRPC (e.g. Biostatistics.tsx).
+ * Converts to base64 → XLSX.read locally.
  */
-function parseCSV(content: string, fileName: string): Promise<ParsedFileData> {
-  return new Promise((resolve, reject) => {
-    Papa.parse(content, {
-      header: true,
-      skipEmptyLines: true,
-      dynamicTyping: true,
-      complete: (results: any) => {
-        if (results.errors && results.errors.length > 0) {
-          reject(new Error(`CSV parsing error: ${results.errors[0].message}`));
-          return;
-        }
-
-        const data = results.data as Record<string, any>[];
-        const columns = results.meta.fields || Object.keys(data[0] || {});
-
-        resolve({
-          fileName,
-          data,
-          columns,
-          rowCount: data.length,
-          format: 'CSV',
-        });
-      },
-      error: (error: any) => {
-        reject(new Error(`CSV parsing failed: ${error.message}`));
-      },
-    });
-  }) as Promise<ParsedFileData>;
+async function clientXlsxParser(base64: string, _fileName: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const wb = XLSX.read(bytes, { type: 'array' });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) throw new Error('No sheets found in XLSX file');
+  const ws = wb.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(ws) as Record<string, any>[];
+  const columns = Object.keys(rows[0] || {});
+  return { rows, columns, rowCount: rows.length };
 }
 
 /**
- * Parse XLSX file content
- */
-function parseXLSX(arrayBuffer: ArrayBuffer, fileName: string): ParsedFileData {
-  try {
-    const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    
-    if (!sheetName) {
-      throw new Error('No sheets found in XLSX file');
-    }
-
-    const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, any>[];
-    const columns = Object.keys(data[0] || {});
-
-    return {
-      fileName,
-      data,
-      columns,
-      rowCount: data.length,
-      format: 'XLSX',
-    };
-  } catch (error) {
-    throw new Error(`XLSX parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-}
-
-/**
- * Parse JSON file content
- */
-function parseJSON(content: string, fileName: string): ParsedFileData {
-  try {
-    const parsed = JSON.parse(content);
-    
-    // Handle both array of objects and single object
-    const data = Array.isArray(parsed) ? parsed : [parsed];
-    const columns = Object.keys(data[0] || {});
-
-    return {
-      fileName,
-      data,
-      columns,
-      rowCount: data.length,
-      format: 'JSON',
-    };
-  } catch (error) {
-    throw new Error(`JSON parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-}
-
-/**
- * Main file parsing function
- * Detects file format and parses accordingly
+ * Main file parsing function — delegates to centralized routeFileUpload
  */
 export async function parseFile(file: File): Promise<ParsedFileData> {
-  const fileName = file.name;
-  const extension = fileName.split('.').pop()?.toLowerCase();
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const result = await routeFileUpload(file, {
+    parseXlsx: clientXlsxParser,
+  });
 
-  try {
-    if (extension === 'csv') {
-      const content = await file.text();
-      return parseCSV(content, fileName);
-    } else if (extension === 'xlsx' || extension === 'xls') {
-      const arrayBuffer = await file.arrayBuffer();
-      return parseXLSX(arrayBuffer, fileName);
-    } else if (extension === 'json') {
-      const content = await file.text();
-      return parseJSON(content, fileName);
-    } else {
-      throw new Error(`Unsupported file format: .${extension}`);
-    }
-  } catch (error) {
-    throw new Error(
-      `Failed to parse ${fileName}: ${error instanceof Error ? error.message : 'Unknown error'}`
-    );
+  if (!result.success) {
+    throw new Error(`Failed to parse ${file.name}: ${result.error || 'Unknown error'}`);
   }
+
+  return {
+    fileName: file.name,
+    data: result.rows,
+    columns: result.columns,
+    rowCount: result.rowCount,
+    format: FORMAT_MAP[ext] ?? 'CSV',
+  };
 }
 
 /**

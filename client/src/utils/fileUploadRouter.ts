@@ -15,8 +15,9 @@ const MAX_FILE_SIZE_MB = 50;
 const SUPPORTED_EXTENSIONS = ['csv', 'tsv', 'xlsx', 'xls', 'json', 'pdf', 'docx', 'txt'];
 
 const MAGIC_BYTES = {
-  xlsx: [0x50, 0x4B, 0x03, 0x04],
-  pdf: [0x25, 0x50, 0x44, 0x46],
+  xlsx: [0x50, 0x4B, 0x03, 0x04],  // PK (ZIP) header
+  xls:  [0xD0, 0xCF, 0x11, 0xE0],  // OLE2 compound document (.xls, .doc, .ppt)
+  pdf:  [0x25, 0x50, 0x44, 0x46],   // %PDF
 };
 
 async function readMagicBytes(file: File, count = 8): Promise<Uint8Array> {
@@ -28,6 +29,34 @@ function matchesMagic(bytes: Uint8Array, magic: number[]): boolean {
   return magic.every((b, i) => bytes[i] === b);
 }
 
+/**
+ * Returns true if the first bytes look like a binary/ZIP/OLE2 file.
+ * Used as a safety net in text-based parsers to prevent reading binary garbage.
+ */
+function looksLikeBinary(bytes: Uint8Array): boolean {
+  // PK (ZIP / xlsx / docx)
+  if (bytes[0] === 0x50 && bytes[1] === 0x4B) return true;
+  // OLE2 (xls / doc)
+  if (bytes[0] === 0xD0 && bytes[1] === 0xCF) return true;
+  // %PDF
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return true;
+  // High ratio of non-printable characters in first 64 bytes
+  const sampleLen = Math.min(64, bytes.length);
+  let nonPrintable = 0;
+  for (let i = 0; i < sampleLen; i++) {
+    const b = bytes[i];
+    if (b < 0x20 && b !== 0x09 && b !== 0x0A && b !== 0x0D) nonPrintable++;
+  }
+  return nonPrintable / sampleLen > 0.15;
+}
+
+const BINARY_GUARD_ERROR = (ext: string): ParsedFile => ({
+  success: false, rows: [], columns: [], rowCount: 0,
+  sourceType: ext as any,
+  error: `This file contains binary data despite having a .${ext} extension. ` +
+    'It may be a renamed Excel/ZIP file. Try opening it in Excel and saving as CSV.',
+});
+
 export async function routeFileUpload(
   file: File,
   serverParsers: {
@@ -36,6 +65,7 @@ export async function routeFileUpload(
   }
 ): Promise<ParsedFile> {
   const sizeMB = file.size / (1024 * 1024);
+  console.log('[routeFileUpload] CALLED for:', file.name, file.size, 'bytes (' + sizeMB.toFixed(1) + 'MB)');
   if (sizeMB > MAX_FILE_SIZE_MB) {
     return {
       success: false, rows: [], columns: [], rowCount: 0,
@@ -55,11 +85,20 @@ export async function routeFileUpload(
 
   const magic = await readMagicBytes(file);
 
-  if ((ext === 'xlsx' || ext === 'xls') && !matchesMagic(magic, MAGIC_BYTES.xlsx)) {
+  if (ext === 'xlsx' && !matchesMagic(magic, MAGIC_BYTES.xlsx)) {
     return {
       success: false, rows: [], columns: [], rowCount: 0,
       sourceType: 'xlsx',
-      error: 'File extension says Excel but the file content is not a valid Excel file.',
+      error: 'File extension says .xlsx but the file content is not a valid Excel file (expected ZIP/PK header).',
+    };
+  }
+
+  if (ext === 'xls' && !matchesMagic(magic, MAGIC_BYTES.xls) && !matchesMagic(magic, MAGIC_BYTES.xlsx)) {
+    // .xls can be either OLE2 (old Excel) or ZIP (newer xlsx saved with .xls extension)
+    return {
+      success: false, rows: [], columns: [], rowCount: 0,
+      sourceType: 'xls',
+      error: 'File extension says .xls but the file content is not a valid Excel file.',
     };
   }
 
@@ -87,6 +126,7 @@ export async function routeFileUpload(
         return await parseTSV(file);
       case 'xlsx':
       case 'xls':
+        console.log('[routeFileUpload] xlsx/xls detected, calling server parser');
         return await parseXLSX(file, serverParsers.parseXlsx);
       case 'json':
         return await parseJSON(file);
@@ -119,6 +159,10 @@ export async function routeFileUpload(
 }
 
 async function parseCSV(file: File): Promise<ParsedFile> {
+  // SAFETY: block binary files that were mislabeled as .csv
+  const probe = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+  if (looksLikeBinary(probe)) return BINARY_GUARD_ERROR('csv');
+
   const text = await file.text();
   const result = Papa.parse<Record<string, any>>(text, {
     header: true,
@@ -138,6 +182,9 @@ async function parseCSV(file: File): Promise<ParsedFile> {
 }
 
 async function parseTSV(file: File): Promise<ParsedFile> {
+  const probe = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+  if (looksLikeBinary(probe)) return BINARY_GUARD_ERROR('tsv');
+
   const text = await file.text();
   const result = Papa.parse<Record<string, any>>(text, {
     header: true,
@@ -170,8 +217,17 @@ async function parseXLSX(
   file: File,
   serverParser: (base64: string, fileName: string) => Promise<any>,
 ): Promise<ParsedFile> {
+  console.log('[parseXLSX] Converting to base64…', file.name, file.size, 'bytes');
   const base64 = await fileToBase64(file);
+  console.log('[parseXLSX] base64 length:', base64.length, '— calling server parser');
   const result = await serverParser(base64, file.name);
+  console.log('[parseXLSX] Server returned:', {
+    hasResult: !!result,
+    hasRows: Array.isArray(result?.rows),
+    rowCount: result?.rows?.length,
+    hasCols: Array.isArray(result?.columns),
+    colCount: result?.columns?.length,
+  });
 
   if (!result || !Array.isArray(result.rows) || !Array.isArray(result.columns)) {
     return {
@@ -192,6 +248,9 @@ async function parseXLSX(
 }
 
 async function parseJSON(file: File): Promise<ParsedFile> {
+  const probe = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+  if (looksLikeBinary(probe)) return BINARY_GUARD_ERROR('json');
+
   const text = await file.text();
   const data = JSON.parse(text);
 
@@ -215,6 +274,9 @@ async function parseJSON(file: File): Promise<ParsedFile> {
 }
 
 async function parseTXT(file: File): Promise<ParsedFile> {
+  const probe = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+  if (looksLikeBinary(probe)) return BINARY_GUARD_ERROR('txt');
+
   const text = await file.text();
   const firstLine = text.split('\n')[0] || '';
   const delimiter =

@@ -4945,7 +4945,10 @@ export async function analyzeBiostatistics(
 
         // If ALL recovery strategies failed, then block or return text
         if (!parsed) {
-          console.error("[analyzeBiostatistics] All JSON recovery strategies failed. Raw (first 300):", content.slice(0, 300));
+          console.error("[analyzeBiostatistics] All JSON recovery strategies failed.");
+          console.error("[analyzeBiostatistics] Raw content (first 500):", content.slice(0, 500));
+          console.error("[analyzeBiostatistics] Raw content (last 200):", content.slice(-200));
+          console.error("[analyzeBiostatistics] Content length:", content.length, "starts with:", content.slice(0, 20));
           logChartDecision("JSON parse failed — all recovery exhausted", userQuery, { isVizQuery, rawContentHead: content.slice(0, 120) });
 
           if (isVizQuery) {
@@ -5890,6 +5893,10 @@ export async function analyzeBiostatistics(
         }
       }
 
+      console.log("[SERVER RESPONSE] Returning parsed — keys:", Object.keys(parsed));
+      console.log("[SERVER RESPONSE] analysisResults:", parsed.analysisResults ? `analysis_type=${parsed.analysisResults.analysis_type}, results_table=${parsed.analysisResults.results_table?.length ?? 'none'} rows, chart_data=${parsed.analysisResults.chart_data ? 'present' : 'null'}` : "null");
+      console.log("[SERVER RESPONSE] graphTitle:", parsed.graphTitle?.slice(0, 50));
+      console.log("[SERVER RESPONSE] chatResponse:", parsed.chatResponse?.message?.slice(0, 100));
       return parsed;
     }
 

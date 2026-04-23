@@ -1,0 +1,19 @@
+# Nixpacks build configuration for Railway
+# Node.js is auto-detected; this adds Python for server-side
+# Excel parsing (parse_excel.py) and AI-generated stats code
+# (scipy, statsmodels, lifelines via pythonExecutor.ts).
+
+[phases.setup]
+aptPkgs = ["python3", "python3-pip"]
+
+[phases.install]
+cmds = [
+  "pnpm install --frozen-lockfile",
+  "pip3 install pandas openpyxl scipy statsmodels lifelines numpy --break-system-packages"
+]
+
+[phases.build]
+cmds = ["pnpm run build"]
+
+[start]
+cmd = "pnpm run start"

@@ -1285,32 +1285,10 @@ export function isSurvivalChartData(chartData: any): boolean {
   return isPlotlyChartData(chartData);
 }
 
-export function isPlotlyChartData(chartData: any, customizations?: { showErrorBars?: boolean }): boolean {
-  if (!chartData) return false;
-
-  // Route to Plotly when error bars are requested — Recharts ChartRenderer
-  // does not support error bar computation; only PlotlyInteractiveChart does.
-  if (chartData.show_error_bars === true || customizations?.showErrorBars === true) return true;
-
-  // Check explicit pharma_type
-  if (chartData.pharma_type && PLOTLY_PHARMA_TYPES.has(chartData.pharma_type)) return true;
-
-  // Check chart_mode
-  if (chartData.chart_mode === 'survival' || chartData.chart_mode === 'plotly') return true;
-
-  // Check type field for advanced types
-  const chartType = (chartData.type ?? '').toLowerCase();
-  if (['kaplan-meier', 'box', 'boxplot', 'heatmap', 'waterfall', 'forest', 'volcano'].includes(chartType)) {
-    return true;
-  }
-
-  // Check for survival-like keywords in labels/dataset names
-  const labels = chartData.labels ?? [];
-  const datasetLabels = (chartData.datasets ?? []).map((d: any) => (d.label ?? '').toLowerCase());
-  const allLabels = [...labels.map((l: any) => String(l).toLowerCase()), ...datasetLabels];
-
-  const survivalKeywords = ['pfs', 'os', 'survival', 'km', 'kaplan', 'meier', 'time_months', 'mean_pfs'];
-  return allLabels.some((l: string) => survivalKeywords.some((kw) => l.includes(kw)));
+export function isPlotlyChartData(chartData: any, _customizations?: { showErrorBars?: boolean }): boolean {
+  // All charts now route through Plotly for consistent rendering, layout,
+  // error bars, and PDF capture. Recharts ChartRenderer is retired.
+  return !!chartData;
 }
 
 /** Convert LLM chart_data to SurvivalTrace[] */
@@ -1956,6 +1934,57 @@ function buildGenericPlotlyTraces(
       plotData,
       layout: {
         barmode: 'group' as const,
+        xaxis: { title: xTitleConfig, ...GRID_STYLE, ...xAxisExtra },
+        yaxis: { title: yTitleConfig, ...GRID_STYLE, ...yAxisExtra },
+        annotations,
+      },
+    };
+  }
+
+  // ── Pie chart ──
+  if (aiType === 'pie' || mode === 'pie') {
+    const ds0 = datasets[0];
+    if (ds0) {
+      const plotData: Plotly.Data[] = [{
+        type: 'pie' as const,
+        labels: labels,
+        values: ds0.data ?? [],
+        hole: 0.3,
+        textinfo: 'label+percent' as const,
+        hovertemplate: '<b>%{label}</b><br>%{value} (%{percent})<extra></extra>',
+        marker: {
+          colors: datasets.map((d: any, i: number) => d.color ?? d.backgroundColor ?? palette[i % palette.length]),
+        },
+      }];
+      return {
+        plotData,
+        layout: {
+          annotations,
+          showlegend: true,
+        },
+      };
+    }
+  }
+
+  // ── Area chart — scatter with fill ──
+  if (aiType === 'area' || mode === 'area') {
+    const plotData: Plotly.Data[] = datasets.map((ds: any, i: number) => {
+      const color = ds.color ?? ds.borderColor ?? palette[i % palette.length];
+      return {
+        x: labels,
+        y: ds.data ?? [],
+        mode: 'lines' as const,
+        name: ds.label ?? `Series ${i + 1}`,
+        line: { color, width: 2 },
+        fill: i === 0 ? ('tozeroy' as const) : ('tonexty' as const),
+        fillcolor: color.replace(')', ', 0.2)').replace('rgb', 'rgba') || `${color}33`,
+        type: 'scatter' as const,
+        hovertemplate: hoverTpl,
+      };
+    });
+    return {
+      plotData,
+      layout: {
         xaxis: { title: xTitleConfig, ...GRID_STYLE, ...xAxisExtra },
         yaxis: { title: yTitleConfig, ...GRID_STYLE, ...yAxisExtra },
         annotations,

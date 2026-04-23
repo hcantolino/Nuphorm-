@@ -12,6 +12,7 @@
  */
 
 import { useState, useRef, useCallback } from 'react';
+import { useFileHandler } from '@/hooks/useFileHandler';
 import {
   Upload,
   Wand2,
@@ -69,6 +70,7 @@ export default function DataManagementPanel() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [activeDatasetIdx, setActiveDatasetIdx] = useState<number | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  const { handleFile } = useFileHandler();
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -100,49 +102,25 @@ export default function DataManagementPanel() {
     setIsProcessing(true);
     try {
       for (const file of files) {
-        let rows: DatasetRow[] = [];
-        let columns: string[] = [];
-
-        try {
-          const formData = new FormData();
-          formData.append('file', file);
-          const res = await fetch(`${BIOSTAT_API}/data/upload`, {
-            method: 'POST',
-            body: formData,
-          });
-          if (res.ok) {
-            const data = await res.json();
-            rows = data.rows;
-            columns = data.columns;
-          } else {
-            throw new Error('API unavailable');
-          }
-        } catch {
-          // Local CSV fallback — only for text-based files
-          const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-          if (['xlsx', 'xls', 'sas7bdat', 'xpt'].includes(ext)) {
-            toast.error(`${ext.toUpperCase()} files require the server API. Please try again later.`);
-            return;
-          }
-          const text = await file.text();
-          const lines = text.split('\n').filter(Boolean);
-          columns = lines[0].split(',').map((c) => c.trim().replace(/"/g, ''));
-          rows = lines.slice(1).map((line) => {
-            const values = line.split(',');
-            return Object.fromEntries(
-              columns.map((col, i) => [col, values[i]?.trim().replace(/"/g, '') ?? null])
-            );
-          });
+        const result = await handleFile(file);
+        if (!result.success || result.rows.length === 0) {
+          toast.error(result.error || `No data rows found in ${file.name}`);
+          continue;
         }
 
-        const dataset: Dataset = { name: file.name, rows, columns, uploadedAt: new Date() };
+        const dataset: Dataset = {
+          name: file.name,
+          rows: result.rows as DatasetRow[],
+          columns: result.columns,
+          uploadedAt: new Date(),
+        };
         setDatasets((prev) => {
           const next = [...prev, dataset];
           setActiveDatasetIdx(next.length - 1);
           return next;
         });
-        addAudit('UPLOAD', `"${file.name}" — ${rows.length} rows, ${columns.length} columns`);
-        toast.success(`Loaded: ${file.name} (${rows.length} rows)`);
+        addAudit('UPLOAD', `"${file.name}" — ${result.rows.length} rows, ${result.columns.length} columns`);
+        toast.success(`Loaded: ${file.name} (${result.rows.length} rows)`);
       }
     } catch {
       toast.error('Upload failed');

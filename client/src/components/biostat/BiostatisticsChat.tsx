@@ -26,7 +26,7 @@ import {
   generateSuggestions,
   requiresData,
 } from "@/lib/queryParser";
-import Papa from "papaparse";
+import { useFileHandler } from "@/hooks/useFileHandler";
 
 interface Message {
   id: string;
@@ -42,6 +42,7 @@ export function BiostatisticsChat() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
+  const { handleFile } = useFileHandler();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { data, uploadData, getNumericColumnData, addAnalysisResult } =
@@ -65,40 +66,25 @@ export function BiostatisticsChat() {
 
     setFileLoading(true);
     try {
-      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-      if (['xlsx', 'xls'].includes(ext)) {
-        toast.error('Excel files should be uploaded via the main Biostatistics AI tab for proper server-side parsing.');
-        setFileLoading(false);
-        return;
+      const result = await handleFile(file);
+      if (result.success && result.rows.length > 0) {
+        uploadData(file.name, result.rows as Record<string, any>[]);
+        const systemMessage: Message = {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: `✓ Uploaded "${file.name}" with ${result.rows.length} rows and ${result.columns.length} columns.\n\nAvailable columns: ${result.columns.join(", ")}\n\nTry: "Calculate standard deviation for fold_change" or "Show descriptive statistics"`,
+          timestamp: new Date(),
+        };
+        setMessages([systemMessage]);
+      } else if (!result.success) {
+        const errorMessage: Message = {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: `Error parsing file: ${result.error || 'Unknown error'}`,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
       }
-      const text = await file.text();
-      Papa.parse(text, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results) => {
-          if (results.data && Array.isArray(results.data)) {
-            uploadData(file.name, results.data as Record<string, any>[]);
-
-            // Add system message
-            const systemMessage: Message = {
-              id: Date.now().toString(),
-              role: "assistant",
-              content: `✓ Uploaded "${file.name}" with ${results.data.length} rows and ${Object.keys(results.data[0] || {}).length} columns.\n\nAvailable columns: ${Object.keys(results.data[0] || {}).join(", ")}\n\nTry: "Calculate standard deviation for fold_change" or "Show descriptive statistics"`,
-              timestamp: new Date(),
-            };
-            setMessages([systemMessage]);
-          }
-        },
-        error: (error: any) => {
-          const errorMessage: Message = {
-            id: Date.now().toString(),
-            role: "assistant",
-            content: `Error parsing file: ${error.message}`,
-            timestamp: new Date(),
-          };
-          setMessages((prev) => [...prev, errorMessage]);
-        },
-      });
     } catch (error: any) {
       const errorMessage: Message = {
         id: Date.now().toString(),

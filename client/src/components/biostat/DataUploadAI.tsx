@@ -16,8 +16,7 @@
 
 import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
+import { useFileHandler } from '@/hooks/useFileHandler';
 import {
   Upload,
   Loader2,
@@ -61,7 +60,6 @@ import {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const PARSE_API = '/api/v1/data/parse';
 const ACCEPTED = { 'text/csv': ['.csv'], 'text/tab-separated-values': ['.tsv'],
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
   'application/vnd.ms-excel': ['.xls'] };
@@ -159,71 +157,8 @@ function detectIssues(
   return issues;
 }
 
-// ── Client-side parsers ───────────────────────────────────────────────────────
-
-function parseCSV(file: File): Promise<{ rows: Record<string, unknown>[]; columns: string[] }> {
-  return new Promise((resolve, reject) => {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      dynamicTyping: true,
-      complete: (result) => {
-        if (result.errors.length && result.data.length === 0) {
-          const e = result.errors[0];
-          reject(new Error(`CSV parsing failed — ${e.message} (row ${e.row ?? '?'}). Check delimiters/quotes. Try saving as CSV UTF-8 in Excel.`));
-          return;
-        }
-        const columns = (result.meta.fields ?? []).filter(Boolean);
-        resolve({ rows: result.data as Record<string, unknown>[], columns });
-      },
-      error: (err) => {
-        reject(new Error(`CSV parsing failed — ${err.message}. Try opening in Excel and re-saving as CSV UTF-8.`));
-      },
-    });
-  });
-}
-
-function parseExcel(file: File): Promise<{ rows: Record<string, unknown>[]; columns: string[] }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target!.result as ArrayBuffer);
-        const wb = XLSX.read(data, { type: 'array', cellDates: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null });
-        // Get headers from first row via sheet_to_json header:1
-        const header = (XLSX.utils.sheet_to_json(ws, { header: 1 }) as unknown[][])[0] as string[];
-        resolve({ rows: raw, columns: header.map(String) });
-      } catch (err) {
-        reject(new Error(`Excel parsing failed — ${err instanceof Error ? err.message : String(err)}. Try re-saving the file.`));
-      }
-    };
-    reader.onerror = () => reject(new Error('File read error. Check the file is not corrupted.'));
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-// ── Server-side parse ─────────────────────────────────────────────────────────
-
-async function serverParse(
-  file: File
-): Promise<{ rows: Record<string, unknown>[]; columns: string[] }> {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('user_id', 'local_user');
-
-  const res = await fetch(PARSE_API, { method: 'POST', body: fd });
-  const json = await res.json();
-
-  if (!json.success) {
-    throw new Error(
-      `${json.error ?? 'Server parse failed'}${json.suggestion ? ` — ${json.suggestion}` : ''}`
-    );
-  }
-
-  return { rows: json.preview ?? [], columns: json.columns ?? [] };
-}
+// Client-side parsers removed — all file parsing now routes through useFileHandler hook
+// which delegates to fileUploadRouter.ts (binary formats → server, text formats → PapaParse)
 
 // ── Type badge ────────────────────────────────────────────────────────────────
 
@@ -269,35 +204,29 @@ export default function DataUploadAI({ onReady }: DataUploadAIProps) {
   const [fullDataOpen, setFullDataOpen] = useState(false);
 
   const { dataset, setDataset, clearDataset } = useDatasetStore();
+  const { handleFile } = useFileHandler();
 
   // ── Core parse flow ───────────────────────────────────────────────────────
 
   const runParse = useCallback(
-    async (file: File, forceServer = false) => {
+    async (file: File, _forceServer = false) => {
       setPhase('parsing');
-      setParseMsg(forceServer ? 'Server parsing…' : 'Parsing…');
+      setParseMsg('Parsing…');
       setLastFile(file);
 
       try {
-        let rows: Record<string, unknown>[];
-        let columns: string[];
-        let source: ParsedDataset['source'] = 'client';
+        const result = await handleFile(file);
 
-        if (forceServer) {
-          ({ rows, columns } = await serverParse(file));
-          source = 'server';
-        } else {
-          const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-          if (ext === 'csv' || ext === 'tsv') {
-            ({ rows, columns } = await parseCSV(file));
-          } else if (ext === 'xlsx' || ext === 'xls') {
-            ({ rows, columns } = await parseExcel(file));
-          } else {
-            throw new Error(`Unsupported file type .${ext}. Use CSV, TSV, XLSX, or XLS.`);
-          }
+        if (!result.success) {
+          throw new Error(result.error || 'Parse failed');
+        }
+        if (!result.rows.length) {
+          throw new Error('File parsed successfully but contains no data rows.');
         }
 
-        if (!rows.length) throw new Error('File parsed successfully but contains no data rows.');
+        const rows = result.rows as Record<string, unknown>[];
+        const columns = result.columns;
+        const source: ParsedDataset['source'] = 'client';
 
         const columnMeta = buildColumnMeta(rows, columns);
         const issues = detectIssues(rows, columns, columnMeta);
@@ -326,7 +255,7 @@ export default function DataUploadAI({ onReady }: DataUploadAIProps) {
         toast.error(msg.slice(0, 120));
       }
     },
-    [setDataset]
+    [setDataset, handleFile]
   );
 
   // ── Dropzone ──────────────────────────────────────────────────────────────

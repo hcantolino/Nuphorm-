@@ -65,8 +65,9 @@ import { useBiostatisticsStore } from "@/stores/biostatisticsStore";
 // NEW: paperclip modal for managing attached sources (replaces inline chip strip)
 import { AttachmentModal } from "./AttachmentModal";
 import { VoiceDictationButton } from "./VoiceDictationButton";
-import * as XLSX from "xlsx";
 import Papa from "papaparse";
+import { routeFileUpload } from "@/utils/fileUploadRouter";
+import { useFileHandler } from "@/hooks/useFileHandler";
 
 interface AIBiostatisticsChatProps {
   onMeasurementSelect?: (measurement: string) => void;
@@ -150,6 +151,23 @@ function shortenChartTitle(raw: string, maxLen = 35): string {
   }
 
   return t;
+}
+
+/**
+ * Validate a candidate tab name. Returns true if the name is acceptable.
+ * Rejects: single words, short strings, bare numbers/timestamps, lone keywords.
+ */
+function isValidTabName(name: string): boolean {
+  if (!name || name.trim().length < 5) return false;
+  const trimmed = name.trim();
+  // Reject single words (fewer than 2 space-separated tokens)
+  if (trimmed.split(/\s+/).length < 2) return false;
+  // Reject pure numbers or timestamps (e.g. "12:34:56", "2026-04-21")
+  if (/^[\d\s:.\-/T]+$/.test(trimmed)) return false;
+  // Reject lone keywords that aren't meaningful tab names
+  const bareKeywords = ['count', 'median', 'analysis', 'mean', 'total', 'sum', 'average', 'result', 'results', 'data', 'table', 'chart', 'graph', 'value', 'output', 'summary', 'note', 'error'];
+  if (bareKeywords.includes(trimmed.toLowerCase())) return false;
+  return true;
 }
 
 /**
@@ -249,135 +267,7 @@ function fileToBase64(f: File): Promise<string> {
   });
 }
 
-function fileToText(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsText(f);
-  });
-}
-
-/** Parse XLSX/XLS file to array of row objects with robust header detection */
-function parseXLSXFile(file: File): Promise<Array<Record<string, any>>> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target!.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array", cellDates: true });
-
-        console.log("[Excel Parse] File:", file.name);
-        console.log("[Excel Parse] Sheets found:", workbook.SheetNames);
-
-        // Prefer active sheet, fall back to first sheet
-        const activeIdx = workbook.Workbook?.Sheets?.findIndex((s: any) => s?.Hidden === 0) ?? 0;
-        const sheetName = workbook.SheetNames[Math.max(0, activeIdx)] ?? workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        console.log("[Excel Parse] Using sheet:", sheetName);
-
-        if (!sheet) { console.warn("[Excel Parse] Sheet is empty"); resolve([]); return; }
-
-        // Record merge regions for context but do NOT propagate merge values
-        // into the sheet. Propagating causes a title merged across 138 columns
-        // to fill 138 cells with the same value, making it look like 138 headers.
-        // Instead, just delete the merge metadata so sheet_to_json reads
-        // each cell independently (empty cells stay empty).
-        const mergeCount = sheet["!merges"]?.length ?? 0;
-        if (mergeCount > 0) {
-          console.log("[Excel Parse] Removing", mergeCount, "merge metadata (cells read as-is)");
-          delete sheet["!merges"];
-        }
-
-        // Read first 10 rows as raw arrays to detect the actual header row
-        const rawRows = XLSX.utils.sheet_to_json<any[]>(sheet, {
-          header: 1, defval: "", range: 0,
-        }).slice(0, 10);
-
-        // Find the header row: the first row where ≥3 cells are filled with
-        // UNIQUE text values (not numbers). Title rows have 1-2 cells; data
-        // rows have numbers; real headers have many unique text labels.
-        let headerRowIdx = 0;
-        for (let i = 0; i < rawRows.length; i++) {
-          const cells = (rawRows[i] ?? []).map((v: any) => String(v ?? "").trim()).filter(Boolean);
-          const uniqueTexts = new Set(cells.filter((c) => isNaN(Number(c)))).size;
-          console.log(`[Excel] Row ${i + 1}: ${cells.length} filled, ${uniqueTexts} unique text values`);
-          if (uniqueTexts >= 3) {
-            headerRowIdx = i;
-            break; // First row with ≥3 unique text values is the header
-          }
-        }
-        console.log("[Excel] Header row selected: row", headerRowIdx + 1);
-
-        // Build headers: ensure all are strings, deduplicate merge artifacts,
-        // fill empty ones with "Column_X"
-        const rawHeader: any[] = rawRows[headerRowIdx] ?? [];
-        const seenHeaders = new Set<string>();
-        const headers: string[] = [];
-        // Find the last column index that has actual data in the rows below the header
-        let lastDataCol = 0;
-        for (let ri = headerRowIdx + 1; ri < Math.min(rawRows.length, headerRowIdx + 4); ri++) {
-          const row = rawRows[ri] ?? [];
-          for (let ci = row.length - 1; ci >= 0; ci--) {
-            if (String(row[ci] ?? "").trim() !== "" && ci > lastDataCol) {
-              lastDataCol = ci;
-            }
-          }
-        }
-        // Only process columns up to where data exists (strips trailing merge artifacts)
-        const maxCols = Math.max(lastDataCol + 1, 1);
-        for (let i = 0; i < Math.min(rawHeader.length, maxCols); i++) {
-          let s = String(rawHeader[i] ?? "").trim();
-          if (!s) s = `Column_${String.fromCharCode(65 + (i % 26))}${i >= 26 ? Math.floor(i / 26) : ""}`;
-          // Deduplicate: if we've seen this header already, append a suffix
-          if (seenHeaders.has(s)) {
-            let suffix = 2;
-            while (seenHeaders.has(`${s}_${suffix}`)) suffix++;
-            s = `${s}_${suffix}`;
-          }
-          seenHeaders.add(s);
-          headers.push(s);
-        }
-        console.log("[Excel Parse] Headers detected:", headers.length, "columns:", headers.slice(0, 10));
-
-        // Read all data starting from the row after the header
-        const allRows = XLSX.utils.sheet_to_json<any[]>(sheet, {
-          header: 1, defval: "", range: headerRowIdx + 1,
-        });
-
-        // Map array rows to keyed objects using the detected headers
-        const rows: Record<string, any>[] = [];
-        for (const row of allRows) {
-          if (!Array.isArray(row)) continue;
-          // Skip completely empty rows
-          const hasData = row.some((v: any) =>
-            v !== null && v !== undefined && String(v).trim() !== ""
-          );
-          if (!hasData) continue;
-
-          const obj: Record<string, any> = {};
-          for (let c = 0; c < headers.length; c++) {
-            obj[headers[c]] = row[c] ?? "";
-          }
-          rows.push(obj);
-        }
-
-        console.log("[Excel Parse] Rows found:", rows.length, "| Columns:", Object.keys(rows[0] || {}).length);
-        if (rows.length > 0) {
-          console.log("[Excel Parse] Column names:", Object.keys(rows[0]));
-          console.log("[Excel Parse] First data row:", JSON.stringify(rows[0]).slice(0, 200));
-        }
-
-        resolve(rows);
-      } catch (err) {
-        console.error("[Excel Parse] Failed:", err);
-        reject(err);
-      }
-    };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
-}
+// fileToText and parseXLSXFile removed — all file parsing now routes through routeFileUpload
 
 function FileIcon({ type, className: cls }: { type: string; className?: string }) {
   const ext = type?.toLowerCase();
@@ -1382,8 +1272,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
   const uploadFileMutation = trpc.files.upload.useMutation({
     onError: (err) => toast.error(`Upload failed: ${err.message}`),
   });
-  const parsePdfMutation = trpc.files.parsePdf.useMutation();
-  const parseXlsxMutation = trpc.files.parseXlsx.useMutation();
+  // Centralized file handler — binary formats (xlsx, pdf) always go to server
+  const { handleFile: handleFileViaHook } = useFileHandler();
 
   const { pendingMessage, pendingAutoSend, setPendingMessage } = useMeasurementTriggerStore();
   const trpcUtils = trpc.useUtils();
@@ -1738,7 +1628,8 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
           const isTextFile = ["csv", "tsv", "txt"].includes(ext);
 
           const base64 = await fileToBase64(file);
-          const text = isTextFile ? await fileToText(file) : "";
+          // Preview text comes from routeFileUpload result (csvText) — no separate read needed
+          const text = "";
 
           // Fire upload to server (don't block UI on the result)
           uploadFileMutation.mutate({
@@ -1788,217 +1679,162 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
             return next;
           });
 
-          // ── Auto-parse by file type ──
-          if (["csv", "tsv", "txt"].includes(ext)) {
-            // CSV / TSV / TXT — robust parsing via PapaParse
+          // ── Auto-parse via centralized file upload router ──
+          // All data file types (csv, tsv, txt, xlsx, xls, json, pdf) route through
+          // routeFileUpload() which handles magic-byte validation, format detection,
+          // and delegates xlsx/pdf to server-side parsers.
+          const dataExts = ["csv", "tsv", "txt", "xlsx", "xls", "json", "pdf"];
+          console.log('[UPLOAD TRACE] ext:', ext, 'isDataExt:', dataExts.includes(ext));
+          if (dataExts.includes(ext)) {
             try {
-              const parsed = parseCSVData(text);
-              if (parsed.length > 0) {
+              console.log('[UPLOAD TRACE] calling handleFileViaHook for:', file.name, file.size, 'bytes');
+              const routerResult = await handleFileViaHook(file);
+              console.log('[UPLOAD TRACE] handleFileViaHook returned:', routerResult.success, routerResult.sourceType, routerResult.rows?.length, 'rows');
+
+              if (routerResult.warnings?.length) {
+                routerResult.warnings.forEach(w => console.warn('[FileRouter] Warning:', w));
+              }
+
+              if (routerResult.sourceType === 'pdf') {
+                // PDF: store extracted text as preview, attempt table extraction
+                const pdfText = (routerResult.csvText ?? '').slice(0, 2 * 1024 * 1024);
+                if (pdfText) {
+                  // Store preview
+                  if (attachScope === 'project' && activeProjectId) {
+                    removeProjectSource(activeProjectId, tempId);
+                    addProjectSource(activeProjectId, {
+                      id: tempId, name: file.name, size: file.size,
+                      type: ext, uploadedAt: Date.now(), preview: pdfText,
+                    });
+                  } else {
+                    setAttachedFiles((prev) =>
+                      prev.map((f) => f.id === tempId ? { ...f, preview: pdfText } : f)
+                    );
+                  }
+
+                  // Attempt structured table extraction from PDF text
+                  let pdfTableParsed = false;
+                  const pdfLines = pdfText.split('\n').filter((l) => l.trim());
+                  if (pdfLines.length >= 3) {
+                    const pipeLines = pdfLines.filter((l) => l.includes('|'));
+                    if (pipeLines.length >= 3) {
+                      const csvFromPipes = pipeLines
+                        .filter((l) => !l.match(/^[\s|:-]+$/))
+                        .map((l) => l.split('|').map((c) => c.trim()).filter(Boolean).join(','))
+                        .join('\n');
+                      const parsed = parseCSVData(csvFromPipes);
+                      if (parsed.length >= 1 && Object.keys(parsed[0]).length >= 2) {
+                        setColumnClassifications(deriveColumnTypes(parsed));
+                        setUploadedData({ filename: file.name, size: newFile.size });
+                        setFullData(parsed);
+                        onDataLoaded?.(parsed);
+                        useCurrentDatasetStore.getState().setCurrentDataset({
+                          filename: file.name, rowCount: parsed.length,
+                          columns: Object.keys(parsed[0] ?? {}),
+                          rows: parsed as Record<string, unknown>[], cleaned: false,
+                        });
+                        pdfTableParsed = true;
+                      }
+                    }
+                    if (!pdfTableParsed) {
+                      const parsed = parseCSVData(pdfText);
+                      if (parsed.length >= 2 && Object.keys(parsed[0]).length >= 2) {
+                        setColumnClassifications(deriveColumnTypes(parsed));
+                        setUploadedData({ filename: file.name, size: newFile.size });
+                        setFullData(parsed);
+                        onDataLoaded?.(parsed);
+                        useCurrentDatasetStore.getState().setCurrentDataset({
+                          filename: file.name, rowCount: parsed.length,
+                          columns: Object.keys(parsed[0] ?? {}),
+                          rows: parsed as Record<string, unknown>[], cleaned: false,
+                        });
+                        pdfTableParsed = true;
+                      }
+                    }
+                  }
+
+                  if (pdfTableParsed) {
+                    const cols = Object.keys(useCurrentDatasetStore.getState().currentDataset?.rows?.[0] ?? {});
+                    addChatMessage({
+                      id: `msg-${Date.now()}`, role: "assistant",
+                      content: `✅ **${file.name}** attached — PDF. Extracted **${useCurrentDatasetStore.getState().currentDataset?.rowCount ?? 0} rows** · ${cols.length} columns (${cols.slice(0, 5).join(', ')}${cols.length > 5 ? '...' : ''}). Ready for analysis.`,
+                      timestamp: Date.now(),
+                    });
+                  } else {
+                    addChatMessage({
+                      id: `msg-${Date.now()}`, role: "assistant",
+                      content: `✅ **${file.name}** attached — PDF, ${pdfText.length.toLocaleString()} characters extracted. No structured table detected — AI will analyze the full text content.`,
+                      timestamp: Date.now(),
+                    });
+                  }
+                } else {
+                  toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid PDF with readable text/tables.`);
+                  toast.success(`${file.name} attached (metadata only)`);
+                }
+              }
+
+              console.log('[UPLOAD DEBUG] routerResult:', {
+                success: routerResult.success,
+                rowCount: routerResult.rows?.length,
+                sourceType: routerResult.sourceType,
+                error: routerResult.error,
+                columns: routerResult.columns?.slice(0, 5),
+              });
+
+              if (routerResult.sourceType !== 'pdf' && routerResult.success && routerResult.rows.length > 0) {
+                // CSV / TSV / TXT / XLSX / XLS / JSON — structured data
+                const parsed = routerResult.rows;
+                const cols = routerResult.columns;
                 setColumnClassifications(deriveColumnTypes(parsed));
                 setUploadedData({ filename: file.name, size: newFile.size });
                 setFullData(parsed);
+                console.log('[UPLOAD DEBUG] setFullData called with', parsed.length, 'rows');
                 onDataLoaded?.(parsed);
                 useCurrentDatasetStore.getState().setCurrentDataset({
-                  filename: file.name,
-                  rowCount: parsed.length,
-                  columns: Object.keys(parsed[0] ?? {}),
-                  rows: parsed as Record<string, unknown>[],
+                  filename: file.name, rowCount: parsed.length,
+                  columns: cols, rows: parsed as Record<string, unknown>[],
                   cleaned: false,
                 });
+
+                // Store CSV text preview for data recovery after tab switches
+                const csvPreview = routerResult.csvText
+                  ?? cols.join(',') + '\n' + parsed.slice(0, 50).map(r => cols.map(c => r[c] ?? '').join(',')).join('\n');
+                if (attachScope === 'project' && activeProjectId) {
+                  removeProjectSource(activeProjectId, tempId);
+                  addProjectSource(activeProjectId, {
+                    id: tempId, name: file.name, size: file.size,
+                    type: ext || 'file', uploadedAt: Date.now(),
+                    preview: csvPreview.slice(0, 2 * 1024 * 1024),
+                  });
+                } else {
+                  setAttachedFiles((prev) =>
+                    prev.map((f) => f.id === tempId ? { ...f, preview: csvPreview.slice(0, 2 * 1024 * 1024) } : f)
+                  );
+                }
+
+                console.log(`[FileRouter] ${file.name}: ${parsed.length} rows, ${cols.length} cols (${routerResult.sourceType})`);
                 addChatMessage({
-                  id: `msg-${Date.now()}`,
-                  role: "assistant",
-                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${Object.keys(parsed[0] ?? {}).length} columns. Would you like me to clean it first?`,
+                  id: `msg-${Date.now()}`, role: "assistant",
+                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${cols.length} columns (${cols.slice(0, 5).join(', ')}${cols.length > 5 ? '...' : ''}). Ready for analysis.`,
+                  timestamp: Date.now(),
+                });
+              } else if (!routerResult.success) {
+                // Parse failed — show error
+                const errMsg = routerResult.error || 'Could not parse file';
+                console.error('[FileRouter] Parse failed:', errMsg);
+                toast.error(errMsg, { duration: 8000 });
+                addChatMessage({
+                  id: `msg-${Date.now()}`, role: "assistant",
+                  content: `⚠️ **Parsing failed** for ${file.name}: \`${errMsg}\`. Try saving as CSV and re-uploading.`,
                   timestamp: Date.now(),
                 });
               } else {
                 toast.success(`${file.name} attached (no data rows detected)`);
               }
-            } catch (csvErr) {
-              console.error("CSV parse error:", csvErr);
-              toast(`Parsing issue for ${file.name}: using metadata only.`, {
-                style: { backgroundColor: "#a0aec0", color: "#1a202c" },
-              });
-              toast.success(`${file.name} attached`);
-            }
-          } else if (["xlsx", "xls"].includes(ext)) {
-            // XLSX / XLS — server-side conversion handles merged cells + header detection
-            console.log("[1-UPLOAD] XLSX file received:", file.name, newFile.size);
-            try {
-              const result = await parseXlsxMutation.mutateAsync({
-                fileData: base64,
-                fileName: file.name,
-              });
-              console.log("[2-PARSE] Server XLSX result:", {
-                success: result.success,
-                rowCount: result.rowCount,
-                columns: result.columns?.slice(0, 10),
-              });
-              if (result.success && result.rows && result.rows.length > 0) {
-                const parsed = result.rows as Array<Record<string, any>>;
-                const cols = result.columns as string[];
-                const cls = deriveColumnTypes(parsed);
-                console.log("[3-CLASSIFY] Column classifications:", Object.keys(cls).length, "keys");
-                setColumnClassifications(cls);
-                setUploadedData({ filename: file.name, size: newFile.size });
-                setFullData(parsed);
-                onDataLoaded?.(parsed);
-                useCurrentDatasetStore.getState().setCurrentDataset({
-                  filename: file.name,
-                  rowCount: parsed.length,
-                  columns: cols,
-                  rows: parsed as Record<string, unknown>[],
-                  cleaned: false,
-                });
-                // Store CSV text preview on the file object so data can be recovered
-                // after tab switches (when fullData state is lost).
-                const csvPreview = (result as any).csvText ?? cols.join(',') + '\n' + parsed.slice(0, 50).map(r => cols.map(c => r[c] ?? '').join(',')).join('\n');
-                if (attachScope === 'project' && activeProjectId) {
-                  removeProjectSource(activeProjectId, tempId);
-                  addProjectSource(activeProjectId, {
-                    id: tempId,
-                    name: file.name,
-                    size: file.size,
-                    type: ext || 'file',
-                    uploadedAt: Date.now(),
-                    preview: csvPreview.slice(0, 2 * 1024 * 1024),
-                  });
-                } else {
-                  // Tab-level: update the attachedFiles entry with CSV preview text
-                  setAttachedFiles((prev) =>
-                    prev.map((f) =>
-                      f.id === tempId ? { ...f, preview: csvPreview.slice(0, 2 * 1024 * 1024) } : f
-                    )
-                  );
-                }
-                addChatMessage({
-                  id: `msg-${Date.now()}`,
-                  role: "assistant",
-                  content: `✅ **${file.name}** attached — ${parsed.length.toLocaleString()} rows · ${cols.length} columns (${cols.slice(0, 5).join(', ')}${cols.length > 5 ? '...' : ''}). Ready for analysis.`,
-                  timestamp: Date.now(),
-                });
-              } else {
-                toast.success(`${file.name} attached (${result.error || 'no data rows detected'})`);
-              }
-            } catch (xlsxErr: any) {
-              console.error("[XLSX] Server parse failed:", xlsxErr);
-              const errMsg = xlsxErr?.message || xlsxErr?.data?.message || String(xlsxErr);
-              toast.error(`Excel parse failed: ${errMsg}`, {
-                style: { backgroundColor: "#f56565", color: "#fff" },
-                duration: 8000,
-              });
-              // Also show in chat so it's visible in screenshots
-              addChatMessage({
-                id: `msg-${Date.now()}`,
-                role: "assistant",
-                content: `⚠️ **Excel parsing failed** for ${file.name}: \`${errMsg}\`. Try saving the file as CSV and re-uploading.`,
-                timestamp: Date.now(),
-              });
-            }
-          } else if (ext === "pdf") {
-            // PDF — extract text via server-side pdf-parse, then attempt table extraction
-            try {
-              const result = await parsePdfMutation.mutateAsync({
-                fileData: base64,
-                fileName: file.name,
-              });
-              if (result.success && result.text) {
-                const pdfText = result.text.slice(0, 2 * 1024 * 1024);
-
-                // Store extracted text as preview for AI context
-                if (attachScope === 'project' && activeProjectId) {
-                  removeProjectSource(activeProjectId, tempId);
-                  addProjectSource(activeProjectId, {
-                    id: tempId,
-                    name: file.name,
-                    size: file.size,
-                    type: ext,
-                    uploadedAt: Date.now(),
-                    preview: pdfText,
-                  });
-                } else {
-                  // Tab-level: update the attachedFiles entry with extracted text
-                  setAttachedFiles((prev) =>
-                    prev.map((f) => f.id === tempId ? { ...f, preview: pdfText } : f)
-                  );
-                }
-
-                // Attempt to extract structured tabular data from the PDF text.
-                // Many PDF tables are rendered as lines with consistent delimiters
-                // (tabs, pipes, or multiple spaces) — try parsing as CSV/TSV first.
-                let pdfTableParsed = false;
-                const pdfLines = pdfText.split('\n').filter((l) => l.trim());
-                if (pdfLines.length >= 3) {
-                  // Try pipe-delimited (common in PDF table extraction)
-                  const pipeLines = pdfLines.filter((l) => l.includes('|'));
-                  if (pipeLines.length >= 3) {
-                    // Convert pipe-delimited to CSV
-                    const csvText = pipeLines
-                      .filter((l) => !l.match(/^[\s|:-]+$/)) // skip separator rows
-                      .map((l) => l.split('|').map((c) => c.trim()).filter(Boolean).join(','))
-                      .join('\n');
-                    const parsed = parseCSVData(csvText);
-                    if (parsed.length >= 1 && Object.keys(parsed[0]).length >= 2) {
-                      setColumnClassifications(deriveColumnTypes(parsed));
-                      setUploadedData({ filename: file.name, size: newFile.size });
-                      setFullData(parsed);
-                      onDataLoaded?.(parsed);
-                      useCurrentDatasetStore.getState().setCurrentDataset({
-                        filename: file.name,
-                        rowCount: parsed.length,
-                        columns: Object.keys(parsed[0] ?? {}),
-                        rows: parsed as Record<string, unknown>[],
-                        cleaned: false,
-                      });
-                      pdfTableParsed = true;
-                    }
-                  }
-                  // Try tab-delimited or comma-delimited within PDF text
-                  if (!pdfTableParsed) {
-                    const parsed = parseCSVData(pdfText);
-                    if (parsed.length >= 2 && Object.keys(parsed[0]).length >= 2) {
-                      setColumnClassifications(deriveColumnTypes(parsed));
-                      setUploadedData({ filename: file.name, size: newFile.size });
-                      setFullData(parsed);
-                      onDataLoaded?.(parsed);
-                      useCurrentDatasetStore.getState().setCurrentDataset({
-                        filename: file.name,
-                        rowCount: parsed.length,
-                        columns: Object.keys(parsed[0] ?? {}),
-                        rows: parsed as Record<string, unknown>[],
-                        cleaned: false,
-                      });
-                      pdfTableParsed = true;
-                    }
-                  }
-                }
-
-                if (pdfTableParsed) {
-                  const cols = Object.keys(useCurrentDatasetStore.getState().currentDataset?.rows?.[0] ?? {});
-                  addChatMessage({
-                    id: `msg-${Date.now()}`,
-                    role: "assistant",
-                    content: `✅ **${file.name}** attached — PDF with ${result.pages} page${result.pages === 1 ? "" : "s"}. Extracted **${useCurrentDatasetStore.getState().currentDataset?.rowCount ?? 0} rows** · ${cols.length} columns (${cols.slice(0, 5).join(', ')}${cols.length > 5 ? '...' : ''}). Ready for analysis.`,
-                    timestamp: Date.now(),
-                  });
-                  toast.success("Table extracted from PDF — structured data ready for analysis", {
-                    style: { background: '#f0fdf4', color: '#166534', borderColor: '#86efac' },
-                  });
-                } else {
-                  addChatMessage({
-                    id: `msg-${Date.now()}`,
-                    role: "assistant",
-                    content: `✅ **${file.name}** attached — PDF with ${result.pages} page${result.pages === 1 ? "" : "s"}, ${result.text.length.toLocaleString()} characters extracted. No structured table detected — AI will analyze the full text content.`,
-                    timestamp: Date.now(),
-                  });
-                }
-              } else {
-                toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid PDF with readable text/tables.`, { style: { backgroundColor: "#f56565", color: "#fff" } });
-                toast.success(`${file.name} attached (metadata only)`);
-              }
-            } catch (pdfErr) {
-              console.error("PDF extraction error:", pdfErr);
-              toast.error(`Content extraction failed for ${file.name}. Please ensure it's a valid PDF with readable text/tables.`, { style: { backgroundColor: "#f56565", color: "#fff" } });
+            } catch (parseErr: any) {
+              console.error("[FileRouter] Upload parse error:", parseErr);
+              const errMsg = parseErr?.message || String(parseErr);
+              toast.error(`Parse failed for ${file.name}: ${errMsg}`);
             }
           } else {
             toast.success(`${file.name} attached`);
@@ -2010,7 +1846,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
       }
       e.target.value = "";
     },
-    [uploadFileMutation, onDataLoaded, attachScope, activeProjectId, addProjectSource, removeProjectSource, parsePdfMutation, parseXlsxMutation]
+    [uploadFileMutation, onDataLoaded, attachScope, activeProjectId, addProjectSource, removeProjectSource, handleFileViaHook]
   );
 
   // ── Send message ───────────────────────────────────────────────────────
@@ -2056,6 +1892,7 @@ export const AIBiostatisticsChatTabIntegrated: React.FC<
         fullData.length > 0
           ? fullData
           : ((cdStore?.rows as Array<Record<string, any>>) ?? []);
+      console.log(`[SEND DEBUG] fullData: ${fullData.length} rows, cdStore: ${cdStore?.rows?.length ?? 0} rows (${cdStore?.filename ?? 'none'}), effectiveData: ${effectiveData.length} rows, attachedFiles: ${attachedFiles.length}, activeTabFiles: ${activeTabFiles.length}`);
 
       // ── Text-CSV auto-detection ──────────────────────────────────────────────
       // When no data is loaded and the user pastes CSV-like text directly into the
@@ -2470,36 +2307,81 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
       // consecutive user-role messages at the end of the context, which causes the
       // model to treat the new request as a continuation of the previous one instead
       // of a fresh task — the root cause of the "same chart reused" bug.
+      // ── Layer 3: Sanitize data before sending to AI ────────────────────
+      // Detect binary garbage that slipped through file parsing (e.g. xlsx
+      // read as text). Block it from reaching the LLM to prevent hallucination.
+      let sanitizedData = effectiveData;
+      let sanitizedColumns = dataColumns;
+      let dataBlockedWarning = '';
+      if (effectiveData.length > 0 && dataColumns.length > 0) {
+        // Check 1: Are column names actually column names or binary artifacts?
+        const suspiciousCols = dataColumns.filter((c) => {
+          const s = String(c);
+          return (
+            /^PK$|Content_Types|docProps|\.xml|\.rels|xl\/|worksheets|sharedStrings|__EMPTY/i.test(s) ||
+            s.length > 200 ||
+            (s.replace(/[^a-zA-Z0-9_\s\-\.()%#/]/g, '').length / Math.max(s.length, 1)) < 0.7
+          );
+        });
+        if (suspiciousCols.length > dataColumns.length * 0.3) {
+          console.error('[DataGuard] Suspicious columns detected — blocking data:', suspiciousCols.slice(0, 5));
+          sanitizedData = [];
+          sanitizedColumns = [];
+          dataBlockedWarning = '[FILE PARSING NOTICE: The uploaded file was not parsed correctly — column names contain binary file artifacts (e.g. PK, Content_Types, xl/worksheets). This usually means an Excel file was read as plain text instead of being parsed properly. Do NOT fabricate data. Tell the user to re-upload the file or save it as CSV first.]';
+        }
+        // Check 2: Non-printable characters in data values
+        if (!dataBlockedWarning && effectiveData.length > 0) {
+          const sample = Object.values(effectiveData[0]).map(String).join('');
+          const nonPrintable = sample.split('').filter((ch) => {
+            const code = ch.charCodeAt(0);
+            return code < 32 && code !== 9 && code !== 10 && code !== 13;
+          }).length;
+          if (nonPrintable / Math.max(sample.length, 1) > 0.1) {
+            console.error('[DataGuard] Binary content in data values — blocking');
+            sanitizedData = [];
+            sanitizedColumns = [];
+            dataBlockedWarning = '[FILE PARSING NOTICE: The data contains binary content rather than readable values. The file may not have been parsed correctly. Do NOT fabricate data. Ask the user to re-upload or convert to CSV.]';
+          }
+        }
+      }
+
+      const finalQuery = dataBlockedWarning
+        ? augmentedQuery + '\n\n' + dataBlockedWarning
+        : augmentedQuery;
+      const finalPreview = dataBlockedWarning ? dataBlockedWarning : dataPreview;
+
       console.log("[4-PROMPT] Data context being sent to AI:", {
-        queryLength: augmentedQuery.length,
-        dataPreviewLength: dataPreview?.length ?? 0,
-        dataColumns: dataColumns?.slice(0, 8),
+        queryLength: finalQuery.length,
+        dataPreviewLength: finalPreview?.length ?? 0,
+        dataColumns: sanitizedColumns?.slice(0, 8),
         classificationKeys: Object.keys(effectiveClassifications ?? {}).slice(0, 8),
-        fullDataRows: effectiveData?.length ?? 0,
-        fullDataFirstRow: effectiveData?.[0] ? JSON.stringify(effectiveData[0]).slice(0, 200) : "EMPTY",
+        fullDataRows: sanitizedData?.length ?? 0,
+        fullDataFirstRow: sanitizedData?.[0] ? JSON.stringify(sanitizedData[0]).slice(0, 200) : "EMPTY",
+        dataBlocked: !!dataBlockedWarning,
       });
       const response = await analyzeMutation.mutateAsync({
-        userQuery: augmentedQuery,
-        dataPreview,
-        dataColumns,
-        classifications: effectiveClassifications,
+        userQuery: finalQuery,
+        dataPreview: finalPreview,
+        dataColumns: sanitizedColumns,
+        classifications: dataBlockedWarning ? {} : effectiveClassifications,
         conversationHistory,
-        fullData: effectiveData,
+        fullData: sanitizedData,
       });
 
       const responseObj = response as any;
 
       // Debug: log response shape to diagnose parsing issues
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[AIChat] Response keys:", Object.keys(responseObj ?? {}));
-        console.log("[AIChat] chatResponse:", responseObj.chatResponse ? "present" : "missing");
-        console.log("[AIChat] analysis type:", typeof responseObj.analysis, "length:", String(responseObj.analysis ?? "").length);
-        console.log("[AIChat] analysisResults:", responseObj.analysisResults ? "present" : "null");
-        if (responseObj.analysisResults) {
-          console.log("[AIChat] results_table:", Array.isArray(responseObj.analysisResults.results_table) ? `${responseObj.analysisResults.results_table.length} rows` : typeof responseObj.analysisResults.results_table);
-          console.log("[AIChat] chart_data:", responseObj.analysisResults.chart_data ? "present" : "null");
-        }
+      console.log("[AI RESPONSE] Raw keys:", Object.keys(responseObj ?? {}));
+      console.log("[AI RESPONSE] analysis (first 300):", String(responseObj.analysis ?? "").slice(0, 300));
+      console.log("[AI RESPONSE] chatResponse:", responseObj.chatResponse ? JSON.stringify(responseObj.chatResponse).slice(0, 200) : "missing");
+      console.log("[AI RESPONSE] analysisResults:", responseObj.analysisResults ? "present" : "null");
+      if (responseObj.analysisResults) {
+        console.log("[AI RESPONSE] analysisResults keys:", Object.keys(responseObj.analysisResults));
+        console.log("[AI RESPONSE] results_table:", Array.isArray(responseObj.analysisResults.results_table) ? `${responseObj.analysisResults.results_table.length} rows` : typeof responseObj.analysisResults.results_table);
+        console.log("[AI RESPONSE] chart_data:", responseObj.analysisResults.chart_data ? `type=${responseObj.analysisResults.chart_data.type}, labels=${responseObj.analysisResults.chart_data.labels?.length ?? 'none'}` : "null");
+        console.log("[AI RESPONSE] analysis_type:", responseObj.analysisResults.analysis_type);
       }
+      console.log("[AI RESPONSE] llmUsed:", responseObj.llmUsed, "graphTitle:", responseObj.graphTitle?.slice(0, 50));
 
       // Track LLM availability for the status indicator
       if (responseObj.llmUnavailable) setLlmStatus('offline');
@@ -2894,7 +2776,7 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
           tabTitle = shortenChartTitle(rawTitle, 35);
 
           // Strategy 2: First heading or bold text from AI analysis
-          if (!tabTitle || tabTitle.length < 5 || tabTitle.split(' ').length <= 1) {
+          if (!isValidTabName(tabTitle)) {
             const analysis = responseObj.analysis ?? content ?? '';
             const headingMatch = analysis.match(/^#{1,3}\s+(.+)/m)
               ?? analysis.match(/\*\*(.{8,60})\*\*/);
@@ -2904,7 +2786,7 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
           }
 
           // Strategy 3: Uploaded filename (sans extension), title-cased
-          if (!tabTitle || tabTitle.length < 5 || tabTitle.split(' ').length <= 1) {
+          if (!isValidTabName(tabTitle)) {
             const dsFilename = useCurrentDatasetStore.getState().currentDataset?.filename;
             if (dsFilename) {
               const nameOnly = dsFilename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
@@ -2913,17 +2795,18 @@ IMPORTANT: Return the FULL chart_data object with ALL fields. Do not return only
             }
           }
 
-          // Strategy 4: generateTitleFromQuery — validate it's not a single word
-          if (!tabTitle || tabTitle.length < 5 || tabTitle.split(' ').length <= 1) {
+          // Strategy 4: generateTitleFromQuery
+          if (!isValidTabName(tabTitle)) {
             const generated = generateTitleFromQuery(userMessage);
-            // Only use if it's at least 2 words and 5+ chars
-            if (generated.split(' ').length >= 2 && generated.length >= 5) {
+            if (isValidTabName(generated)) {
               tabTitle = generated;
-            } else {
-              // Last resort: "Analysis [tab index]"
-              const tabIdx = useTabStore.getState().tabs.findIndex((t) => t.id === activeTabIdMemo);
-              tabTitle = `Analysis ${tabIdx >= 0 ? tabIdx + 1 : ''}`.trim();
             }
+          }
+
+          // Final fallback: "Analysis [tab index]"
+          if (!isValidTabName(tabTitle)) {
+            const tabIdx = useTabStore.getState().tabs.findIndex((t) => t.id === activeTabIdMemo);
+            tabTitle = `Analysis ${tabIdx >= 0 ? tabIdx + 1 : ''}`.trim();
           }
 
           renameTab(activeTabIdMemo, tabTitle);

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useFileHandler } from "@/hooks/useFileHandler";
 import { Send, Upload, Loader2, ToggleLeft, ToggleRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,6 +105,7 @@ export const AIBiostatisticsChat: React.FC<AIBiostatisticsChatProps> = ({
   const [conversationHistory, setConversationHistory] = useState<Array<{ role: string; content: string }>>([]);
   const [suggestionsVisible, setSuggestionsVisible] = useState(true);
   const [autoSubmit, setAutoSubmit] = useState(false);
+  const { handleFile } = useFileHandler();
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -333,26 +335,21 @@ export const AIBiostatisticsChat: React.FC<AIBiostatisticsChatProps> = ({
 
     try {
       setIsLoading(true);
-      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-      if (['xlsx', 'xls'].includes(ext)) {
-        toast.error('Excel files should be uploaded via the main Biostatistics AI tab for proper server-side parsing.');
-        return;
+      const result = await handleFile(file);
+
+      if (result.success && result.rows.length > 0) {
+        setFullData(result.rows as Record<string, any>[]);
+
+        const fileLoadedMessage: Message = {
+          id: `file-loaded-${Date.now()}`,
+          role: "assistant",
+          content: `✅ Uploaded file: ${file.name} (${result.rows.length} rows, ${result.columns.length} columns)`,
+          timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, fileLoadedMessage]);
+        toast.success("File uploaded successfully");
       }
-
-      const content = await file.text();
-      const parsedData = parseCSVData(content);
-
-      setFullData(parsedData);
-
-      const fileLoadedMessage: Message = {
-        id: `file-loaded-${Date.now()}`,
-        role: "assistant",
-        content: `✅ Uploaded file: ${file.name} (${parsedData.length} rows, ${parsedData.length > 0 ? Object.keys(parsedData[0]).length : 0} columns)`,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, fileLoadedMessage]);
-      toast.success("File uploaded successfully");
     } catch (error) {
       console.error("Error uploading file:", error);
       toast.error("Failed to upload file");

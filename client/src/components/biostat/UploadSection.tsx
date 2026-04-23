@@ -1,12 +1,13 @@
 import { useState } from 'react';
-import Papa from 'papaparse';
 import { Upload, X, Search } from 'lucide-react';
 import { useBiostatStore } from '@/stores/biostatStore';
 import { useSampleData } from '@/hooks/useSampleData';
+import { useFileHandler } from '@/hooks/useFileHandler';
 
 export default function UploadSection() {
   const { datasetName, setData, columns } = useBiostatStore();
   const { loadSampleData } = useSampleData();
+  const { handleFile } = useFileHandler();
   const [dragActive, setDragActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -21,26 +22,11 @@ export default function UploadSection() {
   };
 
   const processFile = async (file: File) => {
-    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-    if (ext === 'xlsx' || ext === 'xls') {
-      console.warn('[UploadSection] Excel files must be uploaded via the main AI chat for server-side parsing.');
-      return;
-    }
     try {
-      const content = await file.text();
-      Papa.parse(content, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results: any) => {
-          if (results.data && results.data.length > 0) {
-            const cols = Object.keys(results.data[0] as Record<string, any>);
-            setData(results.data as any[], cols, file.name);
-          }
-        },
-        error: (error: any) => {
-          console.error('CSV parsing error:', error);
-        },
-      });
+      const result = await handleFile(file);
+      if (result.success && result.rows.length > 0) {
+        setData(result.rows as any[], result.columns, file.name);
+      }
     } catch (err) {
       console.error('Error reading file:', err);
     }

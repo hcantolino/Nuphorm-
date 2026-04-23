@@ -2337,60 +2337,50 @@ export const GraphTablePanel: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  // Conditionally render Plotly for scatter/analytical/pharma data, Recharts for simple charts
+                  // All charts render through Plotly for consistent layout, error bars, and PDF capture
                   <ChartErrorBoundary onError={() => setChartError(true)}>
-                    {(isPlotlyChartData(syncedChartData ?? chartData, customizations) || shouldUsePlotly(syncedChartData ?? chartData)) ? (
-                      <PlotlyInteractiveChart
-                        config={{
-                          mode: (syncedChartData ?? chartData)?.pharma_type ?? 'auto',
-                          chartData: syncedChartData ?? chartData,
-                          title: activeResult?.graphTitle ?? undefined,
-                        }}
-                        customizations={customizations}
-                        barCustomizations={customizations.barCustomizations}
-                        onBarCustomizationsChange={(bc) => {
-                          if (!customizationKey) return;
-                          setCustomization(customizationKey, 'barCustomizations', bc);
-                        }}
-                        rawDataset={currentDataset ? { rows: currentDataset.rows as Record<string, unknown>[], columns: currentDataset.columns } : null}
-                        onValidationWarning={(msg) => {
-                          toast.warning(msg, {
-                            duration: 5000,
-                            style: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
-                          });
-                        }}
-                        onPlotRef={(el) => { plotDivRef.current = el; }}
-                        onPointClick={(pt) => {
-                          console.log('[PlotlyChart] Point clicked:', pt);
-                        }}
-                        onEditAction={(action, ctx) => {
-                          if (!activeResult?.id) return;
-                          const actionDescriptions: Record<string, string> = {
-                            add_labels: 'Add data labels to all data points on the chart',
-                            bar_at_month_12: 'Add a vertical reference bar or annotation at Month 12',
-                            pairwise_table: 'Add a pairwise comparison table showing statistical differences between groups',
-                            percent_improvement: 'Calculate and annotate percent improvement between treatment groups',
-                            add_trendline: 'Add a linear trendline to each data series',
-                          };
-                          const editText = actionDescriptions[action] ?? action.replace(/_/g, ' ');
-                          const pointCtx = ctx ? ` (context: point at x=${ctx.x}, y=${ctx.y}, trace=${ctx.trace})` : '';
-                          useAIPanelStore.getState().queueGraphEdit(activeResult.id, editText + pointCtx);
-                        }}
-                        onLabelEdit={(field, value) => {
-                          if (!customizationKey) return;
-                          setCustomization(customizationKey, field, value);
-                        }}
-                        height={380}
-                      />
-                    ) : (
-                      <ChartRenderer
-                        // Use syncedChartData when table edits exist; falls back to original
-                        chartData={syncedChartData ?? chartData}
-                        customizations={customizations}
-                        colors={activeColors}
-                        preferredType={llmChartType}
-                      />
-                    )}
+                    <PlotlyInteractiveChart
+                      config={{
+                        mode: (syncedChartData ?? chartData)?.pharma_type ?? 'auto',
+                        chartData: syncedChartData ?? chartData,
+                        title: activeResult?.graphTitle ?? undefined,
+                      }}
+                      customizations={customizations}
+                      barCustomizations={customizations.barCustomizations}
+                      onBarCustomizationsChange={(bc) => {
+                        if (!customizationKey) return;
+                        setCustomization(customizationKey, 'barCustomizations', bc);
+                      }}
+                      rawDataset={currentDataset ? { rows: currentDataset.rows as Record<string, unknown>[], columns: currentDataset.columns } : null}
+                      onValidationWarning={(msg) => {
+                        toast.warning(msg, {
+                          duration: 5000,
+                          style: { background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' },
+                        });
+                      }}
+                      onPlotRef={(el) => { plotDivRef.current = el; }}
+                      onPointClick={(pt) => {
+                        console.log('[PlotlyChart] Point clicked:', pt);
+                      }}
+                      onEditAction={(action, ctx) => {
+                        if (!activeResult?.id) return;
+                        const actionDescriptions: Record<string, string> = {
+                          add_labels: 'Add data labels to all data points on the chart',
+                          bar_at_month_12: 'Add a vertical reference bar or annotation at Month 12',
+                          pairwise_table: 'Add a pairwise comparison table showing statistical differences between groups',
+                          percent_improvement: 'Calculate and annotate percent improvement between treatment groups',
+                          add_trendline: 'Add a linear trendline to each data series',
+                        };
+                        const editText = actionDescriptions[action] ?? action.replace(/_/g, ' ');
+                        const pointCtx = ctx ? ` (context: point at x=${ctx.x}, y=${ctx.y}, trace=${ctx.trace})` : '';
+                        useAIPanelStore.getState().queueGraphEdit(activeResult.id, editText + pointCtx);
+                      }}
+                      onLabelEdit={(field, value) => {
+                        if (!customizationKey) return;
+                        setCustomization(customizationKey, field, value);
+                      }}
+                      height={380}
+                    />
                   </ChartErrorBoundary>
                 )}
               </CardContent>
@@ -2556,10 +2546,14 @@ export const GraphTablePanel: React.FC = () => {
               </CardHeader>
               <CardContent className="pb-4 pt-3" data-chart-export={activeResult?.id}>
                 <ChartErrorBoundary onError={() => {}}>
-                  <ChartRenderer
-                    chartData={autoChartFromTable}
+                  <PlotlyInteractiveChart
+                    config={{
+                      mode: 'auto',
+                      chartData: autoChartFromTable,
+                      title: activeResult?.graphTitle ?? undefined,
+                    }}
                     customizations={customizations}
-                    colors={activeColors}
+                    height={320}
                   />
                 </ChartErrorBoundary>
               </CardContent>
@@ -2647,11 +2641,11 @@ export const GraphTablePanel: React.FC = () => {
               </div>
             )}
             <CardHeader className="py-2.5 px-4 border-b border-[#e2e8f0] bg-white">
-              <CardTitle className="text-sm flex items-center justify-between text-[#0f172a]">
-                <span className="flex items-center gap-2">
-                  <Table2 className="w-4 h-4 text-[#3b82f6]" />
+              {/* Row 1: icon + title (wraps if long) */}
+              <CardTitle className="text-sm flex items-center gap-2 text-[#0f172a]" style={{ minWidth: 0 }}>
+                <Table2 className="w-4 h-4 text-[#3b82f6] flex-shrink-0" />
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
                   {(() => {
-                    // Generate descriptive table title from chart metadata
                     const graphTitle = activeResult?.graphTitle?.replace(/^Figure\s+\d+\.\s*/i, '').trim();
                     if (graphTitle) return `Table. ${graphTitle}`;
                     const yVar = customizations.yLabel || chartData?.datasets?.[0]?.label;
@@ -2659,16 +2653,17 @@ export const GraphTablePanel: React.FC = () => {
                     if (yVar && xVar) return `Table. ${yVar} by ${xVar}`;
                     return 'Statistics summary';
                   })()}
-                  <span className="text-xs font-normal text-[#64748b]">
-                    — click any cell to edit
-                  </span>
-                  {customizations.tableFilter && (
-                    <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/20 ml-1">
-                      filtered
-                    </Badge>
-                  )}
                 </span>
-                <span className="flex items-center gap-1.5">
+                {customizations.tableFilter && (
+                  <Badge className="text-[10px] h-4 bg-blue-50 text-[#3b82f6] border border-[#3b82f6]/20 flex-shrink-0">
+                    filtered
+                  </Badge>
+                )}
+              </CardTitle>
+              {/* Row 2: hint left, buttons right */}
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-xs text-[#94a3b8]">click any cell to edit</span>
+                <span className="flex items-center gap-2 flex-shrink-0 whitespace-nowrap">
                   <button
                     onClick={() => {
                       const rows = displayTable.map((r: any) => `| ${r.metric} | ${formatCellValue(r.value)} |`).join('\n');
@@ -2688,7 +2683,7 @@ export const GraphTablePanel: React.FC = () => {
                     tableData={displayTable}
                   />
                 </span>
-              </CardTitle>
+              </div>
             </CardHeader>
             <CardContent className="px-0 pb-2">
               <table className="w-full text-sm">

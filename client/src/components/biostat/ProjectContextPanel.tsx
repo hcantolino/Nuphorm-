@@ -24,6 +24,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useProjectStore, buildProjectSource, formatBytes } from '@/stores/projectStore';
 import { useCurrentDatasetStore } from '@/stores/currentDatasetStore';
+import { useFileHandler } from '@/hooks/useFileHandler';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
@@ -78,6 +79,7 @@ export default function ProjectContextPanel({
 }: ProjectContextPanelProps) {
   const { getSettings, setInstructions, addSource, removeSource } = useProjectStore();
   const setCurrentDataset = useCurrentDatasetStore((s) => s.setCurrentDataset);
+  const { handleFile } = useFileHandler();
 
   // Local draft — avoids writing to the store on every keystroke
   const [instructionsDraft, setInstructionsDraft] = useState('');
@@ -108,29 +110,46 @@ export default function ProjectContextPanel({
       setIsUploading(true);
       try {
         for (const file of files) {
-          const source = await buildProjectSource(file);
-          addSource(projectId, source);
+          console.log('[ProjectContextPanel] Uploading source:', file.name, file.size, 'bytes');
 
-          // If it's a CSV/TSV, also load the full rows into currentDatasetStore so
-          // the AI chat can immediately use it without the user needing to re-upload.
-          const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-          if (['csv', 'tsv', 'txt'].includes(ext) && source.preview) {
-            const rows = parseCSVRows(source.preview);
-            if (rows.length > 0) {
-              setCurrentDataset({
-                filename: file.name,
-                rowCount: rows.length,
-                columns: Object.keys(rows[0] ?? {}),
-                rows,
-                cleaned: false,
-              });
-              toast.success(`Source added: ${file.name} (${rows.length.toLocaleString()} rows loaded)`);
-            } else {
-              toast.success(`Source added: ${file.name}`);
-            }
+          // Parse ALL file types through the centralized handler (xlsx, csv, pdf, etc.)
+          const parseResult = await handleFile(file);
+          console.log('[ProjectContextPanel] Parse result:', {
+            success: parseResult.success,
+            rows: parseResult.rows?.length,
+            sourceType: parseResult.sourceType,
+          });
+
+          // Build project source with preview text
+          const source = await buildProjectSource(file);
+
+          // For successfully parsed data files, store CSV preview so the AI can use it
+          if (parseResult.success && parseResult.rows.length > 0) {
+            const csvPreview = parseResult.csvText
+              ?? parseResult.columns.join(',') + '\n' +
+                 parseResult.rows.slice(0, 200).map(r =>
+                   parseResult.columns.map(c => r[c] ?? '').join(',')
+                 ).join('\n');
+            source.preview = csvPreview.slice(0, 2 * 1024 * 1024);
+
+            // Load into currentDatasetStore so AI chat gets the data immediately
+            setCurrentDataset({
+              filename: file.name,
+              rowCount: parseResult.rows.length,
+              columns: parseResult.columns,
+              rows: parseResult.rows as Record<string, unknown>[],
+              cleaned: false,
+            });
+            toast.success(`Source added: ${file.name} (${parseResult.rows.length.toLocaleString()} rows loaded)`);
+          } else if (parseResult.sourceType === 'pdf' && parseResult.csvText) {
+            // PDF: store extracted text as preview
+            source.preview = parseResult.csvText.slice(0, 2 * 1024 * 1024);
+            toast.success(`Source added: ${file.name} (PDF text extracted)`);
           } else {
             toast.success(`Source added: ${file.name}`);
           }
+
+          addSource(projectId, source);
         }
         setSourcesExpanded(true);
       } catch {
@@ -140,7 +159,7 @@ export default function ProjectContextPanel({
         e.target.value = '';
       }
     },
-    [projectId, addSource, setCurrentDataset]
+    [projectId, addSource, setCurrentDataset, handleFile]
   );
 
   if (!open) return null;
